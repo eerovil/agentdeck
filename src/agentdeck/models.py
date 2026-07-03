@@ -105,6 +105,7 @@ class TranscriptEvent:  # normalized transcript line (parsed from v0.2)
     usage: dict | None = None  # raw usage block passthrough
     ts: datetime | None = None
     subagent: str | None = None  # set when from <uuid>/subagents/
+    queued: bool = False  # user message typed while the agent was busy (enqueued)
 
 
 @dataclass

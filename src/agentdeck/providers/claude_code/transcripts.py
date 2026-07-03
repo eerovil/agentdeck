@@ -92,8 +92,23 @@ def _stringify_tool_result(content: object) -> str:
 
 def _event_from_line(seq: int, data: dict, subagent: str | None = None) -> TranscriptEvent | None:
     ltype = data.get("type")
+    if ltype == "queue-operation":
+        # A message typed while the agent was busy. Only the "enqueue" carries
+        # the text; render it as a user turn (deduped in read_events against the
+        # real user line it becomes if/when the agent later processes it).
+        content = data.get("content")
+        if data.get("operation") == "enqueue" and isinstance(content, str) and content.strip():
+            return TranscriptEvent(
+                seq=seq,
+                role="user",
+                text=content.strip()[:_MAX_TEXT],
+                queued=True,
+                ts=_parse_ts(data.get("timestamp")),
+                subagent=subagent,
+            )
+        return None
     if ltype not in ("user", "assistant", "system"):
-        return None  # skip mode/queue-operation/summary lines
+        return None  # skip mode/summary lines
     message = data.get("message")
     content = message.get("content") if isinstance(message, dict) else None
     text, tool_name, tool_summary = _text_from_content(content)
@@ -165,6 +180,13 @@ def read_events(
             events.append(ev)
     if skipped:
         log.debug("%s: skipped %d malformed transcript lines", path.name, skipped)
+    # An enqueued message the agent later processed shows up twice — once as the
+    # queue-operation and once as the real user turn. Keep the real turn (shown
+    # where it was processed) and drop the queued duplicate; queued messages
+    # that were never processed have no real turn and stay.
+    real_user_texts = {e.text for e in events if e.role == "user" and not e.queued and e.text}
+    if real_user_texts:
+        events = [e for e in events if not (e.queued and e.text in real_user_texts)]
     return TranscriptRead(events, byte_offset + consumed, seq, skipped)
 
 

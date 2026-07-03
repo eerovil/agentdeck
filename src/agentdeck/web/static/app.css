@@ -121,6 +121,7 @@ a.session:active { background: var(--panel2); }
 .ev { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 10px; background: var(--panel); }
 .ev.assistant { border-left: 3px solid var(--remote); }
 .ev.user { border-left: 3px solid var(--live); }
+.ev.user.queued { border-left-style: dashed; }
 .ev.tool { border-left: 3px solid var(--warn); background: var(--panel2); }
 details.ev.tool > summary { cursor: pointer; list-style: none; display: flex; gap: 8px;
   align-items: baseline; color: var(--muted); }

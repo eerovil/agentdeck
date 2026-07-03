@@ -4,9 +4,9 @@
    session is actively working right now. #}
 {%- if e.role == 'tool' or (e.tool_name and not e.text) -%}
 {%- else -%}
-<div class="ev {{ e.role }}{% if e.subagent %} sub{% endif %}">
+<div class="ev {{ e.role }}{% if e.subagent %} sub{% endif %}{% if e.queued %} queued{% endif %}">
   <div class="ev-head">
-    <span class="ev-role">{{ e.role }}{% if e.subagent %} · {{ e.subagent }}{% endif %}</span>
+    <span class="ev-role">{{ e.role }}{% if e.subagent %} · {{ e.subagent }}{% endif %}{% if e.queued %} · queued{% endif %}</span>
     {% if e.model %}<span class="ev-model">{{ e.model }}</span>{% endif %}
   </div>
   {% if e.text %}<div class="ev-text">{{ e.text }}</div>{% endif %}

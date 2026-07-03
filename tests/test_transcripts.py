@@ -32,6 +32,10 @@ TOOL_RESULT = {
 }
 
 
+def _enqueue(text):
+    return {"type": "queue-operation", "operation": "enqueue", "content": text}
+
+
 def test_read_events_parses_roles(tmp_path):
     p = tmp_path / "t.jsonl"
     _write(p, [USER, ASSISTANT, TOOL_RESULT])
@@ -42,6 +46,35 @@ def test_read_events_parses_roles(tmp_path):
     assert a.tool_name == "Bash"
     assert "ls -la" in a.tool_summary
     assert a.model == "claude-opus-4-8"
+
+
+def test_queued_message_rendered_as_user(tmp_path):
+    """A message typed while busy (queue-operation/enqueue) that never became a
+    real user turn still shows, flagged as queued."""
+    p = tmp_path / "t.jsonl"
+    _write(p, [USER, _enqueue("sent while you were working"), ASSISTANT])
+    read = transcripts.read_events(p)
+    queued = [e for e in read.events if e.queued]
+    assert len(queued) == 1
+    assert queued[0].role == "user"
+    assert queued[0].text == "sent while you were working"
+
+
+def test_queued_duplicate_deduped(tmp_path):
+    """If the enqueued message was later processed as a real user turn, only the
+    real turn is kept (no double render); non-enqueue ops are ignored."""
+    p = tmp_path / "t.jsonl"
+    _write(
+        p,
+        [
+            _enqueue("do the thing"),
+            {"type": "queue-operation", "operation": "dequeue"},
+            {"type": "user", "message": {"role": "user", "content": "do the thing"}},
+        ],
+    )
+    read = transcripts.read_events(p)
+    texts = [(e.text, e.queued) for e in read.events]
+    assert texts == [("do the thing", False)]  # the real turn, once
 
 
 def test_read_events_skips_malformed_and_meta(tmp_path):
