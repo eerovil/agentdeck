@@ -7,6 +7,17 @@
 {% set s = session %}
 <div id="session-status">{% include "partials/session_status.html" %}</div>
 
+{% if can_inject %}
+<form class="inject-form"
+      hx-post="/sessions/{{ session.key }}/inject"
+      hx-target="#inject-result"
+      hx-disabled-elt="find button">
+  <textarea name="message" rows="2" placeholder="Send a message to this idle session…" required></textarea>
+  <button type="submit">Send</button>
+</form>
+<div id="inject-result"></div>
+{% endif %}
+
 <div class="detail-meta">
   {% if detail.model %}<span class="chip">{{ detail.model }}</span>{% endif %}
   {% set t = detail.tokens %}

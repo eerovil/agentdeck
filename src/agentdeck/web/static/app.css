@@ -94,3 +94,16 @@ a.session:active { background: var(--panel2); }
 .ev-text { white-space: pre-wrap; word-break: break-word; font-size: 13.5px; line-height: 1.5; }
 .load-earlier { display: block; width: 100%; padding: 8px; margin-bottom: 4px; cursor: pointer;
   background: var(--panel2); color: var(--fg); border: 1px solid var(--line); border-radius: var(--radius); }
+
+/* inject */
+.inject-form { display: flex; gap: 6px; margin: 4px 0 10px; }
+.inject-form textarea { flex: 1; resize: vertical; background: var(--panel); color: var(--fg);
+  border: 1px solid var(--line); border-radius: var(--radius); padding: 8px; font: inherit; }
+.inject-form button { padding: 0 16px; background: var(--live); color: #08260f; border: none;
+  border-radius: var(--radius); font-weight: 600; cursor: pointer; }
+.inject-form button:disabled { opacity: .5; }
+.inject-result { border-radius: var(--radius); padding: 8px 10px; margin-bottom: 10px; font-size: 13px; }
+.inject-result.ok { background: color-mix(in srgb, var(--live) 15%, transparent); }
+.inject-result.err { background: color-mix(in srgb, var(--crit) 15%, transparent); }
+.inject-status { font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: .04em; }
+.inject-detail { white-space: pre-wrap; word-break: break-word; margin-top: 4px; color: var(--muted); }

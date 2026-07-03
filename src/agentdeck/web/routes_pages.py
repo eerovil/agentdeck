@@ -5,7 +5,15 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from .deps import get_accounts, get_state, get_templates, require_access, resolve_session
+from ..models import Capability
+from .deps import (
+    get_accounts,
+    get_config,
+    get_state,
+    get_templates,
+    require_access,
+    resolve_session,
+)
 
 router = APIRouter()
 
@@ -46,8 +54,9 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
     account, session, provider = resolve_session(request, session_key)
     templates = get_templates(request)
     detail = await provider.load_transcript(account, session)
+    can_inject = get_config(request).inject.enabled and Capability.INJECT in session.capabilities
     return templates.TemplateResponse(
         request,
         "session.html",
-        {"session": session, "detail": detail},
+        {"session": session, "detail": detail, "can_inject": can_inject},
     )
