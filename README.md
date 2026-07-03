@@ -9,16 +9,21 @@ agent CLIs can be added later.
 
 ## Status & scope
 
-**v0.1 — read-only dashboard.** What works today:
+What works today:
 
-- Usage limit bars (5-hour / 7-day) per account, updating live over SSE.
-- Live/idle session list across any number of Claude Code config dirs
-  ("accounts"), with titles, last prompts, and claude.ai deep-links where
-  derivable.
-- Zero write paths: agentdeck never touches your sessions in v0.1.
+- **Usage limit bars** (5-hour / 7-day) per account, live over SSE, with a
+  sparkline of recent 5h usage and stale-greying on backoff.
+- **Live/idle session list** across any number of Claude Code config dirs
+  ("accounts"), with titles, last prompts, and claude.ai deep-links.
+- **Transcript viewer** (`/sessions/{key}`): per-event role/tool/model
+  rendering, token totals, todos, live tail for running sessions, and
+  "load earlier" pagination.
+- **Message injection** into idle sessions (opt-in) with spawn-time safety
+  interlocks — see below.
 
-Roadmap: v0.2 transcript viewer, v0.3 message injection / interactive chat,
-v0.4 provider abstraction docs. See [docs/BUILD_PLAN.md](docs/BUILD_PLAN.md).
+Roadmap: interactive streaming chat, provider abstraction for other agent CLIs
+(Codex, Gemini), and `docs/claude-code-internals.md`. See
+[docs/BUILD_PLAN.md](docs/BUILD_PLAN.md).
 
 ## Security model
 
@@ -97,9 +102,25 @@ and slug-safe (they appear in URLs and cache filenames).
 
 ## Message injection & safety interlocks
 
-Not implemented yet (v0.3). The design (see the build plan) refuses to write
-to any session whose owning pid is alive, requires the target cwd to exist
-and be trusted, and has an `[inject] enabled = false` kill-switch.
+From v0.3 you can send a message to an **idle** session from its detail page.
+agentdeck runs `claude -p --resume <id> "<message>"` in the session's working
+directory (appending a turn to the same transcript; the live tail then shows
+the reply). Interactive streaming chat is a later iteration.
+
+Interlocks, re-checked at spawn time on every attempt:
+
+- **Never writes a live session.** If any process is currently writing that
+  session's transcript, injection is refused (two writers corrupt the JSONL) —
+  open it in claude.ai instead.
+- **cwd must exist** — a session whose worktree was deleted is refused.
+- **cwd must be trusted** — agentdeck reads `hasTrustDialogAccepted` from
+  `.claude.json` and refuses otherwise. It never *writes* that file; you trust
+  a directory by running `claude` in it once. 
+- **Kill-switch**: `[inject] enabled = false` hides the form and 403s the route.
+  The bundled deploy ships with injection **off** — opt in when ready.
+
+To enable on the live deploy: set `[inject] enabled = true` in
+`~/.config/agentdeck/config.toml` and `systemctl --user restart agentdeck`.
 
 ## Contributing
 

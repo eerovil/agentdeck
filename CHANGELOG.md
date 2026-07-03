@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.3.0 (unreleased)
+
+- Message injection into idle sessions: `POST /sessions/{key}/inject` runs
+  `claude -p --resume` in the session's cwd, appending a turn (the collector's
+  tail then shows the reply). Inject form on the detail page for idle sessions.
+- Safety interlocks, re-checked at spawn time: refuses when the session's pid is
+  live (single-writer JSONL), when the cwd is missing, or when the cwd is not
+  trusted (`hasTrustDialogAccepted`); `[inject] enabled` kill-switch (default
+  honoured — the live deploy ships it off until you opt in).
+- `Capability.INJECT` surfaced on injectable sessions; the web layer keys the
+  form off capabilities, never off provider type.
+
 ## v0.2.0 (unreleased)
 
 - Session detail page (`/sessions/{key}`): transcript viewer with per-event
