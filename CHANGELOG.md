@@ -1,6 +1,12 @@
 # Changelog
 
 ## v0.3.0 (unreleased)
+- Session cards now show a real title from the transcript's `ai-title` line
+  (falling back to the first user prompt), plus a latest-prompt line — instead
+  of a bare session id. Titles are mtime-cached so idle transcripts aren't
+  re-parsed each scan.
+- Transcript viewer collapses long tool-result output into a `<details>`
+  accordion (one-line peek until expanded).
 
 - Message injection into idle sessions: `POST /sessions/{key}/inject` runs
   `claude -p --resume` in the session's cwd, appending a turn (the collector's

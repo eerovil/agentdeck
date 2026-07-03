@@ -99,3 +99,32 @@ def test_load_todos(tmp_path):
 
 def test_load_todos_missing(tmp_path):
     assert transcripts.load_todos(tmp_path, "nope") == []
+
+
+def test_transcript_meta_prefers_ai_title(tmp_path):
+    p = tmp_path / "t.jsonl"
+    _write(
+        p,
+        [
+            {"type": "ai-title", "aiTitle": "Fix the login bug", "sessionId": "s"},
+            {"type": "last-prompt", "lastPrompt": "now add a test", "sessionId": "s"},
+            USER,
+        ],
+    )
+    title, last_prompt, first_user = transcripts.transcript_meta(p)
+    assert title == "Fix the login bug"
+    assert last_prompt == "now add a test"
+    assert first_user == "hello there"
+
+
+def test_transcript_meta_first_user_fallback(tmp_path):
+    p = tmp_path / "t.jsonl"
+    meta_line = {"type": "user", "isMeta": True, "message": {"role": "user", "content": "META"}}
+    _write(p, [meta_line, USER])
+    title, last_prompt, first_user = transcripts.transcript_meta(p)
+    assert title is None  # no ai-title
+    assert first_user == "hello there"  # meta line skipped
+
+
+def test_transcript_meta_missing_file(tmp_path):
+    assert transcripts.transcript_meta(tmp_path / "nope.jsonl") == (None, None, None)
