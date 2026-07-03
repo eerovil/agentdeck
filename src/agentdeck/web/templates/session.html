@@ -43,22 +43,6 @@
   {% for e in detail.events %}{% include "partials/transcript_event.html" %}{% endfor %}
 </div>
 
-{% if can_inject %}
-{# Sticky bottom composer — the page opens scrolled to the newest message, so
-   the reply box lives here, where you're already looking, not up top. #}
-<div class="reply-bar">
-  <div id="inject-result"></div>
-  <form class="inject-form"
-        hx-post="/sessions/{{ session.key }}/inject"
-        hx-target="#inject-result"
-        hx-disabled-elt="find button">
-    <textarea name="message" rows="1" placeholder="Reply to this session…" required></textarea>
-    <button type="submit">Send</button>
-  </form>
-  <a class="chat-link" href="/sessions/{{ session.key }}/chat">💬 interactive chat instead</a>
-</div>
-{% endif %}
-
 <script>
 (function () {
   // Open at the newest message; keep pinned to the bottom as the live tail

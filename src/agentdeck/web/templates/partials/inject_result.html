@@ -1,5 +1,0 @@
-{# result of a POST /inject. `result` = InjectResult. #}
-<div class="inject-result {{ 'ok' if result.ok else 'err' }}">
-  <span class="inject-status">{{ 'delivered' if result.ok else 'refused' }}</span>
-  <div class="inject-detail">{{ result.detail }}</div>
-</div>

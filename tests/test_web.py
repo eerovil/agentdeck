@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from httpx import ASGITransport, AsyncClient
 
 from agentdeck.app import create_app
-from agentdeck.config import AccountConfig, AppConfig, HistoryConfig, InjectConfig
+from agentdeck.config import AccountConfig, AppConfig, HistoryConfig
 from agentdeck.models import Capability, Session, SessionStatus, UsageSnapshot
 
 
@@ -131,7 +131,7 @@ async def test_idle_sessions_hidden_but_reachable(tmp_path):
         direct = await c.get("/sessions/claude_code:test:idle1")
     assert "An Old Finished Session" not in listing.text  # hidden from the list
     assert "Hello World Session" in listing.text  # the live one still shows
-    assert direct.status_code == 200  # but reachable by direct URL (inject path)
+    assert direct.status_code == 200  # but reachable by direct URL (read-only view)
 
 
 async def test_partial_limit_bars(tmp_path):
@@ -171,46 +171,6 @@ async def test_transcript_load_earlier_partial(tmp_path):
         r = await c.get("/partials/sessions/claude_code:test:sid1/transcript?before=0")
     assert r.status_code == 200
     assert "an answer here" in r.text
-
-
-async def test_inject_disabled_returns_403(tmp_path):
-    config = AppConfig(
-        history=HistoryConfig(enabled=False),
-        inject=InjectConfig(enabled=False),
-        accounts=[AccountConfig(provider="claude_code", label="test", config_dir=str(tmp_path))],
-    )
-    app = create_app(config)
-    app.state.app_state.update_session(
-        Session(
-            key="claude_code:test:sid1",
-            account_key="claude_code:test",
-            session_id="sid1",
-            status=SessionStatus.IDLE,
-        )
-    )
-    async with _client(app) as c:
-        r = await c.post("/sessions/claude_code:test:sid1/inject", data={"message": "hi"})
-    assert r.status_code == 403
-
-
-async def test_chat_disabled_returns_403(tmp_path):
-    config = AppConfig(
-        history=HistoryConfig(enabled=False),
-        inject=InjectConfig(enabled=False),
-        accounts=[AccountConfig(provider="claude_code", label="test", config_dir=str(tmp_path))],
-    )
-    app = create_app(config)
-    app.state.app_state.update_session(
-        Session(
-            key="claude_code:test:sid1",
-            account_key="claude_code:test",
-            session_id="sid1",
-            status=SessionStatus.IDLE,
-        )
-    )
-    async with _client(app) as c:
-        r = await c.get("/sessions/claude_code:test:sid1/chat")
-    assert r.status_code == 403
 
 
 async def test_sse_initial_events(tmp_path):

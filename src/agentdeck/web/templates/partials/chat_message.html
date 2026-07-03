@@ -1,8 +1,0 @@
-{# one chat bubble. `e` = {role, text, tool_name, tool_summary}. #}
-<div class="ev {{ e.role }}">
-  <div class="ev-head"><span class="ev-role">{{ e.role }}</span></div>
-  {% if e.tool_name %}
-  <div class="ev-tool"><span class="tool-name">{{ e.tool_name }}</span>{% if e.tool_summary %} <span class="tool-sum">{{ e.tool_summary }}</span>{% endif %}</div>
-  {% endif %}
-  {% if e.text %}<div class="ev-text">{{ e.text }}</div>{% endif %}
-</div>

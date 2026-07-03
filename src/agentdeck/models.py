@@ -14,14 +14,12 @@ from pathlib import Path
 
 class SessionStatus(StrEnum):
     LIVE = "live"  # owning process running locally — read-only + deep-link
-    IDLE = "idle"  # transcript exists, no live pid — injectable (v0.3)
+    IDLE = "idle"  # transcript exists, no live pid — read-only
     REMOTE = "remote"  # cloud-only, no local transcript — deep-link only
 
 
 class Capability(StrEnum):
     TRANSCRIPT = "transcript"
-    INJECT = "inject"
-    CHAT = "chat"
     DEEPLINK = "deeplink"
 
 
@@ -117,15 +115,3 @@ class TranscriptDetail:  # v0.2 — the bundle a session detail page needs
     total_events: int  # count across the whole transcript
     earliest_seq: int  # smallest seq in ``events`` (for "load earlier")
     skipped: int = 0
-
-
-@dataclass
-class InjectResult:  # v0.3
-    ok: bool
-    detail: str
-    exit_code: int | None = None
-
-
-@dataclass
-class ChatHandle:  # v0.3
-    session_key: str

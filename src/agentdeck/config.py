@@ -41,12 +41,6 @@ class HistoryConfig(BaseModel):  # used from v0.2
     usage_retention_days: int = 30
 
 
-class InjectConfig(BaseModel):  # used from v0.3
-    enabled: bool = True
-    timeout_s: float = 600.0
-    chat_idle_timeout_s: float = 600.0
-
-
 class AccountConfig(BaseModel):
     provider: str
     label: str
@@ -80,7 +74,6 @@ class AppConfig(BaseModel):
     polling: PollingConfig = PollingConfig()
     usage: UsageConfig = UsageConfig()
     history: HistoryConfig = HistoryConfig()
-    inject: InjectConfig = InjectConfig()
     accounts: list[AccountConfig] = []
 
     @model_validator(mode="after")

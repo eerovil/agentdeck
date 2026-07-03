@@ -1,8 +1,9 @@
 """ClaudeCodeProvider — translates a $CLAUDE_CONFIG_DIR into agentdeck sessions.
 
-v0.1 scope: discover sessions (live from the pid registry, idle from transcript
-files) and surface per-account usage limits. Transcript parsing, injection and
-chat arrive in v0.2/v0.3 and raise NotImplementedError here for now.
+Discovers sessions (live from the pid registry, idle from transcript files),
+reads their transcripts, surfaces per-account usage limits, and derives the
+claude.ai/code deep link for cloud/RC-spawned sessions. agentdeck is a
+read-only viewer — replies happen on claude.ai via the deep link, not here.
 """
 
 from __future__ import annotations
@@ -16,7 +17,6 @@ import httpx
 from ...models import (
     Account,
     Capability,
-    InjectResult,
     Session,
     SessionStatus,
     TokenTotals,
@@ -26,10 +26,8 @@ from ...models import (
 )
 from ..base import SessionProvider
 from . import history as history_mod
-from . import inject as inject_mod
 from . import registry as registry_mod
 from . import transcripts as transcripts_mod
-from .chat import ChatRefused, ChatSession
 from .usage import UsagePoller, fetch_usage_once
 
 # Max events rendered on a detail page; older ones fetched via "load earlier".
@@ -146,14 +144,19 @@ class ClaudeCodeProvider(SessionProvider):
                 and last_activity is not None
                 and (datetime.now(UTC) - last_activity).total_seconds() < THINKING_WINDOW_S
             )
+            # A claude.ai deep link exists only for live, cloud/RC-spawned
+            # sessions (the access token lives in the process env).
+            deep_link = (
+                registry_mod.session_deep_link(entry.pid)
+                if (is_live and entry is not None)
+                else None
+            )
+
             caps: set[Capability] = set()
             if tpath is not None:
                 caps.add(Capability.TRANSCRIPT)  # readable from v0.2
-            # Injectable whenever we know a cwd and the session isn't mid-turn —
-            # claude --resume appends safely to a quiet session, live or not. The
-            # route re-checks activity + trust at spawn time; this is a UI hint.
-            if cwd is not None and not thinking:
-                caps.add(Capability.INJECT)
+            if deep_link is not None:
+                caps.add(Capability.DEEPLINK)
 
             sessions.append(
                 Session(
@@ -170,6 +173,7 @@ class ClaudeCodeProvider(SessionProvider):
                     proc_start=entry.proc_start if entry else None,
                     started_at=entry.started_at if entry else None,
                     last_activity=last_activity,
+                    deep_link=deep_link,
                     capabilities=frozenset(caps),
                 )
             )
@@ -191,10 +195,19 @@ class ClaudeCodeProvider(SessionProvider):
                 mt = _mtime(tp) if tp else None
                 thinking_now = bool(mt and (now - mt).total_seconds() < THINKING_WINDOW_S)
             pid_now = entry.pid if (entry and live_now) else None
-            if status_now != s.status or thinking_now != s.thinking or pid_now != s.pid:
+            deep_link_now = (
+                registry_mod.session_deep_link(entry.pid) if (entry and live_now) else None
+            )
+            if (
+                status_now != s.status
+                or thinking_now != s.thinking
+                or pid_now != s.pid
+                or deep_link_now != s.deep_link
+            ):
                 s.status = status_now
                 s.thinking = thinking_now
                 s.pid = pid_now
+                s.deep_link = deep_link_now
                 s.kind = entry.kind if entry else s.kind
                 changed.append(s)
         return changed
@@ -290,25 +303,3 @@ class ClaudeCodeProvider(SessionProvider):
             earliest_seq=earliest,
             skipped=read.skipped,
         )
-
-    # --- injection (v0.3) ----------------------------------------------
-
-    async def inject(
-        self, account: Account, session: Session, message: str, *, timeout_s: float = 600.0
-    ) -> InjectResult:
-        tp = self._transcript_path(account, session)
-        last_write = _mtime(tp) if tp else None
-        return await inject_mod.inject_start(
-            account, session, message, timeout_s=timeout_s, last_write=last_write
-        )
-
-    # --- interactive chat (v0.3) ---------------------------------------
-
-    async def open_chat(self, account: Account, session: Session) -> ChatSession:
-        tp = self._transcript_path(account, session)
-        reason = inject_mod.preflight(account, session, last_write=_mtime(tp) if tp else None)
-        if reason is not None:
-            raise ChatRefused(reason)
-        cs = ChatSession(session.session_id, cwd=str(session.cwd), config_dir=str(account.root))
-        await cs.start()
-        return cs

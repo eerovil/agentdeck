@@ -1,7 +1,8 @@
 """SessionProvider ABC — the contract every session source implements.
 
 Providers without a feature return sessions whose .capabilities simply omit
-INJECT/CHAT — the web layer keys off capabilities, never off provider type.
+it (e.g. DEEPLINK) — the web layer keys off capabilities, never off provider
+type.
 """
 
 from __future__ import annotations
@@ -13,8 +14,6 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from ..models import (
     Account,
     Capability,  # re-exported: providers/base is the canonical import site  # noqa: F401
-    ChatHandle,
-    InjectResult,
     Session,
     TranscriptEvent,
     UsageSnapshot,
@@ -42,12 +41,6 @@ class SessionProvider(ABC):
 
     @abstractmethod
     async def fetch_usage(self, account: Account) -> UsageSnapshot | None: ...
-
-    @abstractmethod
-    async def inject(self, account: Account, session: Session, message: str) -> InjectResult: ...
-
-    @abstractmethod
-    async def open_chat(self, account: Account, session: Session) -> ChatHandle: ...
 
     # --- optional hooks (non-abstract) ---------------------------------
 

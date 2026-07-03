@@ -11,6 +11,7 @@ Observed schema (CLI v2.1.198), all fields optional for us:
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from dataclasses import dataclass, field
@@ -88,6 +89,40 @@ def proc_starttime(pid: int, proc_root: Path = PROC_ROOT) -> str | None:
     if len(fields) < 20:  # fields[0] is field 3; starttime (22) is fields[19]
         return None
     return fields[19]
+
+
+def session_deep_link(pid: int, proc_root: Path = PROC_ROOT) -> str | None:
+    """The claude.ai/code URL for a live session, or None.
+
+    Derived from the process's ``CLAUDE_CODE_SESSION_ACCESS_TOKEN`` — an
+    ``sk-ant-si-<jwt>`` whose payload carries ``session_id`` as ``cse_<id>``;
+    the web URL uses the ``session_<id>`` form. Only cloud/RC-spawned sessions
+    carry the token, so a plain local ``claude`` returns None (no link). Mirrors
+    the kanban poller's ``kanban_board.py:_session_url`` decode.
+
+    We read the target's own environment (same uid), never a shared credential —
+    this is navigation, not the send path.
+    """
+    try:
+        environ = (proc_root / str(pid) / "environ").read_bytes()
+    except OSError:
+        return None
+    tok = ""
+    for kv in environ.split(b"\0"):
+        if kv.startswith(b"CLAUDE_CODE_SESSION_ACCESS_TOKEN="):
+            tok = kv.split(b"=", 1)[1].decode("utf-8", "replace")
+            break
+    if "sk-ant-si-" not in tok:
+        return None
+    parts = tok.split("sk-ant-si-")[-1].split(".")
+    if len(parts) < 2:
+        return None
+    pad = parts[1] + "=" * (-len(parts[1]) % 4)
+    try:
+        sid = json.loads(base64.urlsafe_b64decode(pad)).get("session_id", "")
+    except (ValueError, json.JSONDecodeError):
+        return None
+    return f"https://claude.ai/code/session_{sid.split('_', 1)[-1]}" if sid else None
 
 
 def is_alive(entry: RegistryEntry, proc_root: Path = PROC_ROOT) -> bool:

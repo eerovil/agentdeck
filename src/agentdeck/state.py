@@ -68,7 +68,7 @@ class AppState:
     def visible_sessions(self) -> list[Session]:
         """Sessions worth listing: live (and remote) only. Idle/finished ones are
         never acted on and just bury the live ones, so they're hidden from the
-        list — but stay in ``sessions`` and reachable by direct URL (inject)."""
+        list — but stay in ``sessions`` and reachable by direct URL (read-only)."""
         return [s for s in self.all_sessions() if s.status != SessionStatus.IDLE]
 
     # --- usage --------------------------------------------------------

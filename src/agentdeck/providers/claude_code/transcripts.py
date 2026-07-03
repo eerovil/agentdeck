@@ -191,8 +191,8 @@ def transcript_meta(
     first_user_text, cwd). Claude Code writes an ``ai-title`` line (a concise
     session summary), ``last-prompt`` lines, and a ``cwd`` field on every entry;
     we read the head (ai-title/first prompt/cwd live there) and the tail (latest
-    last-prompt), latest occurrence winning. ``cwd`` is what makes an idle
-    session injectable — the live-process registry is gone once it's idle."""
+    last-prompt), latest occurrence winning. ``cwd`` is shown for idle sessions
+    too — the live-process registry is gone once a session is idle."""
     ai_title: str | None = None
     last_prompt: str | None = None
     first_user: str | None = None
