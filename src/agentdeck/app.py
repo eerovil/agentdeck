@@ -50,7 +50,7 @@ def create_app(config: AppConfig) -> FastAPI:
             await collector.stop()
             db.close()
 
-    app = FastAPI(title="agentdeck", version="0.3.0", lifespan=lifespan)
+    app = FastAPI(title="agentdeck", version="0.3.1", lifespan=lifespan)
     app.state.config = config
     app.state.app_state = state
     app.state.accounts = config.build_accounts()

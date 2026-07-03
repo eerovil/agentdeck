@@ -9,7 +9,7 @@
   <script src="/static/htmx.min.js" defer></script>
   <script src="/static/sse.js" defer></script>
 </head>
-<body hx-ext="sse" sse-connect="/events">
+<body hx-ext="sse" {% block body_sse %}sse-connect="/events"{% endblock %}>
   <header class="topbar">
     <div class="topbar-row">
       {% block topbar_nav %}{% endblock %}
@@ -22,5 +22,22 @@
   <main>
     {% block content %}{% endblock %}
   </main>
+  <script>
+  // Connection hygiene: over HTTP/1.1 a browser allows ~6 sockets per host, and
+  // each open page holds a long-lived SSE stream. A bfcached page keeps its
+  // EventSource, so a few navigations exhaust the cap and the next page stalls.
+  // Close streams on leave; if the page is later restored from bfcache (where
+  // they won't reconnect), reload fresh.
+  (function () {
+    var sources = new Set();
+    document.body.addEventListener('htmx:sseOpen', function (e) {
+      if (e.detail && e.detail.source) sources.add(e.detail.source);
+    });
+    window.addEventListener('pagehide', function () {
+      sources.forEach(function (s) { try { s.close(); } catch (_) {} });
+    });
+    window.addEventListener('pageshow', function (e) { if (e.persisted) location.reload(); });
+  })();
+  </script>
 </body>
 </html>

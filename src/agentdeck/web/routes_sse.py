@@ -38,6 +38,16 @@ TAIL_INTERVAL_S = 1.5
 THINKING_OFF_S = 3.0
 
 
+def _usage_sig(accounts, state) -> tuple:
+    """Cheap change-detector for the usage snapshots (keyed by fetch time), so
+    the session stream re-renders the topbar only when a poll lands."""
+    out = []
+    for a in accounts:
+        snap = state.usage.get(a.key)
+        out.append((a.key, snap.fetched_at if snap else None))
+    return tuple(out)
+
+
 def format_sse(event: str, html: str) -> str:
     # SSE data may not contain raw newlines; prefix every line with "data: ".
     body = "".join(f"data: {line}\n" for line in html.splitlines()) or "data: \n"
@@ -93,12 +103,18 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
     account, session, provider = resolve_session(request, session_key)
     templates = get_templates(request)
     state = get_state(request)
+    accounts = get_accounts(request)
     loop = asyncio.get_event_loop()
 
     offset, seq = await provider.transcript_cursor(account, session)
     last_activity_t = loop.time() if session.thinking else -1e9
     last_status = None
     last_thinking = None
+    # The topbar usage bars ride this same stream (see session.html), so the
+    # session page holds one socket, not two. Re-push only when a snapshot
+    # actually changes (~every usage poll), not every tail.
+    yield format_sse("usage", render_limit_bars(templates, accounts, state))
+    last_usage_sig = _usage_sig(accounts, state)
     while True:
         if await request.is_disconnected():
             break
@@ -113,6 +129,10 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
             last_status, last_thinking = current.status, thinking
             snap = replace(current, thinking=thinking)
             yield format_sse("status", render_session_status(templates, snap))
+        sig = _usage_sig(accounts, state)
+        if sig != last_usage_sig:
+            last_usage_sig = sig
+            yield format_sse("usage", render_limit_bars(templates, accounts, state))
         await asyncio.sleep(TAIL_INTERVAL_S)
 
 

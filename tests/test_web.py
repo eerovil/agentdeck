@@ -103,6 +103,25 @@ async def test_thinking_badge_renders(tmp_path):
     assert "dot live thinking" in r.text
 
 
+async def test_idle_sessions_hidden_but_reachable(tmp_path):
+    app = _app_with_state(tmp_path)
+    app.state.app_state.update_session(
+        Session(
+            key="claude_code:test:idle1",
+            account_key="claude_code:test",
+            session_id="idle1",
+            status=SessionStatus.IDLE,
+            title="An Old Finished Session",
+        )
+    )
+    async with _client(app) as c:
+        listing = await c.get("/partials/sessions")
+        direct = await c.get("/sessions/claude_code:test:idle1")
+    assert "An Old Finished Session" not in listing.text  # hidden from the list
+    assert "Hello World Session" in listing.text  # the live one still shows
+    assert direct.status_code == 200  # but reachable by direct URL (inject path)
+
+
 async def test_partial_limit_bars(tmp_path):
     app = _app_with_state(tmp_path)
     async with _client(app) as c:
@@ -121,6 +140,10 @@ async def test_session_detail_renders_transcript(tmp_path):
     assert "an answer here" in r.text
     assert "claude-opus-4-8" in r.text
     assert "15 tok" in r.text  # 10 input + 5 output summed from usage
+    # usage bars paint server-side in the topbar (no separate /events socket)
+    assert "42%" in r.text
+    # the page binds its single SSE connection to the per-session stream
+    assert 'sse-connect="/events/sessions/claude_code:test:sid1"' in r.text
 
 
 async def test_session_detail_unknown_404(tmp_path):

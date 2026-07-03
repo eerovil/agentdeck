@@ -42,7 +42,7 @@ async def dashboard(request: Request) -> HTMLResponse:
         "dashboard.html",
         {
             "rows": _usage_rows(accounts, state),
-            "sessions": state.all_sessions(),
+            "sessions": state.visible_sessions(),
             "labels": session_labels(accounts),
         },
     )
@@ -56,8 +56,17 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
     templates = get_templates(request)
     detail = await provider.load_transcript(account, session)
     can_inject = get_config(request).inject.enabled and Capability.INJECT in session.capabilities
+    from .render import _usage_rows
+
     return templates.TemplateResponse(
         request,
         "session.html",
-        {"session": session, "detail": detail, "can_inject": can_inject},
+        {
+            "session": session,
+            "detail": detail,
+            "can_inject": can_inject,
+            # topbar usage bars, rendered server-side so they paint immediately
+            # (the per-session SSE stream then keeps them live over one socket).
+            "rows": _usage_rows(get_accounts(request), get_state(request)),
+        },
     )

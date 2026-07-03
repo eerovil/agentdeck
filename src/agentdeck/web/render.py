@@ -60,25 +60,11 @@ def register_filters(templates: Jinja2Templates) -> None:
     templates.env.filters["reltime_ago"] = reltime_ago
 
 
-_SPARK = "▁▂▃▄▅▆▇█"
-
-
-def sparkline(values: list[float]) -> str:
-    """Tiny unicode sparkline over 0-100 percentages; '' when < 2 points."""
-    if len(values) < 2:
-        return ""
-    return "".join(_SPARK[min(int(v / 100 * (len(_SPARK) - 1)), len(_SPARK) - 1)] for v in values)
-
-
 def _usage_rows(accounts: list[Account], state: AppState) -> list[dict]:
     rows = []
-    db = getattr(state, "db", None)
     for acc in accounts:
         snap = state.usage.get(acc.key)
-        spark = sparkline(db.recent_five_hour(acc.key)) if db is not None else ""
-        rows.append(
-            {"account": acc, "usage": snap, "stale_age": reltime_age(snap), "spark": spark}
-        )
+        rows.append({"account": acc, "usage": snap, "stale_age": reltime_age(snap)})
     return rows
 
 
@@ -104,7 +90,7 @@ def render_session_list(
     templates: Jinja2Templates, accounts: list[Account], state: AppState
 ) -> str:
     return templates.get_template("partials/session_list.html").render(
-        sessions=state.all_sessions(), labels=session_labels(accounts)
+        sessions=state.visible_sessions(), labels=session_labels(accounts)
     )
 
 

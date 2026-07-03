@@ -65,6 +65,12 @@ class AppState:
         """All sessions across accounts, LIVE first then most-recently-active."""
         return sorted(self.sessions.values(), key=self._sort_key)
 
+    def visible_sessions(self) -> list[Session]:
+        """Sessions worth listing: live (and remote) only. Idle/finished ones are
+        never acted on and just bury the live ones, so they're hidden from the
+        list — but stay in ``sessions`` and reachable by direct URL (inject)."""
+        return [s for s in self.all_sessions() if s.status != SessionStatus.IDLE]
+
     # --- usage --------------------------------------------------------
 
     def set_usage(self, snapshot: UsageSnapshot) -> None:

@@ -288,7 +288,7 @@ class ClaudeCodeProvider(SessionProvider):
     async def inject(
         self, account: Account, session: Session, message: str, *, timeout_s: float = 600.0
     ) -> InjectResult:
-        return await inject_mod.inject_oneshot(account, session, message, timeout_s=timeout_s)
+        return await inject_mod.inject_start(account, session, message, timeout_s=timeout_s)
 
     # --- interactive chat (v0.3) ---------------------------------------
 

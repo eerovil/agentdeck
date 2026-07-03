@@ -166,3 +166,78 @@ async def test_inject_oneshot_empty_message(tmp_path):
 
 def test_is_trusted_false_without_file(tmp_path):
     assert inject.is_trusted(tmp_path, tmp_path / "x") is False
+
+
+# --- non-blocking start (v0.3.1) -------------------------------------
+
+
+def _sleepy_claude(tmp_path: Path, secs: float) -> str:
+    """A fake `claude` that runs longer than the grace window."""
+    script = tmp_path / "claude"
+    script.write_text(
+        "#!/usr/bin/env python3\nimport time, sys\n"
+        f"time.sleep({secs})\nsys.stdout.write('done')\n"
+    )
+    script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IRUSR)
+    return str(script)
+
+
+async def test_inject_start_fast_turn_returns_result(tmp_path):
+    """A turn that finishes inside the grace window returns its real output."""
+    cfg = tmp_path / "cfg"
+    (cfg / "sessions").mkdir(parents=True)
+    work = tmp_path / "work"
+    work.mkdir()
+    _trust(cfg, work)
+    claude = _stub_claude(tmp_path, exit_code=0, out="quick answer")
+    result = await inject.inject_start(
+        _account(cfg), _session(work), "hi", claude_bin=claude, proc_root=tmp_path / "proc"
+    )
+    assert result.ok
+    assert "quick answer" in result.detail
+    assert not inject._inflight  # cleaned up
+
+
+async def test_inject_start_slow_turn_streams_and_reaps(tmp_path, monkeypatch):
+    """A turn that outlives the grace window returns 'streaming' immediately,
+    marks the session in-flight, then clears once the reaper finishes."""
+    import asyncio
+
+    cfg = tmp_path / "cfg"
+    (cfg / "sessions").mkdir(parents=True)
+    work = tmp_path / "work"
+    work.mkdir()
+    _trust(cfg, work)
+    monkeypatch.setattr(inject, "GRACE_S", 0.2)
+    claude = _sleepy_claude(tmp_path, 0.8)
+
+    result = await inject.inject_start(
+        _account(cfg), _session(work), "hi", claude_bin=claude, proc_root=tmp_path / "proc"
+    )
+    assert result.ok
+    assert "streaming" in result.detail.lower()
+    assert "sid-123" in inject._inflight  # handed to the background reaper
+
+    for _ in range(30):  # let the reaper finish
+        if "sid-123" not in inject._inflight:
+            break
+        await asyncio.sleep(0.1)
+    assert "sid-123" not in inject._inflight
+
+
+async def test_inject_start_refuses_concurrent(tmp_path):
+    """A second inject to a session already in flight is refused (one writer)."""
+    cfg = tmp_path / "cfg"
+    (cfg / "sessions").mkdir(parents=True)
+    work = tmp_path / "work"
+    work.mkdir()
+    _trust(cfg, work)
+    inject._inflight.add("sid-123")
+    try:
+        result = await inject.inject_start(
+            _account(cfg), _session(work), "hi", proc_root=tmp_path / "proc"
+        )
+        assert not result.ok
+        assert "already being delivered" in result.detail
+    finally:
+        inject._inflight.discard("sid-123")

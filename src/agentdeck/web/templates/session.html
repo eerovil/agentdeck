@@ -3,9 +3,13 @@
 
 {% block topbar_nav %}<a class="back" href="/" aria-label="back to all sessions">←</a>{% endblock %}
 
+{# One SSE connection for the whole page: status + transcript + the topbar usage
+   bars all ride /events/sessions/<key>, so a session page holds a single socket. #}
+{% block body_sse %}sse-connect="/events/sessions/{{ session.key }}"{% endblock %}
+{% block limit_bars %}{% include "partials/limit_bars.html" %}{% endblock %}
+
 {% block content %}
 {% set s = session %}
-<div sse-connect="/events/sessions/{{ session.key }}">
 <div id="session-status" sse-swap="status">{% include "partials/session_status.html" %}</div>
 
 {% if can_inject %}
@@ -49,7 +53,6 @@
   {% include "partials/load_earlier.html" %}
   {% endif %}
   {% for e in detail.events %}{% include "partials/transcript_event.html" %}{% endfor %}
-</div>
 </div>
 
 <script>
