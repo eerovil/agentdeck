@@ -47,7 +47,10 @@
 
 {% if session.deep_link %}
 <div class="chat-bar">
-  <a class="chat-link" href="{{ session.deep_link }}" target="_blank" rel="noopener">open in claude.ai ↗</a>
+  <div class="chat-bar-row">
+    {% if account_label %}<span class="acct-badge acct-{{ account_label }}">{{ account_label }}</span>{% endif %}
+    <a class="chat-link" href="{{ session.deep_link }}" target="_blank" rel="noopener">open in claude.ai ↗</a>
+  </div>
 </div>
 {% endif %}
 

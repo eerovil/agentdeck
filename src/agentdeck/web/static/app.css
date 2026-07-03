@@ -36,6 +36,7 @@ main { padding: 12px; max-width: 760px; margin: 0 auto; }
 .acct { flex: 1 1 240px; background: var(--panel2); border-radius: var(--radius); padding: 8px 10px; }
 .acct.stale { opacity: .55; }
 .acct-label { font-weight: 600; font-size: 13px; margin-bottom: 4px; display: flex; justify-content: space-between; }
+.upd-tag { color: var(--muted); font-weight: 400; font-size: 11px; }
 .stale-tag { color: var(--warn); font-weight: 400; font-size: 11px; }
 .bar-row { display: grid; grid-template-columns: 22px 1fr 40px auto; align-items: center; gap: 6px; margin: 3px 0; }
 .bar-kind { color: var(--muted); font-size: 12px; }
@@ -161,7 +162,9 @@ details.ev.tool > .ev-text { margin-top: 6px; max-height: 420px; overflow: auto;
 .chat-bar { position: sticky; bottom: 0; z-index: 5; margin: 12px -12px 0; padding: 10px 12px;
   padding-bottom: calc(10px + env(safe-area-inset-bottom, 0));
   background: var(--panel); border-top: 1px solid var(--line); }
-.chat-link { display: block; text-align: center; text-decoration: none; font-weight: 600;
+.chat-bar-row { display: flex; align-items: center; gap: 8px; }
+.chat-bar-row .acct-badge { flex: none; font-size: 12px; padding: 4px 8px; }
+.chat-link { flex: 1; display: block; text-align: center; text-decoration: none; font-weight: 600;
   color: var(--remote); background: var(--panel2); border: 1px solid var(--line);
   border-radius: var(--radius); padding: 10px; }
 .chat-link:active { background: var(--line); }
