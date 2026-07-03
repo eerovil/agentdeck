@@ -53,12 +53,19 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
     account, session, provider = resolve_session(request, session_key)
     templates = get_templates(request)
     detail = await provider.load_transcript(account, session)
+    from datetime import UTC, datetime
+
     from ..models import SessionStatus
     from .render import _usage_rows, activity_label, session_labels
 
     last_ev = detail.events[-1] if detail.events else None
     live = session.status == SessionStatus.LIVE
-    label = activity_label(live, bool(session.thinking), last_ev)
+    age = (
+        (datetime.now(UTC) - session.last_activity).total_seconds()
+        if session.last_activity
+        else 1e9
+    )
+    label = activity_label(live, bool(session.thinking), last_ev, age)
     account_label = session_labels(get_accounts(request)).get(session.account_key)
 
     return templates.TemplateResponse(

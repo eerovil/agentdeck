@@ -49,9 +49,10 @@ class AppState:
         self.sessions[session.key] = session
         self.bus.publish("sessions")
 
-    def _sort_key(self, s: Session) -> tuple[int, float]:
+    def _sort_key(self, s: Session) -> tuple[int, int, float]:
         return (
             _STATUS_ORDER.get(s.status, 9),
+            0 if s.thinking else 1,  # actively-working sessions float to the top
             -(s.last_activity.timestamp() if s.last_activity else 0.0),
         )
 

@@ -143,6 +143,41 @@ def test_activity_label_fallback():
     assert activity_label(True, True, reply) == "Working"
     # dead process → never a marker
     assert activity_label(False, True, tool_call) is None
+    # open turn but no write for ages → stalled worker, not "Using tools" forever
+    assert activity_label(True, False, tool_call, age_s=10_000) is None
+    assert activity_label(True, False, user_msg, age_s=10_000) is None
+
+
+def test_working_sessions_sort_first(tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    app = _app_with_state(tmp_path)
+    state = app.state.app_state
+    now = datetime.now(UTC)
+    # a quiet LIVE session, more recently active than the busy one
+    state.update_session(
+        Session(
+            key="claude_code:test:quiet",
+            account_key="claude_code:test",
+            session_id="quiet",
+            status=SessionStatus.LIVE,
+            thinking=False,
+            last_activity=now,
+        )
+    )
+    state.update_session(
+        Session(
+            key="claude_code:test:busy",
+            account_key="claude_code:test",
+            session_id="busy",
+            status=SessionStatus.LIVE,
+            thinking=True,
+            activity="Using tools",
+            last_activity=now - timedelta(minutes=3),
+        )
+    )
+    keys = [s.session_id for s in state.visible_sessions()]
+    assert keys.index("busy") < keys.index("quiet")  # busy floats above, despite older mtime
 
 
 async def test_thinking_badge_renders(tmp_path):

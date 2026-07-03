@@ -23,6 +23,7 @@ from ...models import (
     TranscriptDetail,
     TranscriptEvent,
     UsageSnapshot,
+    activity_label,
 )
 from ..base import SessionProvider
 from . import history as history_mod
@@ -90,6 +91,15 @@ class ClaudeCodeProvider(SessionProvider):
         self._meta_cache[str(path)] = (mtime, meta)
         return meta
 
+    def _activity(self, is_live: bool, tpath: Path | None, last_write) -> str | None:
+        """Activity label for a live session, from its open turn (cheap tail
+        read). Same logic as the detail page, so list and detail agree."""
+        if not (is_live and tpath is not None and last_write is not None):
+            return None
+        age = (datetime.now(UTC) - last_write).total_seconds()
+        last_ev = transcripts_mod.last_event(tpath)
+        return activity_label(True, age < THINKING_WINDOW_S, last_ev, age)
+
     # --- discovery -----------------------------------------------------
 
     def watch_paths(self, account: Account) -> list[Path]:
@@ -142,11 +152,8 @@ class ClaudeCodeProvider(SessionProvider):
             last_activity = _mtime(tpath) if tpath else (entry.started_at if entry else None)
 
             status = SessionStatus.LIVE if is_live else SessionStatus.IDLE
-            thinking = bool(
-                is_live
-                and last_activity is not None
-                and (datetime.now(UTC) - last_activity).total_seconds() < THINKING_WINDOW_S
-            )
+            activity = self._activity(is_live, tpath, last_activity)
+            thinking = activity is not None
             # A claude.ai deep link exists only for live, cloud/RC-spawned
             # sessions (the access token lives in the process env).
             deep_link = (
@@ -168,6 +175,7 @@ class ClaudeCodeProvider(SessionProvider):
                     session_id=sid,
                     status=status,
                     thinking=thinking,
+                    activity=activity,
                     cwd=cwd,
                     title=title,
                     last_prompt=last_prompt,
@@ -184,20 +192,19 @@ class ClaudeCodeProvider(SessionProvider):
         return sessions
 
     def sweep_liveness(self, account: Account, sessions: list[Session]) -> list[Session]:
-        """Cheap recheck (~every 10s): flip LIVE↔IDLE and refresh the thinking
-        flag from transcript recency, so both update between full scans."""
+        """Cheap recheck (~every 10s): flip LIVE↔IDLE and refresh the activity
+        (busy) state from the open turn, so both update between full scans."""
         entries = {e.session_id: e for e in registry_mod.read_registry(account.root)}
         changed: list[Session] = []
-        now = datetime.now(UTC)
         for s in sessions:
             entry = entries.get(s.session_id)
             live_now = bool(entry and registry_mod.is_alive(entry))
             status_now = SessionStatus.LIVE if live_now else SessionStatus.IDLE
-            thinking_now = False
+            activity_now = None
             if live_now:
                 tp = self._transcript_path(account, s)
-                mt = _mtime(tp) if tp else None
-                thinking_now = bool(mt and (now - mt).total_seconds() < THINKING_WINDOW_S)
+                activity_now = self._activity(True, tp, _mtime(tp) if tp else None)
+            thinking_now = activity_now is not None
             pid_now = entry.pid if (entry and live_now) else None
             deep_link_now = (
                 registry_mod.session_deep_link(entry.pid) if (entry and live_now) else None
@@ -205,11 +212,13 @@ class ClaudeCodeProvider(SessionProvider):
             if (
                 status_now != s.status
                 or thinking_now != s.thinking
+                or activity_now != s.activity
                 or pid_now != s.pid
                 or deep_link_now != s.deep_link
             ):
                 s.status = status_now
                 s.thinking = thinking_now
+                s.activity = activity_now
                 s.pid = pid_now
                 s.deep_link = deep_link_now
                 s.kind = entry.kind if entry else s.kind

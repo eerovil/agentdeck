@@ -4,7 +4,7 @@
     <span class="dot {{ s.status }}{% if s.thinking %} thinking{% endif %}"
           title="{{ s.display_state }}"></span>
     <span class="card-title">{{ s.title or s.session_id[:8] }}</span>
-    {% if s.thinking %}<span class="thinking-badge">thinking</span>{% endif %}
+    {% if s.thinking %}<span class="thinking-badge">{{ (s.activity or 'working') | lower }}</span>{% endif %}
     {% if s.deep_link %}<span class="deeplink">↗</span>{% endif %}
   </div>
   {% if s.last_prompt or s.last_text %}

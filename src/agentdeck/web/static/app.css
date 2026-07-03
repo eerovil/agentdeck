@@ -31,8 +31,23 @@ body {
 .back:active { background: var(--line); }
 main { padding: 12px; max-width: 760px; margin: 0 auto; }
 
-/* limit bars */
-.limit-bars { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; }
+/* usage — compact one-line summary; tap to expand the full bars */
+.usage-mini { display: flex; align-items: center; gap: 12px; width: 100%;
+  margin-top: 4px; padding: 4px 0; background: none; border: 0; color: var(--fg);
+  font: inherit; font-size: 13px; cursor: pointer; text-align: left; }
+.mini-acct { display: inline-flex; align-items: baseline; gap: 5px; }
+.mini-acct.stale { opacity: .55; }
+.mini-label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
+.mini-pct { font-weight: 700; color: var(--live); font-variant-numeric: tabular-nums; }
+.mini-pct.warn { color: var(--warn); }
+.mini-pct.crit { color: var(--crit); }
+.mini-7d { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.mini-caret { margin-left: auto; color: var(--muted); font-size: 11px; transition: transform .15s ease; }
+body:not(.usage-open) .mini-caret { transform: rotate(-90deg); }
+
+/* limit bars (expanded detail — hidden until body.usage-open) */
+.limit-bars { display: none; flex-wrap: wrap; gap: 10px; margin-top: 6px; }
+body.usage-open .limit-bars { display: flex; }
 .acct { flex: 1 1 240px; background: var(--panel2); border-radius: var(--radius); padding: 8px 10px; }
 .acct.stale { opacity: .55; }
 .acct-label { font-weight: 600; font-size: 13px; margin-bottom: 4px; display: flex; justify-content: space-between; }

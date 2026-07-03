@@ -1,4 +1,18 @@
-{# Per-account 5h / 7d usage bars. `rows` = [{account, usage, stale_age}]. #}
+{# Per-account 5h / 7d usage. `rows` = [{account, usage, stale_age, fetched_epoch}].
+   Collapsed by default to a one-line summary (the sticky header shouldn't eat
+   the phone screen); tapping toggles body.usage-open (persisted, JS in base). #}
+<button class="usage-mini" type="button" aria-label="toggle usage details">
+  {% for row in rows %}{% set u = row.usage %}
+  <span class="mini-acct{% if u and u.stale %} stale{% endif %}">
+    <span class="mini-label">{{ row.account.label }}</span>
+    {% if u and u.five_hour_pct is not none %}
+    <b class="mini-pct {% if u.five_hour_pct >= 90 %}crit{% elif u.five_hour_pct >= 70 %}warn{% endif %}">{{ u.five_hour_pct | round | int }}%</b>
+    {%- if u.seven_day_pct is not none %}<span class="mini-7d">{{ u.seven_day_pct | round | int }}%</span>{% endif %}
+    {% else %}<span class="mini-7d">—</span>{% endif %}
+  </span>
+  {% endfor %}
+  <span class="mini-caret">▾</span>
+</button>
 <div class="limit-bars">
   {% for row in rows %}
   {% set u = row.usage %}

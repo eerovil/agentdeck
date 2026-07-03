@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from fastapi.templating import Jinja2Templates
 
 from ..models import Account
+from ..models import activity_label as activity_label  # single impl lives in models
 from ..state import AppState
 
 
@@ -124,28 +125,6 @@ def render_transcript_events(templates: Jinja2Templates, events) -> str:
 
 def render_session_status(templates: Jinja2Templates, session) -> str:
     return templates.get_template("partials/session_status.html").render(s=session)
-
-
-def activity_label(live: bool, streaming: bool, last_ev) -> str | None:
-    """What the agent is doing right now, or None when idle/dead.
-
-    Keyed off the *open turn*, not just recent writes, so a long tool run or a
-    slow first token doesn't read as idle:
-    - last line is a tool call / tool result → "Using tools" (persists through
-      long tools, where the transcript is quiet for the tool's whole duration);
-    - last line is an unanswered user/queued prompt → "Working";
-    - actively writing (recent transcript write) → "Working";
-    - otherwise (LIVE but quiet, last line a finished reply) → None (idle)."""
-    if not live:
-        return None
-    if last_ev is not None:
-        if last_ev.role == "tool" or last_ev.tool_name:
-            return "Using tools"
-        if last_ev.role == "user":
-            return "Working"
-    if streaming:
-        return "Working"
-    return None
 
 
 def render_tool_activity(templates: Jinja2Templates, label: str | None) -> str:

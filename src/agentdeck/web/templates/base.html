@@ -113,6 +113,18 @@
     });
   })();
 
+  // Usage header expand/collapse — delegated (the fragment is swapped every
+  // ~30s over SSE, so state lives on <body> + localStorage, not the fragment).
+  (function () {
+    var KEY = 'agentdeck.usageOpen';
+    try { if (localStorage.getItem(KEY) === '1') document.body.classList.add('usage-open'); } catch (_) {}
+    document.addEventListener('click', function (e) {
+      if (!e.target.closest('.usage-mini')) return;
+      var open = document.body.classList.toggle('usage-open');
+      try { localStorage.setItem(KEY, open ? '1' : '0'); } catch (_) {}
+    });
+  })();
+
   // Tick the usage "updated Ns ago" every second, off each tag's data-since
   // epoch — so it stays live between server pushes (must mirror _fmt_age()).
   (function () {

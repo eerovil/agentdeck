@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import replace
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
@@ -123,7 +124,14 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
 
     offset, seq = await provider.transcript_cursor(account, session)
     last_ev = await provider.last_event(account, session)
-    last_activity_t = loop.time() if session.thinking else -1e9
+    # Anchor the write-clock to the transcript's real age, so a page opened
+    # mid-turn starts from the true last-write time (not "never wrote").
+    init_age = (
+        (datetime.now(UTC) - session.last_activity).total_seconds()
+        if session.last_activity
+        else 1e9
+    )
+    last_activity_t = loop.time() - init_age
     last_status = None
     last_busy = None
     last_label = None
@@ -143,10 +151,11 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
             last_ev = new_events[-1]
         current = state.sessions.get(session_key) or session
         live = current.status == SessionStatus.LIVE
-        streaming = live and (loop.time() - last_activity_t) < THINKING_OFF_S
+        age = loop.time() - last_activity_t
+        streaming = live and age < THINKING_OFF_S
         # "Busy" (pulsing dot + activity marker) tracks the open turn, not just
         # recent writes — so a long tool run or slow first token stays busy.
-        label = activity_label(live, streaming, last_ev)
+        label = activity_label(live, streaming, last_ev, age)
         busy = label is not None
         if current.status != last_status or busy != last_busy:
             last_status, last_busy = current.status, busy

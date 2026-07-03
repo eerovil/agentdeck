@@ -59,6 +59,7 @@ class Session:
     title: str | None = None  # from history.jsonl "display"
     last_prompt: str | None = None  # user's most recent prompt
     last_text: str | None = None  # agent's most recent response text
+    activity: str | None = None  # what it's doing now: "Using tools" / "Working"
     model: str | None = None  # last assistant line's model (v0.2)
     kind: str | None = None  # "interactive" | "sdk-cli" | RC worker …
     pid: int | None = None
@@ -92,6 +93,37 @@ class UsageSnapshot:
     seven_day_resets_at: datetime | None
     fetched_at: datetime
     stale: bool = False  # true when backoff/errors mean this is old data
+
+
+# An open turn older than this is considered stalled (hung worker), not busy —
+# without it, a dead-but-LIVE process whose last line is a tool call would show
+# "Using tools" forever.
+STALL_S = 300.0
+
+
+def activity_label(
+    live: bool, streaming: bool, last_ev, age_s: float = 0.0, stall_s: float = STALL_S
+) -> str | None:
+    """What the agent is doing right now, or None when idle/dead/stalled.
+
+    Keyed off the *open turn*, not just recent writes, so a long tool run or a
+    slow first token doesn't read as idle:
+    - last line is a tool call / tool result → "Using tools" (persists through
+      long tools, where the transcript is quiet for the tool's whole duration);
+    - last line is an unanswered user/queued prompt → "Working";
+    - actively writing (recent transcript write) → "Working";
+    - open turn but no write for ``stall_s`` → stalled, treated as idle;
+    - otherwise (LIVE but quiet, last line a finished reply) → None (idle)."""
+    if not live:
+        return None
+    if last_ev is not None and age_s < stall_s:
+        if last_ev.role == "tool" or last_ev.tool_name:
+            return "Using tools"
+        if last_ev.role == "user":
+            return "Working"
+    if streaming:
+        return "Working"
+    return None
 
 
 @dataclass
