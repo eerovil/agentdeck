@@ -56,6 +56,7 @@ class Session:
     account_key: str
     session_id: str  # provider-native id (Claude UUID)
     status: SessionStatus
+    thinking: bool = False  # LIVE and actively writing its transcript right now
     cwd: Path | None = None
     title: str | None = None  # from history.jsonl "display"
     last_prompt: str | None = None

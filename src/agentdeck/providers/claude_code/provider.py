@@ -41,6 +41,10 @@ log = logging.getLogger(__name__)
 # can hold thousands of transcripts; show the most recently active.
 MAX_IDLE_SESSIONS = 200
 
+# A LIVE session whose transcript was written within this window is "thinking"
+# (streaming a response); past it, the agent is live but waiting for input.
+THINKING_WINDOW_S = 25.0
+
 
 def _mtime(path: Path) -> datetime | None:
     try:
@@ -130,6 +134,11 @@ class ClaudeCodeProvider(SessionProvider):
             last_activity = _mtime(tpath) if tpath else (entry.started_at if entry else None)
 
             status = SessionStatus.LIVE if is_live else SessionStatus.IDLE
+            thinking = bool(
+                is_live
+                and last_activity is not None
+                and (datetime.now(UTC) - last_activity).total_seconds() < THINKING_WINDOW_S
+            )
             caps: set[Capability] = set()
             if tpath is not None:
                 caps.add(Capability.TRANSCRIPT)  # readable from v0.2
@@ -144,6 +153,7 @@ class ClaudeCodeProvider(SessionProvider):
                     account_key=account.key,
                     session_id=sid,
                     status=status,
+                    thinking=thinking,
                     cwd=cwd,
                     title=title,
                     last_prompt=last_prompt,
@@ -158,16 +168,25 @@ class ClaudeCodeProvider(SessionProvider):
         return sessions
 
     def sweep_liveness(self, account: Account, sessions: list[Session]) -> list[Session]:
-        """Cheap recheck: flip LIVE→IDLE for sessions whose pid has died."""
+        """Cheap recheck (~every 10s): flip LIVE↔IDLE and refresh the thinking
+        flag from transcript recency, so both update between full scans."""
         entries = {e.session_id: e for e in registry_mod.read_registry(account.root)}
         changed: list[Session] = []
+        now = datetime.now(UTC)
         for s in sessions:
             entry = entries.get(s.session_id)
             live_now = bool(entry and registry_mod.is_alive(entry))
             status_now = SessionStatus.LIVE if live_now else SessionStatus.IDLE
-            if status_now != s.status or (live_now and s.pid != entry.pid):
+            thinking_now = False
+            if live_now:
+                tp = self._transcript_path(account, s)
+                mt = _mtime(tp) if tp else None
+                thinking_now = bool(mt and (now - mt).total_seconds() < THINKING_WINDOW_S)
+            pid_now = entry.pid if (entry and live_now) else None
+            if status_now != s.status or thinking_now != s.thinking or pid_now != s.pid:
                 s.status = status_now
-                s.pid = entry.pid if (entry and live_now) else None
+                s.thinking = thinking_now
+                s.pid = pid_now
                 s.kind = entry.kind if entry else s.kind
                 changed.append(s)
         return changed

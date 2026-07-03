@@ -85,6 +85,24 @@ async def test_partial_sessions(tmp_path):
     assert "Hello World Session" in r.text
 
 
+async def test_thinking_badge_renders(tmp_path):
+    app = _app_with_state(tmp_path)
+    app.state.app_state.update_session(
+        Session(
+            key="claude_code:test:think1",
+            account_key="claude_code:test",
+            session_id="think1",
+            status=SessionStatus.LIVE,
+            thinking=True,
+            title="Busy session",
+        )
+    )
+    async with _client(app) as c:
+        r = await c.get("/partials/sessions")
+    assert "thinking-badge" in r.text
+    assert "dot live thinking" in r.text
+
+
 async def test_partial_limit_bars(tmp_path):
     app = _app_with_state(tmp_path)
     async with _client(app) as c:
