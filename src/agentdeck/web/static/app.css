@@ -50,16 +50,18 @@ main { padding: 12px; max-width: 760px; margin: 0 auto; }
 .session.live { border-left: 3px solid var(--live); }
 .session.idle { border-left: 3px solid var(--idle); }
 .session.remote { border-left: 3px solid var(--remote); }
-.session-main { display: flex; align-items: center; gap: 7px; }
-.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--idle); }
+.session-main { display: flex; align-items: flex-start; gap: 7px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--idle); margin-top: 5px; }
 .dot.live { background: var(--live); box-shadow: 0 0 0 3px color-mix(in srgb, var(--live) 25%, transparent); }
 .dot.remote { background: var(--remote); }
-.session-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.deeplink { margin-left: auto; font-size: 12px; color: var(--remote); text-decoration: none; }
-.session-meta { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 12px; margin-top: 3px; }
+.card-title { font-weight: 600; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2;
+  -webkit-box-orient: vertical; overflow: hidden; }
+.card-latest { color: var(--muted); font-size: 12.5px; margin: 3px 0 0 15px;
+  display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.latest-arrow { margin-right: 4px; opacity: .7; }
+.deeplink { margin-left: auto; font-size: 12px; color: var(--remote); text-decoration: none; flex: none; }
+.session-meta { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 12px; margin-top: 5px; }
 .cwd { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; }
-.session-prompt { color: var(--muted); font-size: 12.5px; margin-top: 4px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty { color: var(--muted); font-size: 13px; padding: 6px 2px; }
 a.session { display: block; text-decoration: none; color: inherit; }
 a.session:active { background: var(--panel2); }
@@ -68,6 +70,7 @@ a.session:active { background: var(--panel2); }
 /* session detail */
 .back { color: var(--remote); text-decoration: none; font-size: 13px; }
 .session-head { display: flex; align-items: center; gap: 8px; padding: 8px 0; font-weight: 600; }
+.session-head .session-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status-tag { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; padding: 1px 6px;
   border-radius: 8px; background: var(--panel2); color: var(--muted); }
 .status-tag.live { color: var(--live); }
@@ -85,6 +88,17 @@ a.session:active { background: var(--panel2); }
 .ev.assistant { border-left: 3px solid var(--remote); }
 .ev.user { border-left: 3px solid var(--live); }
 .ev.tool { border-left: 3px solid var(--warn); background: var(--panel2); }
+details.ev.tool > summary { cursor: pointer; list-style: none; display: flex; gap: 8px;
+  align-items: baseline; color: var(--muted); }
+details.ev.tool > summary::-webkit-details-marker { display: none; }
+details.ev.tool > summary::before { content: "▸"; color: var(--warn); font-size: 11px; }
+details.ev.tool[open] > summary::before { content: "▾"; }
+details.ev.tool > summary .ev-role { color: var(--warn); }
+.tool-peek { color: var(--muted); font-size: 12px; font-family: ui-monospace, "SF Mono", monospace;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+details.ev.tool[open] > summary .tool-peek { display: none; }
+details.ev.tool > .ev-text { margin-top: 6px; max-height: 420px; overflow: auto;
+  font-family: ui-monospace, "SF Mono", monospace; font-size: 12px; }
 .ev.sub { opacity: .85; margin-left: 12px; }
 .ev-head { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px;
   text-transform: uppercase; letter-spacing: .03em; margin-bottom: 4px; }

@@ -1,4 +1,14 @@
-{# one transcript event. `e` = TranscriptEvent. #}
+{# one transcript event. `e` = TranscriptEvent.
+   Tool results are long and noisy → render them collapsed (accordion). #}
+{% if e.role == 'tool' %}
+<details class="ev tool{% if e.subagent %} sub{% endif %}">
+  <summary>
+    <span class="ev-role">tool result</span>
+    {% if e.text %}<span class="tool-peek">{{ e.text[:120] }}</span>{% endif %}
+  </summary>
+  {% if e.text %}<div class="ev-text">{{ e.text }}</div>{% endif %}
+</details>
+{% else %}
 <div class="ev {{ e.role }}{% if e.subagent %} sub{% endif %}">
   <div class="ev-head">
     <span class="ev-role">{{ e.role }}{% if e.subagent %} · {{ e.subagent }}{% endif %}</span>
@@ -9,3 +19,4 @@
   {% endif %}
   {% if e.text %}<div class="ev-text">{{ e.text }}</div>{% endif %}
 </div>
+{% endif %}

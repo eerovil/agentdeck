@@ -2,15 +2,15 @@
 <a class="session {{ s.status }}" href="/sessions/{{ s.key }}">
   <div class="session-main">
     <span class="dot {{ s.status }}" title="{{ s.status }}"></span>
-    <span class="session-title">{{ s.title or s.session_id[:8] }}</span>
+    <span class="card-title">{{ s.title or s.session_id[:8] }}</span>
     {% if s.deep_link %}<span class="deeplink">↗</span>{% endif %}
   </div>
+  {% if s.last_prompt and s.last_prompt != s.title %}
+  <div class="card-latest"><span class="latest-arrow">↳</span>{{ s.last_prompt }}</div>
+  {% endif %}
   <div class="session-meta">
-    {% if s.cwd %}<span class="cwd">{{ s.cwd }}</span>{% endif %}
+    {% if s.cwd %}<span class="cwd" title="{{ s.cwd }}">{{ s.cwd.name or s.cwd }}</span>{% endif %}
     {% if s.kind %}<span class="kind">{{ s.kind }}</span>{% endif %}
     {% if s.last_activity %}<span class="ago">{{ s.last_activity | reltime_ago }}</span>{% endif %}
   </div>
-  {% if s.last_prompt and s.last_prompt != s.title %}
-  <div class="session-prompt">{{ s.last_prompt }}</div>
-  {% endif %}
 </a>
