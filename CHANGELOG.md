@@ -4,7 +4,9 @@
 - Sessions show a pulsing **thinking** indicator (dot + label) in both the list
   and the detail header when the agent is actively streaming — a LIVE session
   whose transcript was written in the last ~25s — vs. live-but-waiting. Refreshed
-  on the ~10s liveness sweep.
+  on the ~10s liveness sweep. On the session detail page the header's thinking
+  state is driven directly off the live tail (server-pushed `status` events), so
+  it reacts within ~1.5s instead of waiting for the sweep.
 - Interactive streaming chat (opt-in, same `[inject]` kill-switch): a long-lived
   `claude -p --resume --input-format stream-json` child per session. Chat page
   with a composer, live bubbles over SSE, Stop button, and a replay buffer for

@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from dataclasses import replace
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
+from ..models import SessionStatus
 from .deps import (
     get_accounts,
     get_state,
@@ -32,6 +34,8 @@ router = APIRouter(dependencies=[Depends(require_access)])
 
 HEARTBEAT_S = 15.0
 TAIL_INTERVAL_S = 1.5
+# Detail-page "thinking" turns off this long after the last transcript write.
+THINKING_OFF_S = 3.0
 
 
 def format_sse(event: str, html: str) -> str:
@@ -80,25 +84,35 @@ async def events(request: Request) -> StreamingResponse:
 
 
 async def _session_stream(request: Request, session_key: str) -> AsyncIterator[str]:
-    """Per-session live tail: appends new transcript events and pushes a status
-    fragment when the session flips LIVE↔IDLE. Polls the transcript file from a
-    byte cursor so an idle session costs almost nothing."""
+    """Per-session live tail: appends new transcript events, and pushes a status
+    fragment whenever the session flips LIVE↔IDLE *or* its thinking state
+    changes. "Thinking" is driven directly off the tail here (transcript written
+    within THINKING_OFF_S), so on the page you're watching it reacts within one
+    poll instead of waiting for the ~10s sweep. Polls from a byte cursor, so an
+    idle session costs almost nothing."""
     account, session, provider = resolve_session(request, session_key)
     templates = get_templates(request)
     state = get_state(request)
+    loop = asyncio.get_event_loop()
 
     offset, seq = await provider.transcript_cursor(account, session)
-    last_status = session.status
+    last_activity_t = loop.time() if session.thinking else -1e9
+    last_status = None
+    last_thinking = None
     while True:
         if await request.is_disconnected():
             break
         new_events, offset, seq = await provider.tail_transcript(account, session, offset, seq)
         if new_events:
             yield format_sse("transcript", render_transcript_events(templates, new_events))
-        current = state.sessions.get(session_key)
-        if current is not None and current.status != last_status:
-            last_status = current.status
-            yield format_sse("status", render_session_status(templates, current))
+            last_activity_t = loop.time()
+        current = state.sessions.get(session_key) or session
+        live = current.status == SessionStatus.LIVE
+        thinking = live and (loop.time() - last_activity_t) < THINKING_OFF_S
+        if current.status != last_status or thinking != last_thinking:
+            last_status, last_thinking = current.status, thinking
+            snap = replace(current, thinking=thinking)
+            yield format_sse("status", render_session_status(templates, snap))
         await asyncio.sleep(TAIL_INTERVAL_S)
 
 

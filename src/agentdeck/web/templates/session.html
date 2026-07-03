@@ -5,7 +5,8 @@
 
 {% block content %}
 {% set s = session %}
-<div id="session-status">{% include "partials/session_status.html" %}</div>
+<div sse-connect="/events/sessions/{{ session.key }}">
+<div id="session-status" sse-swap="status">{% include "partials/session_status.html" %}</div>
 
 {% if can_inject %}
 <a class="chat-btn" href="/sessions/{{ session.key }}/chat">💬 Open interactive chat</a>
@@ -42,14 +43,13 @@
 </div>
 {% endif %}
 
-<div class="transcript"
-     sse-connect="/events/sessions/{{ session.key }}"
-     sse-swap="transcript" hx-swap="beforeend">
+<div class="transcript" sse-swap="transcript" hx-swap="beforeend">
   {% if detail.earliest_seq > 1 %}
   {% set before = detail.earliest_seq %}
   {% include "partials/load_earlier.html" %}
   {% endif %}
   {% for e in detail.events %}{% include "partials/transcript_event.html" %}{% endfor %}
+</div>
 </div>
 
 <script>
