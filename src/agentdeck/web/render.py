@@ -64,16 +64,39 @@ def _usage_rows(accounts: list[Account], state: AppState) -> list[dict]:
     rows = []
     for acc in accounts:
         snap = state.usage.get(acc.key)
-        rows.append({"account": acc, "usage": snap, "stale_age": reltime_age(snap)})
+        rows.append(
+            {
+                "account": acc,
+                "usage": snap,
+                "stale_age": reltime_age(snap),
+                # epoch seconds of the fetch, so the client can tick "updated Ns
+                # ago" every second without waiting on a server re-render.
+                "fetched_epoch": (snap.fetched_at.timestamp() if snap else ""),
+            }
+        )
     return rows
 
 
 def reltime_age(snap) -> str:
     if snap is None:
         return ""
-    delta = (_now() - snap.fetched_at).total_seconds()
+    return _fmt_age((_now() - snap.fetched_at).total_seconds())
+
+
+def _fmt_age(delta: float) -> str:
+    """Seconds-granular 'X ago' — matches the client-side ticker in base.html."""
+    if delta < 5:
+        return "just now"
+    if delta < 60:
+        return f"{int(delta)}s ago"
     mins = int(delta // 60)
-    return f"{mins}m" if mins else "just now"
+    if mins < 60:
+        return f"{mins}m ago"
+    hours, mins = divmod(mins, 60)
+    if hours < 24:
+        return f"{hours}h {mins}m ago"
+    days, hours = divmod(hours, 24)
+    return f"{days}d {hours}h ago"
 
 
 def render_limit_bars(templates: Jinja2Templates, accounts: list[Account], state: AppState) -> str:

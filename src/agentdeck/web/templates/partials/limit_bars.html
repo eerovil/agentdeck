@@ -5,10 +5,9 @@
   <div class="acct {% if u and u.stale %}stale{% endif %}">
     <div class="acct-label">
       <span>{{ row.account.label }}</span>
-      {% if u %}<span class="upd-tag {% if u.stale %}stale-tag{% endif %}">
+      {% if u %}<span class="upd-tag {% if u.stale %}stale-tag{% endif %}" data-since="{{ row.fetched_epoch }}">
         {%- if u.stale %}stale · {% endif -%}
-        updated {{ row.stale_age }}{% if row.stale_age != 'just now' %} ago{% endif %}
-      </span>{% endif %}
+        updated <span class="upd-rel">{{ row.stale_age }}</span></span>{% endif %}
     </div>
     {% if u %}
       {% for kind, pct, resets in [('5h', u.five_hour_pct, u.five_hour_resets_at),

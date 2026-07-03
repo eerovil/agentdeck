@@ -112,6 +112,29 @@
       requestAnimationFrame(function () { setup(e.target); });
     });
   })();
+
+  // Tick the usage "updated Ns ago" every second, off each tag's data-since
+  // epoch — so it stays live between server pushes (must mirror _fmt_age()).
+  (function () {
+    function fmtAge(sec) {
+      if (sec < 5) return 'just now';
+      if (sec < 60) return Math.floor(sec) + 's ago';
+      var m = Math.floor(sec / 60);
+      if (m < 60) return m + 'm ago';
+      var h = Math.floor(m / 60); m = m % 60;
+      if (h < 24) return h + 'h ' + m + 'm ago';
+      var d = Math.floor(h / 24); h = h % 24;
+      return d + 'd ' + h + 'h ago';
+    }
+    setInterval(function () {
+      var now = Date.now() / 1000;
+      document.querySelectorAll('.upd-tag[data-since]').forEach(function (el) {
+        var since = parseFloat(el.getAttribute('data-since'));
+        var rel = el.querySelector('.upd-rel');
+        if (since && rel) rel.textContent = fmtAge(now - since);
+      });
+    }, 1000);
+  })();
   </script>
 </body>
 </html>
