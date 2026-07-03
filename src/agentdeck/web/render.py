@@ -115,3 +115,10 @@ def render_transcript_events(templates: Jinja2Templates, events) -> str:
 
 def render_session_status(templates: Jinja2Templates, session) -> str:
     return templates.get_template("partials/session_status.html").render(s=session)
+
+
+def render_chat_event(templates: Jinja2Templates, event: dict) -> str:
+    """Render one normalized chat event; '' for control events with no bubble."""
+    if event.get("event") in ("turn-end", "closed") and not event.get("text"):
+        return templates.get_template("partials/chat_control.html").render(event=event)
+    return templates.get_template("partials/chat_message.html").render(e=event)

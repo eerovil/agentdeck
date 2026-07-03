@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}chat · {{ session.title or session.session_id[:8] }} — agentdeck{% endblock %}
+
+{% block topbar_nav %}<a class="back" href="/sessions/{{ session.key }}" aria-label="back to session">←</a>{% endblock %}
+
+{% block content %}
+{% set s = session %}
+<div id="session-status">{% include "partials/session_status.html" %}</div>
+
+{% if error %}
+<div class="inject-result err"><span class="inject-status">chat refused</span>
+  <div class="inject-detail">{{ error }}</div></div>
+{% else %}
+
+<div id="chat-log" class="transcript chat-log"
+     sse-connect="/events/sessions/{{ session.key }}/chat"
+     sse-swap="chat" hx-swap="beforeend">
+</div>
+
+<form class="chat-composer"
+      hx-post="/sessions/{{ session.key }}/chat/send"
+      hx-swap="none"
+      hx-on::after-request="this.reset(); this.querySelector('textarea').focus()">
+  <textarea name="message" rows="2" placeholder="Message this session…" required
+            hx-on:keydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();this.closest('form').requestSubmit();}"></textarea>
+  <div class="chat-actions">
+    <button type="submit">Send</button>
+    <button type="button" class="stop"
+            hx-post="/sessions/{{ session.key }}/chat/stop" hx-swap="none">Stop</button>
+  </div>
+</form>
+
+<script>
+(function () {
+  var NEAR = 140;
+  function atBottom() {
+    return (window.innerHeight + window.scrollY) >= (document.documentElement.scrollHeight - NEAR);
+  }
+  function toBottom() { window.scrollTo(0, document.documentElement.scrollHeight); }
+  var stick = true;
+  window.addEventListener('scroll', function () { stick = atBottom(); }, { passive: true });
+  document.body.addEventListener('htmx:afterSwap', function () { if (stick) toBottom(); });
+  document.body.addEventListener('htmx:sseMessage', function () { if (stick) toBottom(); });
+})();
+</script>
+{% endif %}
+{% endblock %}

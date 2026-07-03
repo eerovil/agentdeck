@@ -8,6 +8,7 @@
 <div id="session-status">{% include "partials/session_status.html" %}</div>
 
 {% if can_inject %}
+<a class="chat-btn" href="/sessions/{{ session.key }}/chat">💬 Open interactive chat</a>
 <form class="inject-form"
       hx-post="/sessions/{{ session.key }}/inject"
       hx-target="#inject-result"

@@ -1,0 +1,6 @@
+{# control event: turn-end re-enables the composer; closed ends the chat. #}
+{% if event.event == 'closed' %}
+<div class="chat-closed" hx-swap-oob="true" id="chat-state">chat process ended</div>
+{% else %}
+<div hx-swap-oob="true" id="chat-state"></div>
+{% endif %}
