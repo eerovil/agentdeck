@@ -103,6 +103,18 @@ async def test_thinking_badge_renders(tmp_path):
     assert "dot live thinking" in r.text
 
 
+def test_display_state_alive_vs_thinking():
+    from agentdeck.models import Session, SessionStatus
+
+    def s(**kw):
+        return Session(key="k", account_key="a", session_id="s", **kw)
+
+    assert s(status=SessionStatus.LIVE, thinking=True).display_state == "thinking"
+    assert s(status=SessionStatus.LIVE, thinking=False).display_state == "idle"  # alive, resting
+    assert s(status=SessionStatus.IDLE).display_state == "idle"
+    assert s(status=SessionStatus.REMOTE).display_state == "remote"
+
+
 async def test_idle_sessions_hidden_but_reachable(tmp_path):
     app = _app_with_state(tmp_path)
     app.state.app_state.update_session(

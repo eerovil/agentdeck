@@ -2,7 +2,7 @@
 <a class="session {{ s.status }}" href="/sessions/{{ s.key }}">
   <div class="session-main">
     <span class="dot {{ s.status }}{% if s.thinking %} thinking{% endif %}"
-          title="{{ 'thinking' if s.thinking else s.status }}"></span>
+          title="{{ s.display_state }}"></span>
     <span class="card-title">{{ s.title or s.session_id[:8] }}</span>
     {% if s.thinking %}<span class="thinking-badge">thinking</span>{% endif %}
     {% if s.deep_link %}<span class="deeplink">↗</span>{% endif %}

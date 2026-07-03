@@ -2,6 +2,6 @@
 <div class="session-head {{ s.status }}">
   <span class="dot {{ s.status }}{% if s.thinking %} thinking{% endif %}"></span>
   <span class="session-title">{{ s.title or s.session_id[:8] }}</span>
-  <span class="status-tag {{ 'thinking' if s.thinking else s.status }}">{{ 'thinking' if s.thinking else s.status }}</span>
+  <span class="status-tag {{ s.display_state }}">{{ s.display_state }}</span>
   {% if s.deep_link %}<a class="deeplink" href="{{ s.deep_link }}" target="_blank" rel="noopener">open in claude.ai ↗</a>{% endif %}
 </div>

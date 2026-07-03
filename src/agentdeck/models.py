@@ -70,6 +70,19 @@ class Session:
     deep_link: str | None = None  # claude.ai URL when applicable
     capabilities: frozenset[Capability] = field(default_factory=frozenset)
 
+    @property
+    def display_state(self) -> str:
+        """User-facing state, in the vocabulary that matters: a session with a
+        live process that isn't writing is **idle** (alive but resting); only one
+        actively writing is **thinking**. (``status`` stays process-based — LIVE
+        means a process exists, and only those are listed; no-process sessions
+        are hidden.)"""
+        if self.thinking:
+            return "thinking"
+        if self.status == SessionStatus.LIVE:
+            return "idle"
+        return self.status.value
+
 
 @dataclass
 class UsageSnapshot:
