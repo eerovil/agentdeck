@@ -140,6 +140,26 @@ async def test_inject_disabled_returns_403(tmp_path):
     assert r.status_code == 403
 
 
+async def test_chat_disabled_returns_403(tmp_path):
+    config = AppConfig(
+        history=HistoryConfig(enabled=False),
+        inject=InjectConfig(enabled=False),
+        accounts=[AccountConfig(provider="claude_code", label="test", config_dir=str(tmp_path))],
+    )
+    app = create_app(config)
+    app.state.app_state.update_session(
+        Session(
+            key="claude_code:test:sid1",
+            account_key="claude_code:test",
+            session_id="sid1",
+            status=SessionStatus.IDLE,
+        )
+    )
+    async with _client(app) as c:
+        r = await c.get("/sessions/claude_code:test:sid1/chat")
+    assert r.status_code == 403
+
+
 async def test_sse_initial_events(tmp_path):
     """The stream primes the client with both fragments on connect.
 

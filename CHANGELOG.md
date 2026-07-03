@@ -1,6 +1,11 @@
 # Changelog
 
 ## v0.3.0 (unreleased)
+- Interactive streaming chat (opt-in, same `[inject]` kill-switch): a long-lived
+  `claude -p --resume --input-format stream-json` child per session. Chat page
+  with a composer, live bubbles over SSE, Stop button, and a replay buffer for
+  reconnects. Same spawn-time interlocks as inject; idle chats are reaped and all
+  children are torn down (process-group kill) on shutdown.
 - Session cards now show a real title from the transcript's `ai-title` line
   (falling back to the first user prompt), plus a latest-prompt line — instead
   of a bare session id. Titles are mtime-cached so idle transcripts aren't
