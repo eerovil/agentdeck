@@ -1,0 +1,16 @@
+{# One session row. `s` = Session. #}
+<div class="session {{ s.status }}">
+  <div class="session-main">
+    <span class="dot {{ s.status }}" title="{{ s.status }}"></span>
+    <span class="session-title">{{ s.title or s.session_id[:8] }}</span>
+    {% if s.deep_link %}<a class="deeplink" href="{{ s.deep_link }}" target="_blank" rel="noopener">open ↗</a>{% endif %}
+  </div>
+  <div class="session-meta">
+    {% if s.cwd %}<span class="cwd">{{ s.cwd }}</span>{% endif %}
+    {% if s.kind %}<span class="kind">{{ s.kind }}</span>{% endif %}
+    {% if s.last_activity %}<span class="ago">{{ s.last_activity | reltime_ago }}</span>{% endif %}
+  </div>
+  {% if s.last_prompt and s.last_prompt != s.title %}
+  <div class="session-prompt">{{ s.last_prompt }}</div>
+  {% endif %}
+</div>

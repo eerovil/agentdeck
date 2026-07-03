@@ -1,0 +1,30 @@
+{# Per-account 5h / 7d usage bars. `rows` = [{account, usage, stale_age}]. #}
+<div class="limit-bars">
+  {% for row in rows %}
+  {% set u = row.usage %}
+  <div class="acct {% if u and u.stale %}stale{% endif %}">
+    <div class="acct-label">
+      {{ row.account.label }}
+      {% if u and u.stale %}<span class="stale-tag">stale {{ row.stale_age }}</span>{% endif %}
+    </div>
+    {% if u %}
+      {% for kind, pct, resets in [('5h', u.five_hour_pct, u.five_hour_resets_at),
+                                   ('7d', u.seven_day_pct, u.seven_day_resets_at)] %}
+      <div class="bar-row">
+        <span class="bar-kind">{{ kind }}</span>
+        <div class="bar">
+          {% if pct is not none %}
+          <div class="fill {% if pct >= 90 %}crit{% elif pct >= 70 %}warn{% endif %}"
+               style="width: {{ pct if pct <= 100 else 100 }}%"></div>
+          {% endif %}
+        </div>
+        <span class="bar-pct">{% if pct is not none %}{{ pct | round | int }}%{% else %}—{% endif %}</span>
+        <span class="bar-reset">{% if resets %}{{ resets | reltime }}{% endif %}</span>
+      </div>
+      {% endfor %}
+    {% else %}
+      <div class="bar-row"><span class="bar-kind">—</span><span class="muted">no usage data yet</span></div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>

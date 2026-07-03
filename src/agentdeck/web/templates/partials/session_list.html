@@ -1,0 +1,17 @@
+{# `groups` = [{account, sessions:[Session]}]. #}
+<div class="session-list">
+  {% for g in groups %}
+  <section class="account-group">
+    <h2 class="account-head">
+      {{ g.account.label }}
+      <span class="count">{{ g.sessions | length }}</span>
+    </h2>
+    {% if g.sessions %}
+      {% for s in g.sessions %}{% include "partials/session_card.html" %}{% endfor %}
+    {% else %}
+      <div class="empty">no sessions</div>
+    {% endif %}
+  </section>
+  {% endfor %}
+  {% if not groups %}<div class="empty">no accounts configured</div>{% endif %}
+</div>

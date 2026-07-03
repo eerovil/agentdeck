@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+
+{% block limit_bars %}{% include "partials/limit_bars.html" %}{% endblock %}
+
+{% block content %}
+<div id="sessions" sse-swap="sessions">
+  {% include "partials/session_list.html" %}
+</div>
+{% endblock %}
