@@ -1,0 +1,14 @@
+[Unit]
+Description=agentdeck dashboard
+After=network-online.target tailscaled.service
+
+[Service]
+ExecStart=%h/.local/bin/uv run --directory %h/agentdeck agentdeck
+Restart=on-failure
+RestartSec=5
+Environment=AGENTDECK_CONFIG=%h/.config/agentdeck/config.toml
+# hygiene: keep child claude processes in our cgroup so stop kills chat children
+KillMode=control-group
+
+[Install]
+WantedBy=default.target

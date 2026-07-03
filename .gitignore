@@ -1,0 +1,26 @@
+# real Claude data must never enter the tree (this repo lives on a host with
+# real transcripts; these patterns catch strays copied in by accident)
+.claude/
+projects/
+sessions/
+history.jsonl
+
+# synthetic test fixtures are explicitly allowed back in
+!tests/fixtures/**
+
+# secrets & local state — NEVER commit, not even under tests/
+config.toml
+*.credentials.json
+.credentials.json
+*.db
+*.db-wal
+*.db-shm
+.env
+
+# python
+.venv/
+__pycache__/
+dist/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/

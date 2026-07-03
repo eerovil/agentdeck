@@ -1,0 +1,44 @@
+# agentdeck configuration — copy to ~/.config/agentdeck/config.toml
+# (override the path with the AGENTDECK_CONFIG environment variable).
+#
+# This file contains NO secrets. Credentials are always read from the
+# provider's own store (e.g. $CLAUDE_CONFIG_DIR/.credentials.json).
+
+[server]
+# Bind address. Default 127.0.0.1 exposes nothing beyond the local host.
+# For phone access, set this to your Tailscale IP, e.g. "100.101.102.103".
+# NEVER bind 0.0.0.0 on an untrusted LAN — there is no auth in v0.x.
+bind = "127.0.0.1"
+port = 8756
+
+[polling]
+usage_interval_s = 300      # per-account OAuth usage poll (server-side rate limited)
+scan_interval_s = 15        # full session rescan
+liveness_interval_s = 10    # /proc pid liveness sweep
+
+[usage]
+# Where usage snapshots are published for other tools to read.
+# Default: $XDG_RUNTIME_DIR/agentdeck (falls back to ~/.cache/agentdeck).
+shared_cache_dir = ""
+
+[history]
+enabled = true              # SQLite usage/session history (used from v0.2)
+db_path = "~/.local/share/agentdeck/agentdeck.db"
+usage_retention_days = 30
+
+[inject]
+enabled = true              # kill-switch for message injection (used from v0.3)
+timeout_s = 600
+chat_idle_timeout_s = 600
+
+# One [[accounts]] block per agent-CLI config dir. Labels must be unique,
+# lowercase slug-safe (they appear in URLs and cache filenames).
+[[accounts]]
+provider = "claude_code"
+label = "main"
+config_dir = "~/.claude"
+
+#[[accounts]]
+#provider = "claude_code"
+#label = "alt"
+#config_dir = "~/.claude2"
