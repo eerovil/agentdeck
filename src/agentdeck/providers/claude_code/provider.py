@@ -16,7 +16,6 @@ import httpx
 from ...models import (
     Account,
     Capability,
-    ChatHandle,
     InjectResult,
     Session,
     SessionStatus,
@@ -30,6 +29,7 @@ from . import history as history_mod
 from . import inject as inject_mod
 from . import registry as registry_mod
 from . import transcripts as transcripts_mod
+from .chat import ChatRefused, ChatSession
 from .usage import UsagePoller, fetch_usage_once
 
 # Max events rendered on a detail page; older ones fetched via "load earlier".
@@ -271,7 +271,14 @@ class ClaudeCodeProvider(SessionProvider):
     ) -> InjectResult:
         return await inject_mod.inject_oneshot(account, session, message, timeout_s=timeout_s)
 
-    # --- interactive chat (not yet implemented) ------------------------
+    # --- interactive chat (v0.3) ---------------------------------------
 
-    async def open_chat(self, account: Account, session: Session) -> ChatHandle:
-        raise NotImplementedError("interactive stream-json chat lands in a later v0.3 iteration")
+    async def open_chat(self, account: Account, session: Session) -> ChatSession:
+        reason = inject_mod.preflight(account, session)
+        if reason is not None:
+            raise ChatRefused(reason)
+        cs = ChatSession(
+            session.session_id, cwd=str(session.cwd), config_dir=str(account.root)
+        )
+        await cs.start()
+        return cs
