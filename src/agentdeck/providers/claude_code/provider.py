@@ -71,15 +71,19 @@ class ClaudeCodeProvider(SessionProvider):
     provider_id = "claude_code"
 
     def __init__(self) -> None:
-        # (title, last_prompt, first_user) cache keyed by path, invalidated by mtime,
-        # so idle transcripts aren't re-parsed on every scan.
-        self._meta_cache: dict[str, tuple[float, tuple[str | None, str | None, str | None]]] = {}
+        # (title, last_prompt, first_user, cwd) cache keyed by path, invalidated
+        # by mtime, so idle transcripts aren't re-parsed on every scan.
+        self._meta_cache: dict[
+            str, tuple[float, tuple[str | None, str | None, str | None, str | None]]
+        ] = {}
 
-    def _cached_meta(self, path: Path) -> tuple[str | None, str | None, str | None]:
+    def _cached_meta(
+        self, path: Path
+    ) -> tuple[str | None, str | None, str | None, str | None]:
         try:
             mtime = path.stat().st_mtime
         except OSError:
-            return (None, None, None)
+            return (None, None, None, None)
         hit = self._meta_cache.get(str(path))
         if hit is not None and hit[0] == mtime:
             return hit[1]
@@ -117,17 +121,22 @@ class ClaudeCodeProvider(SessionProvider):
             h = hist.get(sid)
             tpath = transcripts.get(sid)
 
+            # Title: prefer the transcript's AI-generated title, then history,
+            # then the first user message; last_prompt/cwd likewise from the
+            # transcript when the registry/history don't have them.
+            ai_title = last_prompt = first_user = tcwd = None
+            if tpath is not None:
+                ai_title, last_prompt, first_user, tcwd = self._cached_meta(tpath)
+
             cwd: Path | None = None
             if entry and entry.cwd:
                 cwd = entry.cwd
             elif h and h.project:
                 cwd = Path(h.project)
-
-            # Title: prefer the transcript's AI-generated title, then history,
-            # then the first user message; last_prompt likewise from the transcript.
-            ai_title = last_prompt = first_user = None
-            if tpath is not None:
-                ai_title, last_prompt, first_user = self._cached_meta(tpath)
+            elif tcwd:
+                # The registry entry is gone once a session is idle; the
+                # transcript's cwd is what keeps idle sessions injectable.
+                cwd = Path(tcwd)
             title = ai_title or (h.title if h else None) or first_user
             last_prompt = last_prompt or (h.last_prompt if h else None)
 

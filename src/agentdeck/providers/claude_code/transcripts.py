@@ -185,16 +185,18 @@ def _user_text(obj: dict) -> str | None:
 
 
 def transcript_meta(path: Path, *, head: int = 65536, tail: int = 32768) -> tuple[
-    str | None, str | None, str | None
+    str | None, str | None, str | None, str | None
 ]:
-    """Cheap title extraction without parsing the whole file → (ai_title,
-    last_prompt, first_user_text). Claude Code writes an ``ai-title`` line (a
-    concise session summary) and ``last-prompt`` lines into the transcript; we
-    read the head (where ai-title/first prompt live) and the tail (where the
-    latest last-prompt lives), latest occurrence winning."""
+    """Cheap extraction without parsing the whole file → (ai_title, last_prompt,
+    first_user_text, cwd). Claude Code writes an ``ai-title`` line (a concise
+    session summary), ``last-prompt`` lines, and a ``cwd`` field on every entry;
+    we read the head (ai-title/first prompt/cwd live there) and the tail (latest
+    last-prompt), latest occurrence winning. ``cwd`` is what makes an idle
+    session injectable — the live-process registry is gone once it's idle."""
     ai_title: str | None = None
     last_prompt: str | None = None
     first_user: str | None = None
+    cwd: str | None = None
     try:
         size = path.stat().st_size
         with path.open("rb") as f:
@@ -204,10 +206,10 @@ def transcript_meta(path: Path, *, head: int = 65536, tail: int = 32768) -> tupl
                 f.seek(max(head, size - tail))
                 tail_bytes = f.read()
     except OSError:
-        return (None, None, None)
+        return (None, None, None, None)
 
     def scan(blob: bytes, skip_first_partial: bool) -> None:
-        nonlocal ai_title, last_prompt, first_user
+        nonlocal ai_title, last_prompt, first_user, cwd
         lines = blob.split(b"\n")
         if skip_first_partial and lines:
             lines = lines[1:]  # a mid-file seek can land inside a line
@@ -221,6 +223,8 @@ def transcript_meta(path: Path, *, head: int = 65536, tail: int = 32768) -> tupl
                 continue
             if not isinstance(obj, dict):
                 continue
+            if cwd is None and isinstance(obj.get("cwd"), str) and obj["cwd"]:
+                cwd = obj["cwd"]
             t = obj.get("type")
             if t == "ai-title" and isinstance(obj.get("aiTitle"), str):
                 ai_title = obj["aiTitle"].strip() or ai_title
@@ -233,7 +237,7 @@ def transcript_meta(path: Path, *, head: int = 65536, tail: int = 32768) -> tupl
     scan(head_bytes, skip_first_partial=False)
     if tail_bytes:
         scan(tail_bytes, skip_first_partial=True)
-    return (ai_title, last_prompt, first_user)
+    return (ai_title, last_prompt, first_user, cwd)
 
 
 def token_totals(events: list[TranscriptEvent]) -> TokenTotals:
