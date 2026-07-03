@@ -8,16 +8,21 @@ Mutations publish coarse-grained topics to the EventBus:
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import TYPE_CHECKING
 
 from .events import EventBus
 from .models import Session, SessionStatus, UsageSnapshot
+
+if TYPE_CHECKING:
+    from .db import Db, NullDb
 
 _STATUS_ORDER = {SessionStatus.LIVE: 0, SessionStatus.IDLE: 1, SessionStatus.REMOTE: 2}
 
 
 class AppState:
-    def __init__(self, bus: EventBus | None = None):
+    def __init__(self, bus: EventBus | None = None, db: Db | NullDb | None = None):
         self.bus = bus or EventBus()
+        self.db = db
         self.sessions: dict[str, Session] = {}
         self.usage: dict[str, UsageSnapshot] = {}
         self.transcript_offsets: dict[str, tuple[int, int]] = {}  # v0.2: (byte_offset, seq)
@@ -33,6 +38,8 @@ class AppState:
         for k in old.keys() - new.keys():
             del self.sessions[k]
         self.sessions.update(new)
+        if self.db is not None:
+            self.db.upsert_sessions_seen(sessions)
         self.bus.publish("sessions")
         return True
 
@@ -55,6 +62,8 @@ class AppState:
 
     def set_usage(self, snapshot: UsageSnapshot) -> None:
         self.usage[snapshot.account_key] = snapshot
+        if self.db is not None:
+            self.db.record_usage(snapshot)
         self.bus.publish("usage")
 
     def mark_usage_stale(self, account_key: str) -> None:
