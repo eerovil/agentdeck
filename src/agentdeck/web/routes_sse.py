@@ -27,6 +27,7 @@ from .render import (
     render_limit_bars,
     render_session_list,
     render_session_status,
+    render_tool_activity,
     render_transcript_events,
 )
 
@@ -115,6 +116,7 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
     # actually changes (~every usage poll), not every tail.
     yield format_sse("usage", render_limit_bars(templates, accounts, state))
     last_usage_sig = _usage_sig(accounts, state)
+    yield format_sse("tools", render_tool_activity(templates, bool(session.thinking)))
     while True:
         if await request.is_disconnected():
             break
@@ -129,6 +131,7 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
             last_status, last_thinking = current.status, thinking
             snap = replace(current, thinking=thinking)
             yield format_sse("status", render_session_status(templates, snap))
+            yield format_sse("tools", render_tool_activity(templates, thinking))
         sig = _usage_sig(accounts, state)
         if sig != last_usage_sig:
             last_usage_sig = sig

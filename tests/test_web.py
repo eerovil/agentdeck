@@ -85,6 +85,44 @@ async def test_partial_sessions(tmp_path):
     assert "Hello World Session" in r.text
 
 
+async def test_card_shows_agent_response(tmp_path):
+    app = _app_with_state(tmp_path)
+    app.state.app_state.update_session(
+        Session(
+            key="claude_code:test:sid1",
+            account_key="claude_code:test",
+            session_id="sid1",
+            status=SessionStatus.LIVE,
+            title="Hello World Session",
+            last_prompt="what is the answer",
+            last_text="the answer is 42",
+        )
+    )
+    async with _client(app) as c:
+        r = await c.get("/partials/sessions")
+    assert "what is the answer" in r.text  # user's prompt
+    assert "the answer is 42" in r.text  # agent's reply is now in the list view
+
+
+def test_tool_events_hidden_and_live_marker(tmp_path):
+    from agentdeck.models import TranscriptEvent
+    from agentdeck.web.render import render_tool_activity, render_transcript_events
+
+    app = _app_with_state(tmp_path)
+    templates = app.state.templates
+    events = [
+        TranscriptEvent(seq=1, role="tool", text="huge noisy tool result"),
+        TranscriptEvent(seq=2, role="assistant", tool_name="Bash", text=None),
+        TranscriptEvent(seq=3, role="assistant", text="here is my answer"),
+    ]
+    html = render_transcript_events(templates, events)
+    assert "huge noisy tool result" not in html  # past tool result dropped
+    assert "here is my answer" in html  # real assistant text kept
+    # the live marker appears only while actively working
+    assert "Using tools" in render_tool_activity(templates, True)
+    assert "Using tools" not in render_tool_activity(templates, False)
+
+
 async def test_thinking_badge_renders(tmp_path):
     app = _app_with_state(tmp_path)
     app.state.app_state.update_session(

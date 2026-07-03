@@ -7,8 +7,11 @@
     {% if s.thinking %}<span class="thinking-badge">thinking</span>{% endif %}
     {% if s.deep_link %}<span class="deeplink">↗</span>{% endif %}
   </div>
-  {% if s.last_prompt and s.last_prompt != s.title %}
-  <div class="card-latest"><span class="latest-arrow">↳</span>{{ s.last_prompt }}</div>
+  {% if s.last_prompt or s.last_text %}
+  <div class="card-latest" data-marquee><span class="latest-scroll">
+    {% if s.last_prompt %}<span class="latest-line"><span class="latest-arrow">↳</span>{{ s.last_prompt }}</span>{% endif %}
+    {% if s.last_text %}<span class="latest-line agent"><span class="latest-arrow">⟳</span>{{ s.last_text }}</span>{% endif %}
+  </span></div>
   {% endif %}
   <div class="session-meta">
     {% if label %}<span class="acct-badge acct-{{ label }}">{{ label }}</span>{% endif %}

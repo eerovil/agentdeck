@@ -81,8 +81,19 @@ main { padding: 12px; max-width: 760px; margin: 0 auto; }
 }
 .card-title { font-weight: 600; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2;
   -webkit-box-orient: vertical; overflow: hidden; }
-.card-latest { color: var(--muted); font-size: 12.5px; margin: 3px 0 0 15px;
-  display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+/* Latest-text window: ~4 lines tall. When the text overflows, JS adds
+   `.marquee` and drives a gentle vertical auto-scroll so the whole message is
+   readable in the fixed height (scrolls down, then back up). */
+.card-latest { color: var(--muted); font-size: 12.5px; line-height: 1.4;
+  margin: 4px 0 0 15px; height: 5.6em; overflow: hidden; position: relative; }
+.card-latest .latest-scroll { display: block; }
+.card-latest .latest-line { display: block; margin-bottom: 2px; }
+.card-latest .latest-line.agent { color: var(--remote); }
+.card-latest.marquee .latest-scroll {
+  animation: vscroll var(--marquee-dur, 8s) linear infinite alternate;
+  animation-delay: 1.2s; will-change: transform; }
+@keyframes vscroll { from { transform: translateY(0); } to { transform: translateY(var(--marquee-dist, 0)); } }
+@media (prefers-reduced-motion: reduce) { .card-latest.marquee .latest-scroll { animation: none; } }
 .latest-arrow { margin-right: 4px; opacity: .7; }
 .deeplink { margin-left: auto; font-size: 12px; color: var(--remote); text-decoration: none; flex: none; }
 .session-meta { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 12px; margin-top: 5px; }
@@ -123,6 +134,12 @@ details.ev.tool[open] > summary .tool-peek { display: none; }
 details.ev.tool > .ev-text { margin-top: 6px; max-height: 420px; overflow: auto;
   font-family: ui-monospace, "SF Mono", monospace; font-size: 12px; }
 .ev.sub { opacity: .85; margin-left: 12px; }
+/* tool noise → single muted "Using tools…" marker; fold adjacent duplicates */
+.ev.tool-wait { border-left: 3px solid var(--warn); background: var(--panel2);
+  color: var(--muted); font-size: 12.5px; padding: 5px 10px; }
+.ev.tool-wait + .ev.tool-wait { display: none; }
+.tool-wait-label::after { content: ''; display: inline-block; width: 1.1em; text-align: left;
+  animation: think-dots 1.4s steps(1, end) infinite; }
 .ev-head { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px;
   text-transform: uppercase; letter-spacing: .03em; margin-bottom: 4px; }
 .ev-tool { font-size: 12.5px; margin-bottom: 3px; }
@@ -131,3 +148,12 @@ details.ev.tool > .ev-text { margin-top: 6px; max-height: 420px; overflow: auto;
 .ev-text { white-space: pre-wrap; word-break: break-word; font-size: 13.5px; line-height: 1.5; }
 .load-earlier { display: block; width: 100%; padding: 8px; margin-bottom: 4px; cursor: pointer;
   background: var(--panel2); color: var(--fg); border: 1px solid var(--line); border-radius: var(--radius); }
+
+/* sticky bottom bar with the claude.ai deep link */
+.chat-bar { position: sticky; bottom: 0; z-index: 5; margin: 12px -12px 0; padding: 10px 12px;
+  padding-bottom: calc(10px + env(safe-area-inset-bottom, 0));
+  background: var(--panel); border-top: 1px solid var(--line); }
+.chat-link { display: block; text-align: center; text-decoration: none; font-weight: 600;
+  color: var(--remote); background: var(--panel2); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 10px; }
+.chat-link:active { background: var(--line); }

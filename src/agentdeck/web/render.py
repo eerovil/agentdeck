@@ -101,3 +101,7 @@ def render_transcript_events(templates: Jinja2Templates, events) -> str:
 
 def render_session_status(templates: Jinja2Templates, session) -> str:
     return templates.get_template("partials/session_status.html").render(s=session)
+
+
+def render_tool_activity(templates: Jinja2Templates, thinking: bool) -> str:
+    return templates.get_template("partials/tool_activity.html").render(thinking=thinking)

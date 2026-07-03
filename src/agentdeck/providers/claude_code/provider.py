@@ -69,17 +69,20 @@ class ClaudeCodeProvider(SessionProvider):
     provider_id = "claude_code"
 
     def __init__(self) -> None:
-        # (title, last_prompt, first_user, cwd) cache keyed by path, invalidated
-        # by mtime, so idle transcripts aren't re-parsed on every scan.
+        # (title, last_prompt, first_user, cwd, last_text) cache keyed by path,
+        # invalidated by mtime, so idle transcripts aren't re-parsed every scan.
         self._meta_cache: dict[
-            str, tuple[float, tuple[str | None, str | None, str | None, str | None]]
+            str,
+            tuple[float, tuple[str | None, str | None, str | None, str | None, str | None]],
         ] = {}
 
-    def _cached_meta(self, path: Path) -> tuple[str | None, str | None, str | None, str | None]:
+    def _cached_meta(
+        self, path: Path
+    ) -> tuple[str | None, str | None, str | None, str | None, str | None]:
         try:
             mtime = path.stat().st_mtime
         except OSError:
-            return (None, None, None, None)
+            return (None, None, None, None, None)
         hit = self._meta_cache.get(str(path))
         if hit is not None and hit[0] == mtime:
             return hit[1]
@@ -120,9 +123,9 @@ class ClaudeCodeProvider(SessionProvider):
             # Title: prefer the transcript's AI-generated title, then history,
             # then the first user message; last_prompt/cwd likewise from the
             # transcript when the registry/history don't have them.
-            ai_title = last_prompt = first_user = tcwd = None
+            ai_title = last_prompt = first_user = tcwd = last_text = None
             if tpath is not None:
-                ai_title, last_prompt, first_user, tcwd = self._cached_meta(tpath)
+                ai_title, last_prompt, first_user, tcwd, last_text = self._cached_meta(tpath)
 
             cwd: Path | None = None
             if entry and entry.cwd:
@@ -168,6 +171,7 @@ class ClaudeCodeProvider(SessionProvider):
                     cwd=cwd,
                     title=title,
                     last_prompt=last_prompt,
+                    last_text=last_text,
                     kind=entry.kind if entry else None,
                     pid=entry.pid if (entry and is_live) else None,
                     proc_start=entry.proc_start if entry else None,

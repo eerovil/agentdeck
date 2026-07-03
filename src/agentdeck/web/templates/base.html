@@ -38,6 +38,32 @@
     });
     window.addEventListener('pageshow', function (e) { if (e.persisted) location.reload(); });
   })();
+
+  // Auto-scroll ("marquee") for session cards whose latest text overflows the
+  // fixed ~4-line window. Pure CSS can't measure overflow, so we measure here
+  // and hand the distance/duration to the CSS animation. Re-run after every SSE
+  // list swap, since the cards are replaced wholesale.
+  (function () {
+    function setup(scope) {
+      (scope || document).querySelectorAll('[data-marquee]').forEach(function (box) {
+        var inner = box.querySelector('.latest-scroll');
+        if (!inner) return;
+        box.classList.remove('marquee');
+        box.style.removeProperty('--marquee-dist');
+        box.style.removeProperty('--marquee-dur');
+        var overflow = inner.scrollHeight - box.clientHeight;
+        if (overflow > 6) {
+          box.style.setProperty('--marquee-dist', (-overflow) + 'px');
+          box.style.setProperty('--marquee-dur', Math.max(4, overflow / 35).toFixed(1) + 's');
+          box.classList.add('marquee');
+        }
+      });
+    }
+    window.addEventListener('load', function () { requestAnimationFrame(function () { setup(); }); });
+    document.body.addEventListener('htmx:afterSwap', function (e) {
+      requestAnimationFrame(function () { setup(e.target); });
+    });
+  })();
   </script>
 </body>
 </html>

@@ -43,6 +43,14 @@
   {% for e in detail.events %}{% include "partials/transcript_event.html" %}{% endfor %}
 </div>
 
+<div id="tool-activity" sse-swap="tools">{% set thinking = session.thinking %}{% include "partials/tool_activity.html" %}</div>
+
+{% if session.deep_link %}
+<div class="chat-bar">
+  <a class="chat-link" href="{{ session.deep_link }}" target="_blank" rel="noopener">open in claude.ai ↗</a>
+</div>
+{% endif %}
+
 <script>
 (function () {
   // Open at the newest message; keep pinned to the bottom as the live tail

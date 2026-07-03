@@ -57,7 +57,8 @@ class Session:
     thinking: bool = False  # LIVE and actively writing its transcript right now
     cwd: Path | None = None
     title: str | None = None  # from history.jsonl "display"
-    last_prompt: str | None = None
+    last_prompt: str | None = None  # user's most recent prompt
+    last_text: str | None = None  # agent's most recent response text
     model: str | None = None  # last assistant line's model (v0.2)
     kind: str | None = None  # "interactive" | "sdk-cli" | RC worker …
     pid: int | None = None

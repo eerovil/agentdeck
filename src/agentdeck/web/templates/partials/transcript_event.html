@@ -1,22 +1,14 @@
 {# one transcript event. `e` = TranscriptEvent.
-   Tool results are long and noisy → render them collapsed (accordion). #}
-{% if e.role == 'tool' %}
-<details class="ev tool{% if e.subagent %} sub{% endif %}">
-  <summary>
-    <span class="ev-role">tool result</span>
-    {% if e.text %}<span class="tool-peek">{{ e.text[:120] }}</span>{% endif %}
-  </summary>
-  {% if e.text %}<div class="ev-text">{{ e.text }}</div>{% endif %}
-</details>
-{% else %}
+   Past tool noise (tool results + tool-call lines) is dropped entirely; a live
+   "Using tools…" marker is shown separately (#tool-activity) only while the
+   session is actively working right now. #}
+{%- if e.role == 'tool' or (e.tool_name and not e.text) -%}
+{%- else -%}
 <div class="ev {{ e.role }}{% if e.subagent %} sub{% endif %}">
   <div class="ev-head">
     <span class="ev-role">{{ e.role }}{% if e.subagent %} · {{ e.subagent }}{% endif %}</span>
     {% if e.model %}<span class="ev-model">{{ e.model }}</span>{% endif %}
   </div>
-  {% if e.tool_name %}
-  <div class="ev-tool"><span class="tool-name">{{ e.tool_name }}</span>{% if e.tool_summary %} <span class="tool-sum">{{ e.tool_summary }}</span>{% endif %}</div>
-  {% endif %}
   {% if e.text %}<div class="ev-text">{{ e.text }}</div>{% endif %}
 </div>
-{% endif %}
+{%- endif -%}

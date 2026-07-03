@@ -184,19 +184,39 @@ def _user_text(obj: dict) -> str | None:
     return None
 
 
+def _assistant_text(obj: dict) -> str | None:
+    """The visible text of an assistant line (text blocks only; tool_use and
+    thinking blocks are ignored) — used as the agent's 'latest response'."""
+    message = obj.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        return content.strip()[:200] or None
+    if isinstance(content, list):
+        parts = [
+            b["text"]
+            for b in content
+            if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str)
+        ]
+        joined = " ".join(parts).strip()
+        return joined[:200] or None
+    return None
+
+
 def transcript_meta(
     path: Path, *, head: int = 65536, tail: int = 32768
-) -> tuple[str | None, str | None, str | None, str | None]:
+) -> tuple[str | None, str | None, str | None, str | None, str | None]:
     """Cheap extraction without parsing the whole file → (ai_title, last_prompt,
-    first_user_text, cwd). Claude Code writes an ``ai-title`` line (a concise
-    session summary), ``last-prompt`` lines, and a ``cwd`` field on every entry;
-    we read the head (ai-title/first prompt/cwd live there) and the tail (latest
-    last-prompt), latest occurrence winning. ``cwd`` is shown for idle sessions
-    too — the live-process registry is gone once a session is idle."""
+    first_user_text, cwd, last_agent_text). Claude Code writes an ``ai-title``
+    line (a concise session summary), ``last-prompt`` lines, and a ``cwd`` field
+    on every entry; we read the head (ai-title/first prompt/cwd live there) and
+    the tail (latest last-prompt + latest assistant reply), latest occurrence
+    winning. ``cwd`` is shown for idle sessions too — the live-process registry
+    is gone once a session is idle."""
     ai_title: str | None = None
     last_prompt: str | None = None
     first_user: str | None = None
     cwd: str | None = None
+    last_text: str | None = None
     try:
         size = path.stat().st_size
         with path.open("rb") as f:
@@ -206,10 +226,10 @@ def transcript_meta(
                 f.seek(max(head, size - tail))
                 tail_bytes = f.read()
     except OSError:
-        return (None, None, None, None)
+        return (None, None, None, None, None)
 
     def scan(blob: bytes, skip_first_partial: bool) -> None:
-        nonlocal ai_title, last_prompt, first_user, cwd
+        nonlocal ai_title, last_prompt, first_user, cwd, last_text
         lines = blob.split(b"\n")
         if skip_first_partial and lines:
             lines = lines[1:]  # a mid-file seek can land inside a line
@@ -230,6 +250,8 @@ def transcript_meta(
                 ai_title = obj["aiTitle"].strip() or ai_title
             elif t == "last-prompt" and isinstance(obj.get("lastPrompt"), str):
                 last_prompt = obj["lastPrompt"].strip() or last_prompt
+            elif t == "assistant":
+                last_text = _assistant_text(obj) or last_text
             elif t == "user" and first_user is None:
                 if not obj.get("isMeta") and not obj.get("isSidechain"):
                     first_user = _user_text(obj)
@@ -237,7 +259,7 @@ def transcript_meta(
     scan(head_bytes, skip_first_partial=False)
     if tail_bytes:
         scan(tail_bytes, skip_first_partial=True)
-    return (ai_title, last_prompt, first_user, cwd)
+    return (ai_title, last_prompt, first_user, cwd, last_text)
 
 
 def token_totals(events: list[TranscriptEvent]) -> TokenTotals:
