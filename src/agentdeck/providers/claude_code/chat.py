@@ -12,6 +12,9 @@ the lock); the child is the sole writer of that session's transcript while open.
 The process is started in its own session/group (``start_new_session=True``) so
 ``stop()`` can signal the whole group, and a replay buffer lets a reconnecting
 SSE viewer catch up on the conversation so far.
+
+The flag set below is verified end-to-end against real Claude Code v2.1.198: a
+resumed session appends the chat turn to the same transcript (not a fork).
 """
 
 from __future__ import annotations
