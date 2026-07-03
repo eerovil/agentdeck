@@ -15,6 +15,7 @@ from .config import AppConfig
 from .db import make_db
 from .state import AppState
 from .web import render as render_mod
+from .web.routes_actions import router as actions_router
 from .web.routes_pages import router as pages_router
 from .web.routes_partials import router as partials_router
 from .web.routes_sse import router as sse_router
@@ -44,7 +45,7 @@ def create_app(config: AppConfig) -> FastAPI:
             await collector.stop()
             db.close()
 
-    app = FastAPI(title="agentdeck", version="0.2.0", lifespan=lifespan)
+    app = FastAPI(title="agentdeck", version="0.3.0", lifespan=lifespan)
     app.state.config = config
     app.state.app_state = state
     app.state.accounts = config.build_accounts()
@@ -57,4 +58,5 @@ def create_app(config: AppConfig) -> FastAPI:
     app.include_router(pages_router)
     app.include_router(partials_router)
     app.include_router(sse_router)
+    app.include_router(actions_router)
     return app

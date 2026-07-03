@@ -27,6 +27,7 @@ from ...models import (
 )
 from ..base import SessionProvider
 from . import history as history_mod
+from . import inject as inject_mod
 from . import registry as registry_mod
 from . import transcripts as transcripts_mod
 from .usage import UsagePoller, fetch_usage_once
@@ -107,6 +108,10 @@ class ClaudeCodeProvider(SessionProvider):
             caps: set[Capability] = set()
             if tpath is not None:
                 caps.add(Capability.TRANSCRIPT)  # readable from v0.2
+            # Injectable only when idle with a known cwd; the route re-checks
+            # liveness + trust at spawn time, this is just a UI hint.
+            if not is_live and cwd is not None:
+                caps.add(Capability.INJECT)
 
             sessions.append(
                 Session(
@@ -234,10 +239,14 @@ class ClaudeCodeProvider(SessionProvider):
             skipped=read.skipped,
         )
 
-    # --- v0.3 (not yet implemented) ------------------------------------
+    # --- injection (v0.3) ----------------------------------------------
 
-    async def inject(self, account: Account, session: Session, message: str) -> InjectResult:
-        raise NotImplementedError("message injection lands in v0.3")
+    async def inject(
+        self, account: Account, session: Session, message: str, *, timeout_s: float = 600.0
+    ) -> InjectResult:
+        return await inject_mod.inject_oneshot(account, session, message, timeout_s=timeout_s)
+
+    # --- interactive chat (not yet implemented) ------------------------
 
     async def open_chat(self, account: Account, session: Session) -> ChatHandle:
-        raise NotImplementedError("interactive chat lands in v0.3")
+        raise NotImplementedError("interactive stream-json chat lands in a later v0.3 iteration")
