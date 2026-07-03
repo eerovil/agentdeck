@@ -4,14 +4,33 @@ from datetime import UTC, datetime
 from httpx import ASGITransport, AsyncClient
 
 from agentdeck.app import create_app
-from agentdeck.config import AccountConfig, AppConfig
+from agentdeck.config import AccountConfig, AppConfig, HistoryConfig
 from agentdeck.models import Capability, Session, SessionStatus, UsageSnapshot
 
 
-def _app_with_state(tmp_path):
+def _app_with_state(tmp_path, *, with_transcript=False):
+    import json
+
     config = AppConfig(
-        accounts=[AccountConfig(provider="claude_code", label="test", config_dir=str(tmp_path))]
+        history=HistoryConfig(enabled=False),
+        accounts=[AccountConfig(provider="claude_code", label="test", config_dir=str(tmp_path))],
     )
+    if with_transcript:
+        proj = tmp_path / "projects" / "-tmp"
+        proj.mkdir(parents=True)
+        lines = [
+            {"type": "user", "message": {"role": "user", "content": "first question"}},
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "model": "claude-opus-4-8",
+                    "content": [{"type": "text", "text": "an answer here"}],
+                    "usage": {"input_tokens": 10, "output_tokens": 5},
+                },
+            },
+        ]
+        (proj / "sid1.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines))
     app = create_app(config)
     state = app.state.app_state
     state.update_session(
@@ -73,6 +92,32 @@ async def test_partial_limit_bars(tmp_path):
     assert r.status_code == 200
     assert "42%" in r.text
     assert "7%" in r.text
+
+
+async def test_session_detail_renders_transcript(tmp_path):
+    app = _app_with_state(tmp_path, with_transcript=True)
+    async with _client(app) as c:
+        r = await c.get("/sessions/claude_code:test:sid1")
+    assert r.status_code == 200
+    assert "first question" in r.text
+    assert "an answer here" in r.text
+    assert "claude-opus-4-8" in r.text
+    assert "15 tok" in r.text  # 10 input + 5 output summed from usage
+
+
+async def test_session_detail_unknown_404(tmp_path):
+    app = _app_with_state(tmp_path)
+    async with _client(app) as c:
+        r = await c.get("/sessions/claude_code:test:doesnotexist")
+    assert r.status_code == 404
+
+
+async def test_transcript_load_earlier_partial(tmp_path):
+    app = _app_with_state(tmp_path, with_transcript=True)
+    async with _client(app) as c:
+        r = await c.get("/partials/sessions/claude_code:test:sid1/transcript?before=0")
+    assert r.status_code == 200
+    assert "an answer here" in r.text
 
 
 async def test_sse_initial_events(tmp_path):

@@ -1,6 +1,6 @@
 [project]
 name = "agentdeck"
-version = "0.1.0"
+version = "0.2.0"
 description = "Self-hosted, mobile-first dashboard for monitoring and steering coding-agent CLI sessions"
 readme = "README.md"
 license = "Apache-2.0"

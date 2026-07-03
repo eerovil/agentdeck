@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.2.0 (unreleased)
+
+- Session detail page (`/sessions/{key}`): transcript viewer with per-event
+  role/tool/model rendering, subagent events inlined, and "load earlier"
+  pagination for long transcripts.
+- Live tail: per-session SSE stream (`/events/sessions/{key}`) that appends new
+  transcript events from a byte cursor (idle sessions cost ~nothing) and pushes
+  a status fragment when a session flips LIVE↔IDLE.
+- Token totals (input/output/cache) summed from transcript `usage` blocks;
+  last model + todos (`tasks/<sessionId>/`) shown on the detail page.
+- Optional SQLite history (`[history] enabled`): usage snapshots + a
+  sessions-seen ledger; a unicode sparkline of recent 5h usage in the header.
+
 ## v0.1.0 (unreleased)
 
 - Read-only dashboard: limit bars (5h / 7d OAuth usage) + live/idle session list
