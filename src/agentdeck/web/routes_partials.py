@@ -26,10 +26,8 @@ async def sessions(request: Request) -> HTMLResponse:
 
 
 @router.get("/sessions/{session_key}/transcript", response_class=HTMLResponse)
-async def transcript_earlier(
-    request: Request, session_key: str, before: int = 0
-) -> HTMLResponse:
-    """"Load earlier": the transcript window ending just before ``before``."""
+async def transcript_earlier(request: Request, session_key: str, before: int = 0) -> HTMLResponse:
+    """ "Load earlier": the transcript window ending just before ``before``."""
     account, session, provider = resolve_session(request, session_key)
     detail = await provider.load_transcript(account, session, before_seq=before or None)
     templates = get_templates(request)

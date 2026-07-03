@@ -49,7 +49,7 @@ def _stub_claude(tmp_path: Path, *, exit_code: int = 0, out: str = "ok", err: st
 def test_preflight_refuses_missing_cwd(tmp_path):
     cfg = tmp_path / "cfg"
     cfg.mkdir()
-    reason = inject.preflight(_account(cfg), _session(None), proc_root=tmp_path / "proc")
+    reason = inject.preflight(_account(cfg), _session(None))
     assert reason and "working directory" in reason
 
 
@@ -57,7 +57,7 @@ def test_preflight_refuses_nonexistent_cwd(tmp_path):
     cfg = tmp_path / "cfg"
     cfg.mkdir()
     gone = _session(tmp_path / "gone")
-    reason = inject.preflight(_account(cfg), gone, proc_root=tmp_path / "proc")
+    reason = inject.preflight(_account(cfg), gone)
     assert reason and "no longer exists" in reason
 
 
@@ -66,7 +66,7 @@ def test_preflight_refuses_untrusted(tmp_path):
     cfg.mkdir()
     work = tmp_path / "work"
     work.mkdir()
-    reason = inject.preflight(_account(cfg), _session(work), proc_root=tmp_path / "proc")
+    reason = inject.preflight(_account(cfg), _session(work))
     assert reason and "not trusted" in reason
 
 
@@ -76,28 +76,26 @@ def test_preflight_ok_when_trusted_idle(tmp_path):
     work = tmp_path / "work"
     work.mkdir()
     _trust(cfg, work)
-    assert inject.preflight(_account(cfg), _session(work), proc_root=tmp_path / "proc") is None
+    assert inject.preflight(_account(cfg), _session(work)) is None
 
 
-def test_preflight_refuses_live_session(tmp_path):
+def test_preflight_refuses_active_session(tmp_path):
+    """A session actively writing (transcript touched within quiet_s) is refused
+    — that, not process liveness, is the real race. A live-but-quiet one is OK."""
+    from datetime import UTC, datetime, timedelta
+
     cfg = tmp_path / "cfg"
-    sessions = cfg / "sessions"
-    sessions.mkdir(parents=True)
+    (cfg / "sessions").mkdir(parents=True)
     work = tmp_path / "work"
     work.mkdir()
     _trust(cfg, work)
-    # a registry entry for our session id + a matching fake /proc starttime → "live"
-    (sessions / "555.json").write_text(
-        json.dumps({"pid": 555, "sessionId": "sid-123", "procStart": "77", "cwd": str(work)})
-    )
-    proc = tmp_path / "proc" / "555"
-    proc.mkdir(parents=True)
-    fields = [str(i) for i in range(30)]
-    fields[0] = "S"
-    fields[19] = "77"
-    (proc / "stat").write_text("555 (claude) " + " ".join(fields))
-    reason = inject.preflight(_account(cfg), _session(work), proc_root=tmp_path / "proc")
-    assert reason and "live" in reason
+    now = datetime(2026, 7, 3, 12, 0, 0, tzinfo=UTC)
+    fresh = now - timedelta(seconds=2)
+    reason = inject.preflight(_account(cfg), _session(work), last_write=fresh, now=now)
+    assert reason and "working right now" in reason
+    # quiet for a while → allowed even though a process may still be alive
+    old = now - timedelta(seconds=60)
+    assert inject.preflight(_account(cfg), _session(work), last_write=old, now=now) is None
 
 
 # --- one-shot spawn --------------------------------------------------
@@ -116,7 +114,6 @@ async def test_inject_oneshot_success_passes_config_and_cwd(tmp_path):
         _session(work),
         "hello session",
         claude_bin=claude,
-        proc_root=tmp_path / "proc",
     )
     assert result.ok
     assert "did the thing" in result.detail
@@ -134,9 +131,7 @@ async def test_inject_oneshot_failure_returns_stderr(tmp_path):
     _trust(cfg, work)
     claude = _stub_claude(tmp_path, exit_code=3, out="", err="boom")
 
-    result = await inject.inject_oneshot(
-        _account(cfg), _session(work), "hi", claude_bin=claude, proc_root=tmp_path / "proc"
-    )
+    result = await inject.inject_oneshot(_account(cfg), _session(work), "hi", claude_bin=claude)
     assert not result.ok
     assert result.exit_code == 3
     assert "boom" in result.detail
@@ -147,9 +142,7 @@ async def test_inject_oneshot_refuses_before_spawn(tmp_path):
     cfg = tmp_path / "cfg"
     cfg.mkdir()
     claude = _stub_claude(tmp_path)
-    result = await inject.inject_oneshot(
-        _account(cfg), _session(None), "hi", claude_bin=claude, proc_root=tmp_path / "proc"
-    )
+    result = await inject.inject_oneshot(_account(cfg), _session(None), "hi", claude_bin=claude)
     assert not result.ok
     assert not (tmp_path / "invocation.json").exists()  # never launched
 
@@ -157,9 +150,7 @@ async def test_inject_oneshot_refuses_before_spawn(tmp_path):
 async def test_inject_oneshot_empty_message(tmp_path):
     cfg = tmp_path / "cfg"
     cfg.mkdir()
-    result = await inject.inject_oneshot(
-        _account(cfg), _session(tmp_path), "   ", proc_root=tmp_path / "proc"
-    )
+    result = await inject.inject_oneshot(_account(cfg), _session(tmp_path), "   ")
     assert not result.ok
     assert "empty" in result.detail
 
@@ -175,8 +166,7 @@ def _sleepy_claude(tmp_path: Path, secs: float) -> str:
     """A fake `claude` that runs longer than the grace window."""
     script = tmp_path / "claude"
     script.write_text(
-        "#!/usr/bin/env python3\nimport time, sys\n"
-        f"time.sleep({secs})\nsys.stdout.write('done')\n"
+        f"#!/usr/bin/env python3\nimport time, sys\ntime.sleep({secs})\nsys.stdout.write('done')\n"
     )
     script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IRUSR)
     return str(script)
@@ -190,9 +180,7 @@ async def test_inject_start_fast_turn_returns_result(tmp_path):
     work.mkdir()
     _trust(cfg, work)
     claude = _stub_claude(tmp_path, exit_code=0, out="quick answer")
-    result = await inject.inject_start(
-        _account(cfg), _session(work), "hi", claude_bin=claude, proc_root=tmp_path / "proc"
-    )
+    result = await inject.inject_start(_account(cfg), _session(work), "hi", claude_bin=claude)
     assert result.ok
     assert "quick answer" in result.detail
     assert not inject._inflight  # cleaned up
@@ -211,9 +199,7 @@ async def test_inject_start_slow_turn_streams_and_reaps(tmp_path, monkeypatch):
     monkeypatch.setattr(inject, "GRACE_S", 0.2)
     claude = _sleepy_claude(tmp_path, 0.8)
 
-    result = await inject.inject_start(
-        _account(cfg), _session(work), "hi", claude_bin=claude, proc_root=tmp_path / "proc"
-    )
+    result = await inject.inject_start(_account(cfg), _session(work), "hi", claude_bin=claude)
     assert result.ok
     assert "streaming" in result.detail.lower()
     assert "sid-123" in inject._inflight  # handed to the background reaper
@@ -234,9 +220,7 @@ async def test_inject_start_refuses_concurrent(tmp_path):
     _trust(cfg, work)
     inject._inflight.add("sid-123")
     try:
-        result = await inject.inject_start(
-            _account(cfg), _session(work), "hi", proc_root=tmp_path / "proc"
-        )
+        result = await inject.inject_start(_account(cfg), _session(work), "hi")
         assert not result.ok
         assert "already being delivered" in result.detail
     finally:

@@ -142,9 +142,12 @@ async def test_manager_reopens_after_close():
     assert prov.opens == 2
 
 
-@pytest.mark.parametrize("event,expect", [
-    ({"type": "assistant", "message": {"content": []}}, []),
-    ({"type": "nonsense"}, []),
-])
+@pytest.mark.parametrize(
+    "event,expect",
+    [
+        ({"type": "assistant", "message": {"content": []}}, []),
+        ({"type": "nonsense"}, []),
+    ],
+)
 def test_normalize_edge(event, expect):
     assert normalize_stream_event(event) == expect

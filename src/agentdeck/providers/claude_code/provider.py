@@ -77,9 +77,7 @@ class ClaudeCodeProvider(SessionProvider):
             str, tuple[float, tuple[str | None, str | None, str | None, str | None]]
         ] = {}
 
-    def _cached_meta(
-        self, path: Path
-    ) -> tuple[str | None, str | None, str | None, str | None]:
+    def _cached_meta(self, path: Path) -> tuple[str | None, str | None, str | None, str | None]:
         try:
             mtime = path.stat().st_mtime
         except OSError:
@@ -151,9 +149,10 @@ class ClaudeCodeProvider(SessionProvider):
             caps: set[Capability] = set()
             if tpath is not None:
                 caps.add(Capability.TRANSCRIPT)  # readable from v0.2
-            # Injectable only when idle with a known cwd; the route re-checks
-            # liveness + trust at spawn time, this is just a UI hint.
-            if not is_live and cwd is not None:
+            # Injectable whenever we know a cwd and the session isn't mid-turn —
+            # claude --resume appends safely to a quiet session, live or not. The
+            # route re-checks activity + trust at spawn time; this is a UI hint.
+            if cwd is not None and not thinking:
                 caps.add(Capability.INJECT)
 
             sessions.append(
@@ -297,16 +296,19 @@ class ClaudeCodeProvider(SessionProvider):
     async def inject(
         self, account: Account, session: Session, message: str, *, timeout_s: float = 600.0
     ) -> InjectResult:
-        return await inject_mod.inject_start(account, session, message, timeout_s=timeout_s)
+        tp = self._transcript_path(account, session)
+        last_write = _mtime(tp) if tp else None
+        return await inject_mod.inject_start(
+            account, session, message, timeout_s=timeout_s, last_write=last_write
+        )
 
     # --- interactive chat (v0.3) ---------------------------------------
 
     async def open_chat(self, account: Account, session: Session) -> ChatSession:
-        reason = inject_mod.preflight(account, session)
+        tp = self._transcript_path(account, session)
+        reason = inject_mod.preflight(account, session, last_write=_mtime(tp) if tp else None)
         if reason is not None:
             raise ChatRefused(reason)
-        cs = ChatSession(
-            session.session_id, cwd=str(session.cwd), config_dir=str(account.root)
-        )
+        cs = ChatSession(session.session_id, cwd=str(session.cwd), config_dir=str(account.root))
         await cs.start()
         return cs

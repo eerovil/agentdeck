@@ -39,9 +39,7 @@ async def chat_page(request: Request, session_key: str) -> HTMLResponse:
         await manager.get_or_open(session_key, account, session, provider)
     except ChatRefused as exc:
         error = str(exc)
-    return templates.TemplateResponse(
-        request, "chat.html", {"session": session, "error": error}
-    )
+    return templates.TemplateResponse(request, "chat.html", {"session": session, "error": error})
 
 
 @router.post("/sessions/{session_key}/chat/send", response_class=HTMLResponse)

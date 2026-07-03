@@ -131,8 +131,11 @@ def test_transcript_meta_extracts_cwd(tmp_path):
     _write(
         p,
         [
-            {"type": "user", "cwd": "/var/home/eero/outdoor",
-             "message": {"role": "user", "content": "hi"}},
+            {
+                "type": "user",
+                "cwd": "/var/home/eero/outdoor",
+                "message": {"role": "user", "content": "hi"},
+            },
         ],
     )
     _title, _lp, _fu, cwd = transcripts.transcript_meta(p)

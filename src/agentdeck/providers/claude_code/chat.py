@@ -73,9 +73,7 @@ def _blocks_to_events(content: object, role: str) -> list[dict]:
             inner = block.get("content")
             text = inner if isinstance(inner, str) else ""
             if isinstance(inner, list):
-                text = "\n".join(
-                    b.get("text", "") for b in inner if isinstance(b, dict)
-                )
+                text = "\n".join(b.get("text", "") for b in inner if isinstance(b, dict))
             out.append({"role": "tool", "text": text[:2000]})
     return out
 

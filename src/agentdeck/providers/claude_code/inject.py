@@ -1,12 +1,14 @@
-"""Message injection into idle Claude Code sessions.
+"""Message injection into Claude Code sessions (live or idle).
 
-The one safety rule that must never be violated: **never resume a session whose
-owning process is alive** — two writers on one JSONL transcript corrupts it. We
-re-check liveness against the registry + /proc at spawn time (not from cached
-state), and additionally require the target cwd to exist and be trusted.
-
-Injection appends a turn to the existing session (no ``--fork-session``), so the
-reply lands in the same transcript and the collector's tail picks it up.
+``claude --resume`` takes no lock and appends atomically to the transcript
+whether or not the owning process is alive (verified: no fork, clean append,
+O_APPEND lines don't interleave). So the safety rule is NOT "no live process" —
+it's "not mid-turn": injecting while a session is actively writing gives two
+conversation heads on one transcript. We refuse only while the transcript
+changed within ``QUIET_S``; a live-but-quiet session (waiting for input, or a
+stuck headless worker) is a fine target. We also require the cwd to exist and be
+trusted. No ``--fork-session``, so the reply lands in the same transcript and the
+collector's tail picks it up.
 """
 
 from __future__ import annotations
@@ -15,14 +17,19 @@ import asyncio
 import json
 import logging
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 
 from ...models import Account, InjectResult, Session
-from . import registry as registry_mod
 
 log = logging.getLogger(__name__)
 
 _MAX_OUTPUT = 2000
+
+# A session whose transcript changed within this many seconds is treated as
+# mid-turn — injecting would race the running turn. This, not process existence,
+# is the real safety gate.
+QUIET_S = 15.0
 
 
 def is_trusted(config_dir: Path, cwd: Path) -> bool:
@@ -46,13 +53,21 @@ def is_trusted(config_dir: Path, cwd: Path) -> bool:
 
 
 def preflight(
-    account: Account, session: Session, *, proc_root: Path = registry_mod.PROC_ROOT
+    account: Account,
+    session: Session,
+    *,
+    last_write: datetime | None = None,
+    quiet_s: float = QUIET_S,
+    now: datetime | None = None,
 ) -> str | None:
-    """Return a refusal reason, or None if injection is safe. Re-reads the
-    registry fresh — do NOT trust cached session state here."""
-    for e in registry_mod.read_registry(account.root):
-        if e.session_id == session.session_id and registry_mod.is_alive(e, proc_root=proc_root):
-            return "session is live (a claude process is writing it) — open it in claude.ai instead"
+    """Return a refusal reason, or None if it's safe to resume-and-append.
+
+    ``last_write`` is the transcript's current mtime (pass it fresh — don't trust
+    cached state). We refuse only while the session is actively writing; whether a
+    process is alive is irrelevant to ``--resume`` safety."""
+    now = now or datetime.now(UTC)
+    if last_write is not None and (now - last_write).total_seconds() < quiet_s:
+        return "session is working right now — wait until it pauses, then reply"
     if session.cwd is None:
         return "session has no known working directory to resume in"
     if not session.cwd.is_dir():
@@ -72,11 +87,11 @@ async def inject_oneshot(
     *,
     timeout_s: float = 600.0,
     claude_bin: str = "claude",
-    proc_root: Path = registry_mod.PROC_ROOT,
+    last_write: datetime | None = None,
 ) -> InjectResult:
     if not message.strip():
         return InjectResult(ok=False, detail="empty message")
-    reason = preflight(account, session, proc_root=proc_root)
+    reason = preflight(account, session, last_write=last_write)
     if reason is not None:
         return InjectResult(ok=False, detail=reason)
 
@@ -133,7 +148,7 @@ async def inject_start(
     *,
     timeout_s: float = 600.0,
     claude_bin: str = "claude",
-    proc_root: Path = registry_mod.PROC_ROOT,
+    last_write: datetime | None = None,
 ) -> InjectResult:
     """Deliver a message without blocking the page for the whole turn.
 
@@ -150,7 +165,7 @@ async def inject_start(
             ok=False,
             detail="a message is already being delivered to this session — wait for it to finish",
         )
-    reason = preflight(account, session, proc_root=proc_root)
+    reason = preflight(account, session, last_write=last_write)
     if reason is not None:
         return InjectResult(ok=False, detail=reason)
 

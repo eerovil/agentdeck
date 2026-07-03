@@ -184,9 +184,9 @@ def _user_text(obj: dict) -> str | None:
     return None
 
 
-def transcript_meta(path: Path, *, head: int = 65536, tail: int = 32768) -> tuple[
-    str | None, str | None, str | None, str | None
-]:
+def transcript_meta(
+    path: Path, *, head: int = 65536, tail: int = 32768
+) -> tuple[str | None, str | None, str | None, str | None]:
     """Cheap extraction without parsing the whole file → (ai_title, last_prompt,
     first_user_text, cwd). Claude Code writes an ``ai-title`` line (a concise
     session summary), ``last-prompt`` lines, and a ``cwd`` field on every entry;
