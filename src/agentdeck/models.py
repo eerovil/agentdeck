@@ -95,6 +95,17 @@ class TranscriptEvent:  # normalized transcript line (parsed from v0.2)
 
 
 @dataclass
+class TranscriptDetail:  # v0.2 — the bundle a session detail page needs
+    events: list[TranscriptEvent]  # windowed (most-recent slice) for display
+    tokens: TokenTotals  # summed over the WHOLE transcript
+    model: str | None
+    todos: list[dict]
+    total_events: int  # count across the whole transcript
+    earliest_seq: int  # smallest seq in ``events`` (for "load earlier")
+    skipped: int = 0
+
+
+@dataclass
 class InjectResult:  # v0.3
     ok: bool
     detail: str

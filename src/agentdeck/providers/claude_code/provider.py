@@ -20,13 +20,19 @@ from ...models import (
     InjectResult,
     Session,
     SessionStatus,
+    TokenTotals,
+    TranscriptDetail,
     TranscriptEvent,
     UsageSnapshot,
 )
 from ..base import SessionProvider
 from . import history as history_mod
 from . import registry as registry_mod
+from . import transcripts as transcripts_mod
 from .usage import UsagePoller, fetch_usage_once
+
+# Max events rendered on a detail page; older ones fetched via "load earlier".
+DETAIL_WINDOW = 400
 
 log = logging.getLogger(__name__)
 
@@ -154,12 +160,81 @@ class ClaudeCodeProvider(SessionProvider):
             cache_dir=kwargs.get("cache_dir"),
         )
 
-    # --- v0.2 / v0.3 (not yet implemented) -----------------------------
+    # --- transcripts (v0.2) --------------------------------------------
+
+    def _transcript_path(self, account: Account, session: Session) -> Path | None:
+        projects = account.root / "projects"
+        if not projects.is_dir():
+            return None
+        matches = sorted(
+            projects.glob(f"*/{session.session_id}.jsonl"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        return matches[0] if matches else None
 
     async def read_transcript(
         self, account: Account, session: Session, after_seq: int = 0
     ) -> list[TranscriptEvent]:
-        raise NotImplementedError("transcript parsing lands in v0.2")
+        """New renderable events with seq > after_seq (used by the live tail)."""
+        path = self._transcript_path(account, session)
+        if path is None:
+            return []
+        read = transcripts_mod.read_events(path)
+        return [e for e in read.events if e.seq > after_seq]
+
+    async def transcript_cursor(self, account: Account, session: Session) -> tuple[int, int]:
+        path = self._transcript_path(account, session)
+        if path is None:
+            return (0, 0)
+        read = transcripts_mod.read_events(path)
+        return (read.byte_offset, read.seq)
+
+    async def tail_transcript(
+        self, account: Account, session: Session, byte_offset: int, seq: int
+    ) -> tuple[list[TranscriptEvent], int, int]:
+        path = self._transcript_path(account, session)
+        if path is None:
+            return ([], byte_offset, seq)
+        read = transcripts_mod.read_events(path, byte_offset=byte_offset, seq=seq)
+        return (read.events, read.byte_offset, read.seq)
+
+    async def load_transcript(
+        self, account: Account, session: Session, before_seq: int | None = None
+    ) -> TranscriptDetail:
+        """Full detail bundle. ``before_seq`` returns the window ending just
+        before that seq (for "load earlier"); otherwise the most recent window."""
+        path = self._transcript_path(account, session)
+        if path is None:
+            return TranscriptDetail(
+                events=[],
+                tokens=TokenTotals(),
+                model=None,
+                todos=[],
+                total_events=0,
+                earliest_seq=0,
+            )
+        read = transcripts_mod.read_events(path)
+        events = read.events
+        tokens = transcripts_mod.token_totals(events)
+        model = transcripts_mod.last_model(events)
+        todos = transcripts_mod.load_todos(account.root, session.session_id)
+
+        if before_seq is not None:
+            events = [e for e in events if e.seq < before_seq]
+        window = events[-DETAIL_WINDOW:]
+        earliest = window[0].seq if window else 0
+        return TranscriptDetail(
+            events=window,
+            tokens=tokens,
+            model=model,
+            todos=todos,
+            total_events=len(read.events),
+            earliest_seq=earliest,
+            skipped=read.skipped,
+        )
+
+    # --- v0.3 (not yet implemented) ------------------------------------
 
     async def inject(self, account: Account, session: Session, message: str) -> InjectResult:
         raise NotImplementedError("message injection lands in v0.3")
