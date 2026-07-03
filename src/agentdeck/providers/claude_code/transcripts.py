@@ -243,7 +243,7 @@ def _assistant_text(obj: dict) -> str | None:
     message = obj.get("message")
     content = message.get("content") if isinstance(message, dict) else None
     if isinstance(content, str):
-        return content.strip()[:200] or None
+        return content.strip()[:_MAX_TEXT] or None
     if isinstance(content, list):
         parts = [
             b["text"]
@@ -251,7 +251,7 @@ def _assistant_text(obj: dict) -> str | None:
             if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str)
         ]
         joined = " ".join(parts).strip()
-        return joined[:200] or None
+        return joined[:_MAX_TEXT] or None
     return None
 
 
