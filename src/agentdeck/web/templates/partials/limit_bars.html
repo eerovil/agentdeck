@@ -4,7 +4,7 @@
   {% set u = row.usage %}
   <div class="acct {% if u and u.stale %}stale{% endif %}">
     <div class="acct-label">
-      {{ row.account.label }}
+      <span>{{ row.account.label }}{% if row.spark %} <span class="spark">{{ row.spark }}</span>{% endif %}</span>
       {% if u and u.stale %}<span class="stale-tag">stale {{ row.stale_age }}</span>{% endif %}
     </div>
     {% if u %}

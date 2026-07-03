@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}{{ session.title or session.session_id[:8] }} — agentdeck{% endblock %}
+
+{% block content %}
+<p><a class="back" href="/">← all sessions</a></p>
+
+{% set s = session %}
+<div id="session-status">{% include "partials/session_status.html" %}</div>
+
+<div class="detail-meta">
+  {% if detail.model %}<span class="chip">{{ detail.model }}</span>{% endif %}
+  {% set t = detail.tokens %}
+  {% if t and t.total %}
+  <span class="chip" title="input / output / cache-read / cache-create">
+    {{ "{:,}".format(t.total) }} tok
+    ({{ "{:,}".format(t.input_tokens) }}i / {{ "{:,}".format(t.output_tokens) }}o /
+     {{ "{:,}".format(t.cache_read_tokens) }}cr)
+  </span>
+  {% endif %}
+  <span class="chip">{{ detail.total_events }} events</span>
+  {% if session.cwd %}<span class="chip cwd">{{ session.cwd }}</span>{% endif %}
+</div>
+
+{% if detail.todos %}
+<div class="todos">
+  <h3>Todos</h3>
+  {% for todo in detail.todos %}
+  <div class="todo {{ todo.status }}"><span class="todo-status">{{ todo.status }}</span>{{ todo.subject }}</div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<div class="transcript"
+     sse-connect="/events/sessions/{{ session.key }}"
+     sse-swap="transcript" hx-swap="beforeend">
+  {% if detail.earliest_seq > 1 %}
+  {% set before = detail.earliest_seq %}
+  {% include "partials/load_earlier.html" %}
+  {% endif %}
+  {% for e in detail.events %}{% include "partials/transcript_event.html" %}{% endfor %}
+</div>
+{% endblock %}

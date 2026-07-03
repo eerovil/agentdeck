@@ -1,0 +1,7 @@
+{# session header/status chip. `s` = Session. Re-rendered over SSE on flips. #}
+<div class="session-head {{ s.status }}">
+  <span class="dot {{ s.status }}"></span>
+  <span class="session-title">{{ s.title or s.session_id[:8] }}</span>
+  <span class="status-tag {{ s.status }}">{{ s.status }}</span>
+  {% if s.deep_link %}<a class="deeplink" href="{{ s.deep_link }}" target="_blank" rel="noopener">open in claude.ai ↗</a>{% endif %}
+</div>

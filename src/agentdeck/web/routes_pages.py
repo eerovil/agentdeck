@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from .deps import get_accounts, get_state, get_templates, require_access
+from .deps import get_accounts, get_state, get_templates, require_access, resolve_session
 
 router = APIRouter()
 
@@ -36,4 +36,18 @@ async def dashboard(request: Request) -> HTMLResponse:
         request,
         "dashboard.html",
         {"rows": _usage_rows(accounts, state), "groups": groups},
+    )
+
+
+@router.get(
+    "/sessions/{session_key}", response_class=HTMLResponse, dependencies=[Depends(require_access)]
+)
+async def session_detail(request: Request, session_key: str) -> HTMLResponse:
+    account, session, provider = resolve_session(request, session_key)
+    templates = get_templates(request)
+    detail = await provider.load_transcript(account, session)
+    return templates.TemplateResponse(
+        request,
+        "session.html",
+        {"session": session, "detail": detail},
     )

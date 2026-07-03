@@ -7,11 +7,12 @@ this one dependency + a login page — no route signatures change.
 
 from __future__ import annotations
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 from fastapi.templating import Jinja2Templates
 
 from ..config import AppConfig
-from ..models import Account
+from ..models import Account, Session
+from ..providers import PROVIDERS, SessionProvider
 from ..state import AppState
 
 
@@ -34,3 +35,23 @@ def get_accounts(request: Request) -> list[Account]:
 
 def get_templates(request: Request) -> Jinja2Templates:
     return request.app.state.templates
+
+
+def get_db(request: Request):
+    return request.app.state.db
+
+
+def resolve_session(request: Request, session_key: str) -> tuple[Account, Session, SessionProvider]:
+    """Look up a session by key → (account, session, provider), or 404."""
+    state = get_state(request)
+    session = state.sessions.get(session_key)
+    if session is None:
+        raise HTTPException(status_code=404, detail="unknown session")
+    account = next(
+        (a for a in get_accounts(request) if a.key == session.account_key),
+        None,
+    )
+    if account is None:
+        raise HTTPException(status_code=404, detail="unknown account")
+    provider = PROVIDERS[account.provider_id]
+    return account, session, provider

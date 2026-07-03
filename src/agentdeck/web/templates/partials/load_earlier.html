@@ -1,0 +1,7 @@
+{# "load earlier" button; replaces itself with the earlier window + a new button. #}
+<button class="load-earlier"
+        hx-get="/partials/sessions/{{ session.key }}/transcript?before={{ before }}"
+        hx-swap="outerHTML"
+        hx-target="this">
+  load earlier
+</button>

@@ -60,11 +60,25 @@ def register_filters(templates: Jinja2Templates) -> None:
     templates.env.filters["reltime_ago"] = reltime_ago
 
 
+_SPARK = "▁▂▃▄▅▆▇█"
+
+
+def sparkline(values: list[float]) -> str:
+    """Tiny unicode sparkline over 0-100 percentages; '' when < 2 points."""
+    if len(values) < 2:
+        return ""
+    return "".join(_SPARK[min(int(v / 100 * (len(_SPARK) - 1)), len(_SPARK) - 1)] for v in values)
+
+
 def _usage_rows(accounts: list[Account], state: AppState) -> list[dict]:
     rows = []
+    db = getattr(state, "db", None)
     for acc in accounts:
         snap = state.usage.get(acc.key)
-        rows.append({"account": acc, "usage": snap, "stale_age": reltime_age(snap)})
+        spark = sparkline(db.recent_five_hour(acc.key)) if db is not None else ""
+        rows.append(
+            {"account": acc, "usage": snap, "stale_age": reltime_age(snap), "spark": spark}
+        )
     return rows
 
 
@@ -89,3 +103,12 @@ def render_session_list(
         {"account": acc, "sessions": state.sessions_for_account(acc.key)} for acc in accounts
     ]
     return templates.get_template("partials/session_list.html").render(groups=groups)
+
+
+def render_transcript_events(templates: Jinja2Templates, events) -> str:
+    tmpl = templates.get_template("partials/transcript_event.html")
+    return "".join(tmpl.render(e=e) for e in events)
+
+
+def render_session_status(templates: Jinja2Templates, session) -> str:
+    return templates.get_template("partials/session_status.html").render(s=session)

@@ -61,3 +61,36 @@ main { padding: 12px; max-width: 760px; margin: 0 auto; }
 .session-prompt { color: var(--muted); font-size: 12.5px; margin-top: 4px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty { color: var(--muted); font-size: 13px; padding: 6px 2px; }
+a.session { display: block; text-decoration: none; color: inherit; }
+a.session:active { background: var(--panel2); }
+.spark { color: var(--muted); letter-spacing: -1px; font-size: 11px; }
+
+/* session detail */
+.back { color: var(--remote); text-decoration: none; font-size: 13px; }
+.session-head { display: flex; align-items: center; gap: 8px; padding: 8px 0; font-weight: 600; }
+.status-tag { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; padding: 1px 6px;
+  border-radius: 8px; background: var(--panel2); color: var(--muted); }
+.status-tag.live { color: var(--live); }
+.detail-meta { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 12px; }
+.chip { background: var(--panel2); border-radius: 8px; padding: 2px 8px; font-size: 12px; color: var(--muted); }
+.chip.cwd { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.todos { margin: 8px 0 14px; }
+.todos h3 { font-size: 12px; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; }
+.todo { font-size: 13px; padding: 3px 0; }
+.todo-status { display: inline-block; min-width: 74px; color: var(--muted); font-size: 11px; }
+.todo.completed { color: var(--muted); text-decoration: line-through; }
+
+.transcript { display: flex; flex-direction: column; gap: 8px; }
+.ev { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 10px; background: var(--panel); }
+.ev.assistant { border-left: 3px solid var(--remote); }
+.ev.user { border-left: 3px solid var(--live); }
+.ev.tool { border-left: 3px solid var(--warn); background: var(--panel2); }
+.ev.sub { opacity: .85; margin-left: 12px; }
+.ev-head { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px;
+  text-transform: uppercase; letter-spacing: .03em; margin-bottom: 4px; }
+.ev-tool { font-size: 12.5px; margin-bottom: 3px; }
+.tool-name { font-weight: 600; color: var(--warn); }
+.tool-sum { color: var(--muted); }
+.ev-text { white-space: pre-wrap; word-break: break-word; font-size: 13.5px; line-height: 1.5; }
+.load-earlier { display: block; width: 100%; padding: 8px; margin-bottom: 4px; cursor: pointer;
+  background: var(--panel2); color: var(--fg); border: 1px solid var(--line); border-radius: var(--radius); }
