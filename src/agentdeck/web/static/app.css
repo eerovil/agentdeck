@@ -91,13 +91,14 @@ main { padding: 12px; max-width: 760px; margin: 0 auto; }
 .card-latest .latest-line { display: block; margin-bottom: 2px; }
 .card-latest .latest-line.agent { color: var(--remote); }
 .card-latest.marquee .latest-scroll {
-  animation: vscroll var(--marquee-dur, 8s) linear infinite;
+  animation: vscroll var(--marquee-dur, 8s) linear 1 forwards;
   will-change: transform; }
-/* Scroll top→bottom only: hold at the top, scroll down, hold at the bottom,
-   then snap back to the top (one direction, never reverses). */
+/* Scroll top→bottom once: hold at the top, scroll down, then stop and stay at
+   the bottom (forwards). The JS only re-adds `.marquee` when the message
+   changes, so it doesn't loop — it rests until new text arrives. */
 @keyframes vscroll {
-  0%, 12% { transform: translateY(0); }
-  88%, 100% { transform: translateY(var(--marquee-dist, 0)); }
+  0%, 15% { transform: translateY(0); }
+  100% { transform: translateY(var(--marquee-dist, 0)); }
 }
 @media (prefers-reduced-motion: reduce) { .card-latest.marquee .latest-scroll { animation: none; } }
 .latest-arrow { margin-right: 4px; opacity: .7; }

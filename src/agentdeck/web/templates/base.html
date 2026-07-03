@@ -44,18 +44,32 @@
   // and hand the distance/duration to the CSS animation. Re-run after every SSE
   // list swap, since the cards are replaced wholesale.
   (function () {
+    // Remember each card's last text across list re-renders (the whole list is
+    // swapped wholesale on any update), so a card scrolls once when its message
+    // is new/changed and then rests at the bottom — no looping.
+    var seen = new Map();
     function setup(scope) {
       (scope || document).querySelectorAll('[data-marquee]').forEach(function (box) {
         var inner = box.querySelector('.latest-scroll');
         if (!inner) return;
+        var card = box.closest('a.session');
+        var key = card ? card.getAttribute('href') : null;
+        var text = inner.textContent.replace(/\s+/g, ' ').trim();
+        // reset any prior state on this fresh node
         box.classList.remove('marquee');
+        inner.style.transform = '';
         box.style.removeProperty('--marquee-dist');
         box.style.removeProperty('--marquee-dur');
         var overflow = inner.scrollHeight - box.clientHeight;
-        if (overflow > 6) {
-          box.style.setProperty('--marquee-dist', (-overflow) + 'px');
-          box.style.setProperty('--marquee-dur', Math.max(4, overflow / 35).toFixed(1) + 's');
-          box.classList.add('marquee');
+        if (overflow <= 6) { if (key) seen.set(key, text); return; }
+        box.style.setProperty('--marquee-dist', (-overflow) + 'px');
+        box.style.setProperty('--marquee-dur', Math.max(4, overflow / 35).toFixed(1) + 's');
+        if (key && seen.get(key) === text) {
+          // already scrolled this message — rest at the bottom, don't replay
+          inner.style.transform = 'translateY(' + (-overflow) + 'px)';
+        } else {
+          if (key) seen.set(key, text);
+          box.classList.add('marquee');  // play once, then hold at the bottom
         }
       });
     }
