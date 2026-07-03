@@ -11,7 +11,10 @@
 </head>
 <body hx-ext="sse" sse-connect="/events">
   <header class="topbar">
-    <div class="brand">agentdeck</div>
+    <div class="topbar-row">
+      {% block topbar_nav %}{% endblock %}
+      <div class="brand">agentdeck</div>
+    </div>
     <div id="limit-bars" sse-swap="usage">
       {% block limit_bars %}{% endblock %}
     </div>

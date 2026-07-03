@@ -1,9 +1,9 @@
 {% extends "base.html" %}
 {% block title %}{{ session.title or session.session_id[:8] }} — agentdeck{% endblock %}
 
-{% block content %}
-<p><a class="back" href="/">← all sessions</a></p>
+{% block topbar_nav %}<a class="back" href="/" aria-label="back to all sessions">←</a>{% endblock %}
 
+{% block content %}
 {% set s = session %}
 <div id="session-status">{% include "partials/session_status.html" %}</div>
 
@@ -50,4 +50,23 @@
   {% endif %}
   {% for e in detail.events %}{% include "partials/transcript_event.html" %}{% endfor %}
 </div>
+
+<script>
+(function () {
+  // Open at the newest message; keep pinned to the bottom as the live tail
+  // appends, but stop following once the user scrolls up to read.
+  var NEAR = 140;
+  function atBottom() {
+    return (window.innerHeight + window.scrollY) >= (document.documentElement.scrollHeight - NEAR);
+  }
+  function toBottom() { window.scrollTo(0, document.documentElement.scrollHeight); }
+  var stick = true;
+  window.addEventListener('scroll', function () { stick = atBottom(); }, { passive: true });
+  // initial jump (after layout settles)
+  window.addEventListener('load', function () { requestAnimationFrame(toBottom); });
+  requestAnimationFrame(toBottom);
+  // live-tail appends (htmx SSE swap) — follow only if still at the bottom
+  document.body.addEventListener('htmx:afterSwap', function () { if (stick) toBottom(); });
+})();
+</script>
 {% endblock %}
