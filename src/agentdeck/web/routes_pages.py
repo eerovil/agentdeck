@@ -35,15 +35,16 @@ async def dashboard(request: Request) -> HTMLResponse:
     templates = get_templates(request)
     accounts = get_accounts(request)
     state = get_state(request)
-    groups = [
-        {"account": acc, "sessions": state.sessions_for_account(acc.key)} for acc in accounts
-    ]
-    from .render import _usage_rows
+    from .render import _usage_rows, session_labels
 
     return templates.TemplateResponse(
         request,
         "dashboard.html",
-        {"rows": _usage_rows(accounts, state), "groups": groups},
+        {
+            "rows": _usage_rows(accounts, state),
+            "sessions": state.all_sessions(),
+            "labels": session_labels(accounts),
+        },
     )
 
 

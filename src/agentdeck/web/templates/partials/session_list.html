@@ -1,17 +1,10 @@
-{# `groups` = [{account, sessions:[Session]}]. #}
+{# one merged, ungrouped list across all accounts.
+   `sessions` = [Session] (pre-sorted), `labels` = {account_key: label}. #}
 <div class="session-list">
-  {% for g in groups %}
-  <section class="account-group">
-    <h2 class="account-head">
-      {{ g.account.label }}
-      <span class="count">{{ g.sessions | length }}</span>
-    </h2>
-    {% if g.sessions %}
-      {% for s in g.sessions %}{% include "partials/session_card.html" %}{% endfor %}
-    {% else %}
-      <div class="empty">no sessions</div>
-    {% endif %}
-  </section>
+  {% for s in sessions %}
+    {% set label = labels.get(s.account_key) %}
+    {% include "partials/session_card.html" %}
+  {% else %}
+    <div class="empty">no sessions</div>
   {% endfor %}
-  {% if not groups %}<div class="empty">no accounts configured</div>{% endif %}
 </div>

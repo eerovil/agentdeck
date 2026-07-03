@@ -49,14 +49,21 @@ class AppState:
         self.sessions[session.key] = session
         self.bus.publish("sessions")
 
+    def _sort_key(self, s: Session) -> tuple[int, float]:
+        return (
+            _STATUS_ORDER.get(s.status, 9),
+            -(s.last_activity.timestamp() if s.last_activity else 0.0),
+        )
+
     def sessions_for_account(self, account_key: str) -> list[Session]:
         return sorted(
             (s for s in self.sessions.values() if s.account_key == account_key),
-            key=lambda s: (
-                _STATUS_ORDER.get(s.status, 9),
-                -(s.last_activity.timestamp() if s.last_activity else 0.0),
-            ),
+            key=self._sort_key,
         )
+
+    def all_sessions(self) -> list[Session]:
+        """All sessions across accounts, LIVE first then most-recently-active."""
+        return sorted(self.sessions.values(), key=self._sort_key)
 
     # --- usage --------------------------------------------------------
 

@@ -9,6 +9,7 @@
   <div class="card-latest"><span class="latest-arrow">↳</span>{{ s.last_prompt }}</div>
   {% endif %}
   <div class="session-meta">
+    {% if label %}<span class="acct-badge acct-{{ label }}">{{ label }}</span>{% endif %}
     {% if s.cwd %}<span class="cwd" title="{{ s.cwd }}">{{ s.cwd.name or s.cwd }}</span>{% endif %}
     {% if s.kind %}<span class="kind">{{ s.kind }}</span>{% endif %}
     {% if s.last_activity %}<span class="ago">{{ s.last_activity | reltime_ago }}</span>{% endif %}

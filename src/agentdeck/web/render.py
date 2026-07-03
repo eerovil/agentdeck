@@ -96,13 +96,16 @@ def render_limit_bars(templates: Jinja2Templates, accounts: list[Account], state
     )
 
 
+def session_labels(accounts: list[Account]) -> dict[str, str]:
+    return {acc.key: acc.label for acc in accounts}
+
+
 def render_session_list(
     templates: Jinja2Templates, accounts: list[Account], state: AppState
 ) -> str:
-    groups = [
-        {"account": acc, "sessions": state.sessions_for_account(acc.key)} for acc in accounts
-    ]
-    return templates.get_template("partials/session_list.html").render(groups=groups)
+    return templates.get_template("partials/session_list.html").render(
+        sessions=state.all_sessions(), labels=session_labels(accounts)
+    )
 
 
 def render_transcript_events(templates: Jinja2Templates, events) -> str:
