@@ -158,8 +158,9 @@ details.ev.tool > .ev-text { margin-top: 6px; max-height: 420px; overflow: auto;
 .load-earlier { display: block; width: 100%; padding: 8px; margin-bottom: 4px; cursor: pointer;
   background: var(--panel2); color: var(--fg); border: 1px solid var(--line); border-radius: var(--radius); }
 
-/* sticky bottom bar with the claude.ai deep link */
-.chat-bar { position: sticky; bottom: 0; z-index: 5; margin: 12px -12px 0; padding: 10px 12px;
+/* claude.ai deep link — at the very bottom of the page (not sticky), so it's
+   only in view once you've scrolled to the end of the transcript */
+.chat-bar { margin: 12px -12px 0; padding: 10px 12px;
   padding-bottom: calc(10px + env(safe-area-inset-bottom, 0));
   background: var(--panel); border-top: 1px solid var(--line); }
 .chat-bar-row { display: flex; align-items: center; gap: 8px; }

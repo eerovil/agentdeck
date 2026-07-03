@@ -38,6 +38,9 @@ HEARTBEAT_S = 15.0
 TAIL_INTERVAL_S = 1.5
 # Detail-page "thinking" turns off this long after the last transcript write.
 THINKING_OFF_S = 3.0
+# Re-render the usage bars at least this often so the "updated Nm ago" time
+# ticks and the bars re-sync between the (slower) usage polls.
+USAGE_REFRESH_S = 30.0
 
 
 def _usage_sig(accounts, state) -> tuple:
@@ -66,24 +69,34 @@ async def _stream(request: Request) -> AsyncIterator[str]:
             return format_sse("usage", render_limit_bars(templates, accounts, state))
         return format_sse("sessions", render_session_list(templates, accounts, state))
 
+    loop = asyncio.get_event_loop()
     with state.bus.subscribe("usage", "sessions") as sub:
         # Prime the client with current state on connect.
         yield render("usage")
         yield render("sessions")
+        last_usage_push = loop.time()
         while True:
             if await request.is_disconnected():
                 break
             try:
                 topic, _ = await asyncio.wait_for(sub.get(), timeout=HEARTBEAT_S)
+                dirty = {topic}
+                while (item := sub.get_nowait()) is not None:
+                    dirty.add(item[0])
             except TimeoutError:
+                dirty = set()
+            # Refresh usage on a fixed cadence so the "updated" time keeps ticking
+            # even while sessions churn (which would otherwise starve the timeout).
+            if loop.time() - last_usage_push >= USAGE_REFRESH_S:
+                dirty.add("usage")
+            if not dirty:
                 yield ": ping\n\n"
                 continue
-            dirty = {topic}
-            while (item := sub.get_nowait()) is not None:
-                dirty.add(item[0])
             for t in ("usage", "sessions"):
                 if t in dirty:
                     yield render(t)
+            if "usage" in dirty:
+                last_usage_push = loop.time()
 
 
 @router.get("/events")
@@ -119,6 +132,7 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
     # actually changes (~every usage poll), not every tail.
     yield format_sse("usage", render_limit_bars(templates, accounts, state))
     last_usage_sig = _usage_sig(accounts, state)
+    last_usage_push = loop.time()
     while True:
         if await request.is_disconnected():
             break
@@ -142,8 +156,10 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
             last_label = label
             yield format_sse("tools", render_tool_activity(templates, label))
         sig = _usage_sig(accounts, state)
-        if sig != last_usage_sig:
+        # push on a new snapshot, or on the fixed cadence so "updated" keeps ticking
+        if sig != last_usage_sig or (loop.time() - last_usage_push) >= USAGE_REFRESH_S:
             last_usage_sig = sig
+            last_usage_push = loop.time()
             yield format_sse("usage", render_limit_bars(templates, accounts, state))
         await asyncio.sleep(TAIL_INTERVAL_S)
 
