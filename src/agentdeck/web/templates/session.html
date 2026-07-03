@@ -43,7 +43,7 @@
   {% for e in detail.events %}{% include "partials/transcript_event.html" %}{% endfor %}
 </div>
 
-<div id="tool-activity" sse-swap="tools">{% set thinking = session.thinking %}{% include "partials/tool_activity.html" %}</div>
+<div id="tool-activity" sse-swap="tools">{% set label = activity_label %}{% include "partials/tool_activity.html" %}</div>
 
 {% if session.deep_link %}
 <div class="chat-bar">

@@ -119,8 +119,30 @@ def test_tool_events_hidden_and_live_marker(tmp_path):
     assert "huge noisy tool result" not in html  # past tool result dropped
     assert "here is my answer" in html  # real assistant text kept
     # the live marker appears only while actively working
-    assert "Using tools" in render_tool_activity(templates, True)
-    assert "Using tools" not in render_tool_activity(templates, False)
+    assert "Using tools" in render_tool_activity(templates, "Using tools")
+    assert "tool-wait" not in render_tool_activity(templates, None)
+
+
+def test_activity_label_fallback():
+    from agentdeck.models import TranscriptEvent
+    from agentdeck.web.render import activity_label
+
+    tool_call = TranscriptEvent(seq=1, role="assistant", tool_name="Bash", text=None)
+    tool_result = TranscriptEvent(seq=1, role="tool", text="output")
+    user_msg = TranscriptEvent(seq=1, role="user", text="do it")
+    reply = TranscriptEvent(seq=1, role="assistant", text="done")
+
+    # a long tool run: quiet (not streaming) but last line is a tool → still busy
+    assert activity_label(True, False, tool_call) == "Using tools"
+    assert activity_label(True, False, tool_result) == "Using tools"
+    # unanswered prompt while quiet → working (slow first token doesn't read idle)
+    assert activity_label(True, False, user_msg) == "Working"
+    # finished reply, quiet → idle (no marker)
+    assert activity_label(True, False, reply) is None
+    # finished reply but actively writing → working
+    assert activity_label(True, True, reply) == "Working"
+    # dead process → never a marker
+    assert activity_label(False, True, tool_call) is None
 
 
 async def test_thinking_badge_renders(tmp_path):

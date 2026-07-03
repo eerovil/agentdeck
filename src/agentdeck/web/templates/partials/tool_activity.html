@@ -1,5 +1,5 @@
-{# live "using tools" marker — shown only while the session is actively working
-   right now (thinking). Empty otherwise, so the swap clears it when it stops. #}
-{%- if thinking -%}
-<div class="ev tool-wait"><span class="tool-wait-label">Using tools</span></div>
+{# live activity marker — shown only while the session is actively working
+   (label = "Using tools" / "Working"). Empty when idle, so the swap clears it. #}
+{%- if label -%}
+<div class="ev tool-wait"><span class="tool-wait-label">{{ label }}</span></div>
 {%- endif -%}

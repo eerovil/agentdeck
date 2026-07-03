@@ -257,6 +257,12 @@ class ClaudeCodeProvider(SessionProvider):
         read = transcripts_mod.read_events(path)
         return [e for e in read.events if e.seq > after_seq]
 
+    async def last_event(
+        self, account: Account, session: Session
+    ) -> TranscriptEvent | None:
+        path = self._transcript_path(account, session)
+        return transcripts_mod.last_event(path) if path is not None else None
+
     async def transcript_cursor(self, account: Account, session: Session) -> tuple[int, int]:
         path = self._transcript_path(account, session)
         if path is None:

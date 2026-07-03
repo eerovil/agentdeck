@@ -190,6 +190,37 @@ def read_events(
     return TranscriptRead(events, byte_offset + consumed, seq, skipped)
 
 
+def last_event(path: Path, *, tail: int = 65536) -> TranscriptEvent | None:
+    """The most recent renderable event, read cheaply from the file tail. Used
+    to tell whether the agent's turn is still open (last line is a tool call /
+    tool result / user prompt → busy) or closed (last line is an assistant text
+    reply → waiting for input)."""
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as f:
+            if size > tail:
+                f.seek(size - tail)
+                f.readline()  # discard the partial first line after a mid-file seek
+            data = f.read()
+    except OSError:
+        return None
+    found: TranscriptEvent | None = None
+    for raw in data.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        ev = _event_from_line(0, obj)
+        if ev is not None:
+            found = ev
+    return found
+
+
 def _user_text(obj: dict) -> str | None:
     message = obj.get("message")
     content = message.get("content") if isinstance(message, dict) else None

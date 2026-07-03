@@ -24,6 +24,7 @@ from .deps import (
     resolve_session,
 )
 from .render import (
+    activity_label,
     render_limit_bars,
     render_session_list,
     render_session_status,
@@ -108,15 +109,16 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
     loop = asyncio.get_event_loop()
 
     offset, seq = await provider.transcript_cursor(account, session)
+    last_ev = await provider.last_event(account, session)
     last_activity_t = loop.time() if session.thinking else -1e9
     last_status = None
-    last_thinking = None
+    last_busy = None
+    last_label = None
     # The topbar usage bars ride this same stream (see session.html), so the
     # session page holds one socket, not two. Re-push only when a snapshot
     # actually changes (~every usage poll), not every tail.
     yield format_sse("usage", render_limit_bars(templates, accounts, state))
     last_usage_sig = _usage_sig(accounts, state)
-    yield format_sse("tools", render_tool_activity(templates, bool(session.thinking)))
     while True:
         if await request.is_disconnected():
             break
@@ -124,14 +126,21 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
         if new_events:
             yield format_sse("transcript", render_transcript_events(templates, new_events))
             last_activity_t = loop.time()
+            last_ev = new_events[-1]
         current = state.sessions.get(session_key) or session
         live = current.status == SessionStatus.LIVE
-        thinking = live and (loop.time() - last_activity_t) < THINKING_OFF_S
-        if current.status != last_status or thinking != last_thinking:
-            last_status, last_thinking = current.status, thinking
-            snap = replace(current, thinking=thinking)
+        streaming = live and (loop.time() - last_activity_t) < THINKING_OFF_S
+        # "Busy" (pulsing dot + activity marker) tracks the open turn, not just
+        # recent writes — so a long tool run or slow first token stays busy.
+        label = activity_label(live, streaming, last_ev)
+        busy = label is not None
+        if current.status != last_status or busy != last_busy:
+            last_status, last_busy = current.status, busy
+            snap = replace(current, thinking=busy)
             yield format_sse("status", render_session_status(templates, snap))
-            yield format_sse("tools", render_tool_activity(templates, thinking))
+        if label != last_label:
+            last_label = label
+            yield format_sse("tools", render_tool_activity(templates, label))
         sig = _usage_sig(accounts, state)
         if sig != last_usage_sig:
             last_usage_sig = sig

@@ -53,7 +53,12 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
     account, session, provider = resolve_session(request, session_key)
     templates = get_templates(request)
     detail = await provider.load_transcript(account, session)
-    from .render import _usage_rows
+    from ..models import SessionStatus
+    from .render import _usage_rows, activity_label
+
+    last_ev = detail.events[-1] if detail.events else None
+    live = session.status == SessionStatus.LIVE
+    label = activity_label(live, bool(session.thinking), last_ev)
 
     return templates.TemplateResponse(
         request,
@@ -61,6 +66,8 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
         {
             "session": session,
             "detail": detail,
+            # the initial activity marker; the SSE stream refines it within ~1.5s
+            "activity_label": label,
             # topbar usage bars, rendered server-side so they paint immediately
             # (the per-session SSE stream then keeps them live over one socket).
             "rows": _usage_rows(get_accounts(request), get_state(request)),

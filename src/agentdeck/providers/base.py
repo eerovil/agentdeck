@@ -59,6 +59,11 @@ class SessionProvider(ABC):
         """Incremental read from a cursor → (new_events, byte_offset, seq)."""
         return ([], byte_offset, seq)
 
+    async def last_event(self, account: Account, session: Session) -> TranscriptEvent | None:
+        """The most recent renderable event (for activity detection); None if
+        the provider has no transcript."""
+        return None
+
     def make_usage_poller(
         self, account: Account, state: AppState, bus: EventBus, **kwargs: Any
     ) -> Any | None:
