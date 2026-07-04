@@ -1,5 +1,6 @@
 {% extends "base.html" %}
-{% block title %}{{ session.title or session.session_id[:8] }} — agentdeck{% endblock %}
+{# keep tab/home-screen titles short (< 15 chars): the repo name, else the brand #}
+{% block title %}{% if session.cwd and session.cwd.name %}{{ session.cwd.name[:14] }}{% else %}agentdeck{% endif %}{% endblock %}
 
 {% block topbar_nav %}<a class="back" href="/" aria-label="back to all sessions">←</a>{% endblock %}
 
