@@ -177,6 +177,19 @@ details.ev.tool > .ev-text { margin-top: 6px; max-height: 420px; overflow: auto;
 .tool-name { font-weight: 600; color: var(--warn); }
 .tool-sum { color: var(--muted); }
 .ev-text { white-space: pre-wrap; word-break: break-word; font-size: 13.5px; line-height: 1.5; }
+
+/* rendered markdown (detail .ev-text + expanded card .lt-text) */
+.ev-text[data-md], .lt-text[data-md] { white-space: normal; }
+[data-md] code { background: var(--panel2); padding: 1px 4px; border-radius: 4px;
+  font-family: ui-monospace, "SF Mono", monospace; font-size: .9em; word-break: break-word; }
+[data-md] pre { background: var(--panel2); padding: 8px 10px; border-radius: 6px; margin: 6px 0;
+  overflow-x: auto; }
+[data-md] pre code { background: none; padding: 0; font-size: 12px; }
+[data-md] ul { margin: 4px 0; padding-left: 18px; }
+[data-md] li { margin: 1px 0; }
+[data-md] a { color: var(--remote); }
+[data-md] .md-h { font-weight: 700; margin: 5px 0 2px; }
+[data-md] strong { font-weight: 700; }
 .load-earlier { display: block; width: 100%; padding: 8px; margin-bottom: 4px; cursor: pointer;
   background: var(--panel2); color: var(--fg); border: 1px solid var(--line); border-radius: var(--radius); }
 

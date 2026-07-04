@@ -23,6 +23,38 @@
     {% block content %}{% endblock %}
   </main>
   <script>
+  // Minimal, injection-safe markdown → HTML (escape first, then format). Used to
+  // prettify transcript messages in the detail view and expanded list cards.
+  function mdEscape(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+  function mdInline(s) {
+    s = s.replace(/`([^`]+)`/g, function (_, c) { return '<code>' + c + '</code>'; });
+    s = s.replace(/\*\*([^*]+?)\*\*/g, '<strong>$1</strong>');
+    s = s.replace(/(^|[^\w*])\*([^*\n]+?)\*(?!\w)/g, '$1<em>$2</em>');
+    s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    return s;
+  }
+  function mdToHtml(text) {
+    var segs = mdEscape(text).split(/```/), out = '';
+    for (var i = 0; i < segs.length; i++) {
+      if (i % 2 === 1) {                       // inside a fenced code block
+        out += '<pre><code>' + segs[i].replace(/^[^\n]*\n/, '').replace(/\n$/, '') + '</code></pre>';
+        continue;
+      }
+      var lines = segs[i].split('\n'), buf = '', inList = false;
+      for (var j = 0; j < lines.length; j++) {
+        var ln = lines[j], li = ln.match(/^\s*[-*+]\s+(.*)$/), hd = ln.match(/^\s*(#{1,6})\s+(.*)$/);
+        if (li) { if (!inList) { buf += '<ul>'; inList = true; } buf += '<li>' + mdInline(li[1]) + '</li>'; continue; }
+        if (inList) { buf += '</ul>'; inList = false; }
+        if (hd) buf += '<div class="md-h">' + mdInline(hd[2]) + '</div>';
+        else if (ln.trim() === '') buf += '<br>';
+        else buf += mdInline(ln) + '<br>';
+      }
+      if (inList) buf += '</ul>';
+      out += buf;
+    }
+    return out.replace(/<br>(\s*<(?:ul|pre))/g, '$1').replace(/(<\/(?:ul|pre)>)<br>/g, '$1').replace(/<br>\s*$/, '');
+  }
+
   // Connection hygiene: over HTTP/1.1 a browser allows ~6 sockets per host, and
   // each open page holds a long-lived SSE stream. A bfcached page keeps its
   // EventSource, so a few navigations exhaust the cap and the next page stalls.
@@ -60,7 +92,7 @@
     function latestOf(box) {
       return { prompt: (box.dataset.prompt || '').trim(), text: (box.dataset.text || '').trim() };
     }
-    function renderFeed(inner, arr) {
+    function renderFeed(inner, arr, md) {
       inner.textContent = '';
       arr.forEach(function (m) {
         var line = document.createElement('span');
@@ -70,7 +102,8 @@
         arrow.textContent = m.role === 'agent' ? '⟳' : '↳';
         var txt = document.createElement('span');
         txt.className = 'lt-text';
-        txt.textContent = m.text;                 // textContent = injection-safe
+        if (md) { txt.innerHTML = mdToHtml(m.text); txt.setAttribute('data-md', ''); }
+        else { txt.textContent = m.text; }        // collapsed: plain text for the marquee
         line.appendChild(arrow); line.appendChild(txt);
         inner.appendChild(line);
       });
@@ -102,7 +135,7 @@
         if (arr.length > MAXLEN) arr = arr.slice(arr.length - MAXLEN);
         lastSeen.set(key, cur);
         feed.set(key, arr);
-        renderFeed(inner, arr);
+        renderFeed(inner, arr, expanded.has(key));  // markdown only when expanded
 
         // Marquee is reserved for a NEW message arriving while the page is open.
         // On first load and on reorder (no new message) just snap to the bottom
@@ -184,6 +217,19 @@
         if (since && rel) rel.textContent = fmtAge(now - since);
       });
     }, 1000);
+  })();
+
+  // Render markdown in detail-view transcript messages (once each; new events
+  // arrive over SSE and get enhanced on afterSwap).
+  (function () {
+    function enhance(scope) {
+      (scope || document).querySelectorAll('.ev-text:not([data-md])').forEach(function (el) {
+        el.innerHTML = mdToHtml(el.textContent);
+        el.setAttribute('data-md', '');
+      });
+    }
+    window.addEventListener('load', function () { enhance(); });
+    document.body.addEventListener('htmx:afterSwap', function (e) { enhance(e.target); });
   })();
   </script>
 </body>
