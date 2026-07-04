@@ -146,8 +146,30 @@ def test_transcript_meta_prefers_ai_title(tmp_path):
     )
     title, last_prompt, first_user, cwd, _last_text = transcripts.transcript_meta(p)
     assert title == "Fix the login bug"
-    assert last_prompt == "now add a test"
+    # the USER line is newer than the last-prompt bookkeeping, so it wins
+    assert last_prompt == "hello there"
     assert first_user == "hello there"
+
+
+def test_last_prompt_tracks_user_line_not_just_bookkeeping(tmp_path):
+    """The card's last_prompt must follow the real user line, which is written
+    before the lagging `last-prompt` bookkeeping — else the list shows a stale
+    prompt while the agent is already working on the new one."""
+    p = tmp_path / "t.jsonl"
+    _write(
+        p,
+        [
+            {"type": "last-prompt", "lastPrompt": "old question", "sessionId": "s"},
+            {"type": "user", "message": {"role": "user", "content": "the NEW question"}},
+            # agent has started; the new `last-prompt` line hasn't been written yet
+            {
+                "type": "assistant",
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "on it"}]},
+            },
+        ],
+    )
+    _title, last_prompt, _fu, _cwd, _lt = transcripts.transcript_meta(p)
+    assert last_prompt == "the NEW question"
 
 
 def test_transcript_meta_first_user_fallback(tmp_path):

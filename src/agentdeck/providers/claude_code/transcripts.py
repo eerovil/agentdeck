@@ -302,12 +302,25 @@ def transcript_meta(
             if t == "ai-title" and isinstance(obj.get("aiTitle"), str):
                 ai_title = obj["aiTitle"].strip() or ai_title
             elif t == "last-prompt" and isinstance(obj.get("lastPrompt"), str):
+                # bookkeeping fallback — written a few lines *after* the user
+                # turn, so the real user line below is what keeps us in sync.
                 last_prompt = obj["lastPrompt"].strip() or last_prompt
             elif t == "assistant":
                 last_text = _assistant_text(obj) or last_text
-            elif t == "user" and first_user is None:
+            elif t == "user":
                 if not obj.get("isMeta") and not obj.get("isSidechain"):
-                    first_user = _user_text(obj)
+                    ut = _user_text(obj)  # None for tool_result-only user lines
+                    if ut:
+                        if first_user is None:
+                            first_user = ut
+                        last_prompt = ut  # authoritative newest prompt (matches detail)
+            elif (
+                t == "queue-operation"
+                and obj.get("operation") == "enqueue"
+                and isinstance(obj.get("content"), str)
+                and obj["content"].strip()
+            ):
+                last_prompt = obj["content"].strip()  # typed-while-busy message
 
     scan(head_bytes, skip_first_partial=False)
     if tail_bytes:
