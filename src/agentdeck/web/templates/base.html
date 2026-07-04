@@ -174,7 +174,7 @@
         // Start/continue the typewriter — but never on first load or when the
         // card is expanded (reading mode shows the full text at once).
         if (typeEntry && known && !expanded.has(key)) {
-          typing.set(key, { entry: typeEntry, shown: typeFrom });
+          typing.set(key, { entry: typeEntry, full: typeEntry.text, shown: typeFrom });
         }
         // Re-apply the (client-only) expanded state, which survives list swaps.
         if (card.classList.contains('expanded') !== expanded.has(key)) {
@@ -185,24 +185,30 @@
         renderFeed(inner, arr, expanded.has(key), key);
         inner.style.transform = '';
         if (expanded.has(key)) { box.scrollTop = box.scrollHeight; return; }
+        box.scrollTop = 0;   // clear scroll left over from expanded mode, else the
+                             // leftover offset + transform hides the text (blank card)
         toBottom(box, inner);                     // keep the newest text in view
       });
     }
     // Advance every active typewriter at a fixed 300 WPM (standard 5 chars/word
-    // = 25 chars/sec). t.shown is fractional and accumulates across ticks, so
-    // the pace is independent of the 40ms tick rate. Re-reads t.el each tick
-    // (renderFeed re-sets it after a swap).
-    var TICK_MS = 40, CHARS_PER_MS = 300 * 5 / 60 / 1000;  // 300 wpm
-    setInterval(function () {
+    // = 25 chars/sec), timed off requestAnimationFrame elapsed-ms so it's smooth
+    // and reliable on mobile (setInterval gets throttled). t.shown is fractional.
+    var CHARS_PER_MS = 300 * 5 / 60 / 1000;  // 300 wpm
+    var lastTs = null;
+    function tick(ts) {
+      var dt = lastTs == null ? 16 : Math.min(200, ts - lastTs);
+      lastTs = ts;
       typing.forEach(function (t, key) {
         if (!t.el || t.full == null) return;
-        t.shown = Math.min(t.full.length, t.shown + CHARS_PER_MS * TICK_MS);
+        t.shown = Math.min(t.full.length, t.shown + CHARS_PER_MS * dt);
         var n = Math.floor(t.shown);
         renderInto(t.el, t.full.slice(0, n), t.md, n < t.full.length);
         if (t.box && t.inner) toBottom(t.box, t.inner);
         if (n >= t.full.length) typing.delete(key);
       });
-    }, TICK_MS);
+      requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
 
     // Run synchronously on swap (before paint) so a reorder never flashes.
     window.addEventListener('load', function () { requestAnimationFrame(function () { setup(); }); });
