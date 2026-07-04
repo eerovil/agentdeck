@@ -53,10 +53,11 @@
     var feed = new Map();        // href -> [{role, text}]
     var lastSeen = new Map();    // href -> {prompt, text}
 
+    // Read the current latest from stable data-attributes on the box — NOT from
+    // the inner DOM, which renderFeed() rebuilds (so re-reading it would return
+    // wrong values and falsely flag every card as changed).
     function latestOf(box) {
-      var u = box.querySelector('.latest-line[data-role="user"] .lt-text');
-      var a = box.querySelector('.latest-line[data-role="agent"] .lt-text');
-      return { prompt: u ? u.textContent.trim() : '', text: a ? a.textContent.trim() : '' };
+      return { prompt: (box.dataset.prompt || '').trim(), text: (box.dataset.text || '').trim() };
     }
     function renderFeed(inner, arr) {
       inner.textContent = '';

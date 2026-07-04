@@ -8,9 +8,9 @@
     {% if s.deep_link %}<span class="deeplink">↗</span>{% endif %}
   </div>
   {% if s.last_prompt or s.last_text %}
-  <div class="card-latest" data-marquee><span class="latest-scroll">
-    {% if s.last_prompt %}<span class="latest-line" data-role="user"><span class="latest-arrow">↳</span><span class="lt-text">{{ s.last_prompt }}</span></span>{% endif %}
-    {% if s.last_text %}<span class="latest-line agent" data-role="agent"><span class="latest-arrow">⟳</span><span class="lt-text">{{ s.last_text }}</span></span>{% endif %}
+  <div class="card-latest" data-marquee data-prompt="{{ s.last_prompt or '' }}" data-text="{{ s.last_text or '' }}"><span class="latest-scroll">
+    {% if s.last_prompt %}<span class="latest-line"><span class="latest-arrow">↳</span><span class="lt-text">{{ s.last_prompt }}</span></span>{% endif %}
+    {% if s.last_text %}<span class="latest-line agent"><span class="latest-arrow">⟳</span><span class="lt-text">{{ s.last_text }}</span></span>{% endif %}
   </span></div>
   {% endif %}
   <div class="session-meta">
