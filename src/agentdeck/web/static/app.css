@@ -102,7 +102,7 @@ body.usage-open .limit-bars { display: flex; }
    `.marquee` and drives a gentle vertical auto-scroll so the whole message is
    readable in the fixed height (scrolls down, then back up). */
 .card-latest { color: var(--muted); font-size: 12.5px; line-height: 1.4;
-  margin: 4px 0 0 15px; height: 5.6em; overflow: hidden; position: relative; }
+  margin: 4px 0 0 15px; height: 7.1em; overflow: hidden; position: relative; }
 .card-latest .latest-scroll { display: block; }
 .card-latest .latest-line { display: block; margin-bottom: 2px; }
 .card-latest .latest-line.agent { color: var(--remote); }
