@@ -76,6 +76,9 @@ class ClaudeCodeProvider(SessionProvider):
             str,
             tuple[float, tuple[str | None, str | None, str | None, str | None, str | None]],
         ] = {}
+        # last-renderable-event cache (mtime-keyed) — the liveness sweep reads it
+        # every few seconds per live session, so idle ones must stay a cache hit.
+        self._last_ev_cache: dict[str, tuple[float, TranscriptEvent | None]] = {}
 
     def _cached_meta(
         self, path: Path
@@ -91,13 +94,26 @@ class ClaudeCodeProvider(SessionProvider):
         self._meta_cache[str(path)] = (mtime, meta)
         return meta
 
+    def _cached_last_event(self, path: Path) -> TranscriptEvent | None:
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return None
+        hit = self._last_ev_cache.get(str(path))
+        if hit is not None and hit[0] == mtime:
+            return hit[1]
+        ev = transcripts_mod.last_event(path)
+        self._last_ev_cache[str(path)] = (mtime, ev)
+        return ev
+
     def _activity(self, is_live: bool, tpath: Path | None, last_write) -> str | None:
-        """Activity label for a live session, from its open turn (cheap tail
-        read). Same logic as the detail page, so list and detail agree."""
+        """Activity label for a live session, from its open turn (cheap, mtime
+        -cached tail read). Same logic as the detail page, so list and detail
+        agree."""
         if not (is_live and tpath is not None and last_write is not None):
             return None
         age = (datetime.now(UTC) - last_write).total_seconds()
-        last_ev = transcripts_mod.last_event(tpath)
+        last_ev = self._cached_last_event(tpath)
         return activity_label(True, age < THINKING_WINDOW_S, last_ev, age)
 
     # --- discovery -----------------------------------------------------
@@ -201,9 +217,17 @@ class ClaudeCodeProvider(SessionProvider):
             live_now = bool(entry and registry_mod.is_alive(entry))
             status_now = SessionStatus.LIVE if live_now else SessionStatus.IDLE
             activity_now = None
+            last_prompt_now = s.last_prompt
+            last_text_now = s.last_text
             if live_now:
                 tp = self._transcript_path(account, s)
                 activity_now = self._activity(True, tp, _mtime(tp) if tp else None)
+                if tp is not None:
+                    # keep the list's messages as fresh as the detail tail — this
+                    # is the mtime-cached meta, so idle transcripts cost nothing.
+                    _at, lp, _fu, _cwd, lt = self._cached_meta(tp)
+                    last_prompt_now = lp or s.last_prompt
+                    last_text_now = lt or s.last_text
             thinking_now = activity_now is not None
             pid_now = entry.pid if (entry and live_now) else None
             deep_link_now = (
@@ -213,12 +237,16 @@ class ClaudeCodeProvider(SessionProvider):
                 status_now != s.status
                 or thinking_now != s.thinking
                 or activity_now != s.activity
+                or last_prompt_now != s.last_prompt
+                or last_text_now != s.last_text
                 or pid_now != s.pid
                 or deep_link_now != s.deep_link
             ):
                 s.status = status_now
                 s.thinking = thinking_now
                 s.activity = activity_now
+                s.last_prompt = last_prompt_now
+                s.last_text = last_text_now
                 s.pid = pid_now
                 s.deep_link = deep_link_now
                 s.kind = entry.kind if entry else s.kind

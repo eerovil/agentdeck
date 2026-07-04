@@ -80,37 +80,50 @@
         var card = box.closest('a.session');
         var key = card ? card.getAttribute('href') : null;
         if (!key) return;
+        var known = lastSeen.has(key);            // seen this session before this render?
         var cur = latestOf(box);
         var prev = lastSeen.get(key) || {};
         var arr = feed.get(key) || [];
-        var appended = false;
-        if (cur.prompt && cur.prompt !== prev.prompt) { arr.push({ role: 'user', text: cur.prompt }); appended = true; }
-        if (cur.text && cur.text !== prev.text) { arr.push({ role: 'agent', text: cur.text }); appended = true; }
+        var last = arr.length ? arr[arr.length - 1] : null;
+        var newMessage = false;                   // a genuinely new turn (not streaming growth)
+        if (cur.prompt && cur.prompt !== prev.prompt) {
+          arr.push({ role: 'user', text: cur.prompt }); newMessage = true;
+          last = arr[arr.length - 1];
+        }
+        if (cur.text && cur.text !== prev.text) {
+          if (last && last.role === 'agent') {
+            last.text = cur.text;                 // same reply still streaming — update in place
+          } else {
+            arr.push({ role: 'agent', text: cur.text }); newMessage = true;  // new reply
+          }
+        }
         if (arr.length > MAXLEN) arr = arr.slice(arr.length - MAXLEN);
         lastSeen.set(key, cur);
         feed.set(key, arr);
         renderFeed(inner, arr);
 
-        // size + drive the one-shot scroll
+        // Marquee is reserved for a NEW message arriving while the page is open.
+        // On first load and on reorder (no new message) just snap to the bottom
+        // instantly — no scrolling animation.
         box.classList.remove('marquee');
         inner.style.transform = '';
         box.style.removeProperty('--marquee-dist');
         box.style.removeProperty('--marquee-dur');
         var overflow = inner.scrollHeight - box.clientHeight;
         if (overflow <= 6) return;                // fits — nothing to scroll
-        box.style.setProperty('--marquee-dist', (-overflow) + 'px');
-        box.style.setProperty('--marquee-dur', Math.min(30, Math.max(4, overflow / 35)).toFixed(1) + 's');
-        if (appended) {
+        if (known && newMessage) {
+          box.style.setProperty('--marquee-dist', (-overflow) + 'px');
+          box.style.setProperty('--marquee-dur', Math.min(30, Math.max(4, overflow / 35)).toFixed(1) + 's');
           box.classList.add('marquee');           // scroll once to the new bottom
         } else {
-          inner.style.transform = 'translateY(' + (-overflow) + 'px)';  // rest at bottom
+          inner.style.transform = 'translateY(' + (-overflow) + 'px)';  // instant to bottom
         }
       });
     }
+    // Run synchronously on swap (before paint) so a reorder never flashes the
+    // content from the top before snapping to the bottom.
     window.addEventListener('load', function () { requestAnimationFrame(function () { setup(); }); });
-    document.body.addEventListener('htmx:afterSwap', function (e) {
-      requestAnimationFrame(function () { setup(e.target); });
-    });
+    document.body.addEventListener('htmx:afterSwap', function (e) { setup(e.target); });
   })();
 
   // Usage header expand/collapse — delegated (the fragment is swapped every
