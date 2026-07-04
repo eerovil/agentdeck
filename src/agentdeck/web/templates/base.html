@@ -172,11 +172,11 @@
         toBottom(box, inner);                     // keep the newest text in view
       });
     }
-    // Advance every active typewriter at a fixed 200 WPM (standard 5 chars/word
-    // ≈ 16.7 chars/sec). t.shown is fractional and accumulates across ticks, so
+    // Advance every active typewriter at a fixed 300 WPM (standard 5 chars/word
+    // = 25 chars/sec). t.shown is fractional and accumulates across ticks, so
     // the pace is independent of the 40ms tick rate. Re-reads t.el each tick
     // (renderFeed re-sets it after a swap).
-    var TICK_MS = 40, CHARS_PER_MS = 200 * 5 / 60 / 1000;  // 200 wpm
+    var TICK_MS = 40, CHARS_PER_MS = 300 * 5 / 60 / 1000;  // 300 wpm
     setInterval(function () {
       typing.forEach(function (t, key) {
         if (!t.el || t.full == null) return;
