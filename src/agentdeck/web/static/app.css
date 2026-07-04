@@ -119,6 +119,13 @@ body.usage-open .limit-bars { display: flex; }
 @media (prefers-reduced-motion: reduce) { .card-latest.marquee .latest-scroll { animation: none; } }
 .latest-arrow { margin-right: 4px; opacity: .7; }
 .deeplink { margin-left: auto; font-size: 12px; color: var(--remote); text-decoration: none; flex: none; }
+.expand-btn { margin-left: auto; flex: none; cursor: pointer; color: var(--muted); font-size: 13px;
+  line-height: 1; padding: 2px 7px; border-radius: 6px; user-select: none;
+  transition: transform .15s ease; }
+.deeplink + .expand-btn { margin-left: 4px; }
+.expand-btn:active { background: var(--panel2); }
+.session.expanded .expand-btn { color: var(--fg); transform: rotate(180deg); }
+.session.expanded .card-latest { height: auto; max-height: 65vh; overflow-y: auto; }
 .session-meta { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 12px; margin-top: 5px; }
 .cwd { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; }
 .empty { color: var(--muted); font-size: 13px; padding: 6px 2px; }

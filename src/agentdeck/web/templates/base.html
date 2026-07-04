@@ -52,6 +52,7 @@
     var MAXLEN = 16;             // keep the most recent N messages per card
     var feed = new Map();        // href -> [{role, text}]
     var lastSeen = new Map();    // href -> {prompt, text}
+    var expanded = new Set();    // hrefs whose card is expanded inline (persists across swaps)
 
     // Read the current latest from stable data-attributes on the box — NOT from
     // the inner DOM, which renderFeed() rebuilds (so re-reading it would return
@@ -110,6 +111,14 @@
         inner.style.transform = '';
         box.style.removeProperty('--marquee-dist');
         box.style.removeProperty('--marquee-dur');
+        // Re-apply the (client-only) expanded state, which survives list swaps.
+        if (card.classList.contains('expanded') !== expanded.has(key)) {
+          card.classList.toggle('expanded', expanded.has(key));
+        }
+        if (expanded.has(key)) {
+          if (newMessage) box.scrollTop = box.scrollHeight;  // keep newest in view
+          return;                                            // expanded: full height, no marquee
+        }
         var overflow = inner.scrollHeight - box.clientHeight;
         if (overflow <= 6) return;                // fits — nothing to scroll
         if (known && newMessage) {
@@ -125,6 +134,21 @@
     // content from the top before snapping to the bottom.
     window.addEventListener('load', function () { requestAnimationFrame(function () { setup(); }); });
     document.body.addEventListener('htmx:afterSwap', function (e) { setup(e.target); });
+
+    // Inline expand/collapse toggle. The button lives inside the card <a>, so
+    // stop it from navigating; toggle the persisted set and re-run setup so the
+    // card grows to show the full accumulated feed (and stays expanded across
+    // the wholesale list swaps).
+    document.addEventListener('click', function (e) {
+      var btn = e.target.closest('.expand-btn');
+      if (!btn) return;
+      e.preventDefault(); e.stopPropagation();
+      var card = btn.closest('a.session');
+      var key = card && card.getAttribute('href');
+      if (!key) return;
+      if (expanded.has(key)) expanded.delete(key); else expanded.add(key);
+      setup(card);
+    });
   })();
 
   // Usage header expand/collapse — delegated (the fragment is swapped every
