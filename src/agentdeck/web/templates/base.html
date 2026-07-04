@@ -106,8 +106,9 @@
     }
     function renderFeed(inner, arr, md, key) {
       inner.textContent = '';
-      var t = typing.get(key);
-      arr.forEach(function (m, idx) {
+      var t = typing.get(key), found = false;
+      if (t) t.el = null;
+      arr.forEach(function (m) {
         var line = document.createElement('span');
         line.className = 'latest-line' + (m.role === 'agent' ? ' agent' : '');
         var arrow = document.createElement('span');
@@ -115,15 +116,18 @@
         arrow.textContent = m.role === 'agent' ? '⟳' : '↳';
         var txt = document.createElement('span');
         txt.className = 'lt-text';
-        if (t && idx === arr.length - 1) {         // the line being typed out
+        if (t && m === t.entry) {                   // the line being typed out
+          found = true;
           t.el = txt; t.box = inner.parentElement; t.inner = inner; t.md = md; t.full = m.text;
-          renderInto(txt, m.text.slice(0, t.shown), md, t.shown < m.text.length);
+          var n = Math.floor(t.shown);
+          renderInto(txt, m.text.slice(0, n), md, n < m.text.length);
         } else {
           renderInto(txt, m.text, md, false);
         }
         line.appendChild(arrow); line.appendChild(txt);
         inner.appendChild(line);
       });
+      if (t && !found) typing.delete(key);          // its message scrolled out of the window
     }
     function setup(scope) {
       (scope || document).querySelectorAll('[data-marquee]').forEach(function (box) {
@@ -134,22 +138,34 @@
         if (!key) return;
         var known = lastSeen.has(key);            // seen this session before this render?
         var cur = latestOf(box);
+        var role = box.dataset.latestRole || 'agent';  // who spoke most recently
         var prev = lastSeen.get(key) || {};
         var arr = feed.get(key) || [];
-        var last = arr.length ? arr[arr.length - 1] : null;
-        var typeFrom = null;                      // char index to start the typewriter at
-        if (cur.prompt && cur.prompt !== prev.prompt) {
-          arr.push({ role: 'user', text: cur.prompt });   // the user's own prompt appears instantly
-          last = arr[arr.length - 1];
-        }
-        if (cur.text && cur.text !== prev.text) {
-          if (last && last.role === 'agent') {
-            var oldLen = last.text.length; last.text = cur.text;  // reply still streaming
-            typeFrom = typing.has(key) ? Math.min(typing.get(key).shown, cur.text.length) : oldLen;
+        var typeEntry = null, typeFrom = null;    // the agent entry to type out, and from where
+
+        function addUser() { arr.push({ role: 'user', text: cur.prompt }); }
+        function addAgent(doType) {
+          var l = arr.length ? arr[arr.length - 1] : null;
+          if (l && l.role === 'agent') {          // same reply still streaming — grow in place
+            var oldLen = l.text.length; l.text = cur.text;
+            if (doType) { typeEntry = l; typeFrom = typing.has(key) ? Math.min(typing.get(key).shown, cur.text.length) : oldLen; }
           } else {
-            arr.push({ role: 'agent', text: cur.text }); last = arr[arr.length - 1];
-            typeFrom = 0;                          // a brand-new reply types from the start
+            var e = { role: 'agent', text: cur.text }; arr.push(e);
+            if (doType) { typeEntry = e; typeFrom = 0; }   // brand-new reply types from the start
           }
+        }
+        var pc = cur.prompt && cur.prompt !== prev.prompt;
+        var tc = cur.text && cur.text !== prev.text;
+        // Order the two lines chronologically via last_role, and type the reply
+        // only when the agent is the current speaker (not when the user's
+        // message is the newest — then it's the user's turn, no typing).
+        if (pc && tc) {
+          if (role === 'user') { addAgent(false); addUser(); }   // agent older, user newest
+          else { addUser(); addAgent(true); }                    // user older, agent newest
+        } else if (pc) {
+          addUser();
+        } else if (tc) {
+          addAgent(role === 'agent');
         }
         if (arr.length > MAXLEN) arr = arr.slice(arr.length - MAXLEN);
         lastSeen.set(key, cur);
@@ -157,8 +173,8 @@
 
         // Start/continue the typewriter — but never on first load or when the
         // card is expanded (reading mode shows the full text at once).
-        if (typeFrom !== null && known && !expanded.has(key)) {
-          typing.set(key, { full: last.text, shown: typeFrom });
+        if (typeEntry && known && !expanded.has(key)) {
+          typing.set(key, { entry: typeEntry, shown: typeFrom });
         }
         // Re-apply the (client-only) expanded state, which survives list swaps.
         if (card.classList.contains('expanded') !== expanded.has(key)) {

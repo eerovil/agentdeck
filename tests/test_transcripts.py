@@ -144,7 +144,7 @@ def test_transcript_meta_prefers_ai_title(tmp_path):
             USER,
         ],
     )
-    title, last_prompt, first_user, cwd, _last_text = transcripts.transcript_meta(p)
+    title, last_prompt, first_user, cwd, _last_text, _last_role = transcripts.transcript_meta(p)
     assert title == "Fix the login bug"
     # the USER line is newer than the last-prompt bookkeeping, so it wins
     assert last_prompt == "hello there"
@@ -168,7 +168,7 @@ def test_last_prompt_tracks_user_line_not_just_bookkeeping(tmp_path):
             },
         ],
     )
-    _title, last_prompt, _fu, _cwd, _lt = transcripts.transcript_meta(p)
+    _title, last_prompt, _fu, _cwd, _lt, _lr = transcripts.transcript_meta(p)
     assert last_prompt == "the NEW question"
 
 
@@ -176,7 +176,7 @@ def test_transcript_meta_first_user_fallback(tmp_path):
     p = tmp_path / "t.jsonl"
     meta_line = {"type": "user", "isMeta": True, "message": {"role": "user", "content": "META"}}
     _write(p, [meta_line, USER])
-    title, last_prompt, first_user, cwd, _last_text = transcripts.transcript_meta(p)
+    title, last_prompt, first_user, cwd, _last_text, _last_role = transcripts.transcript_meta(p)
     assert title is None  # no ai-title
     assert first_user == "hello there"  # meta line skipped
 
@@ -193,12 +193,14 @@ def test_transcript_meta_extracts_cwd(tmp_path):
             },
         ],
     )
-    _title, _lp, _fu, cwd, _lt = transcripts.transcript_meta(p)
+    _title, _lp, _fu, cwd, _lt, _lr = transcripts.transcript_meta(p)
     assert cwd == "/var/home/eero/outdoor"
 
 
 def test_transcript_meta_missing_file(tmp_path):
-    assert transcripts.transcript_meta(tmp_path / "nope.jsonl") == (None, None, None, None, None)
+    assert transcripts.transcript_meta(tmp_path / "nope.jsonl") == (
+        None, None, None, None, None, None,
+    )
 
 
 def test_transcript_meta_extracts_last_agent_text(tmp_path):
@@ -220,5 +222,23 @@ def test_transcript_meta_extracts_last_agent_text(tmp_path):
             },
         ],
     )
-    *_, last_text = transcripts.transcript_meta(p)
+    _at, _lp, _fu, _cwd, last_text, _lr = transcripts.transcript_meta(p)
     assert last_text == "newest reply"
+
+
+def test_last_role_reflects_most_recent_message(tmp_path):
+    """last_role tells the card which line is newest. A user turn after the
+    agent's reply (agent working, no new text yet) must read as 'user'."""
+    agent = {
+        "type": "assistant",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": "here you go"}]},
+    }
+    # agent replied, then the user sent a new message (agent not yet answered)
+    newq = {"type": "user", "message": {"role": "user", "content": "and now this"}}
+    p = tmp_path / "u.jsonl"
+    _write(p, [USER, agent, newq])
+    assert transcripts.transcript_meta(p)[5] == "user"
+    # agent replied last
+    p2 = tmp_path / "a.jsonl"
+    _write(p2, [USER, agent])
+    assert transcripts.transcript_meta(p2)[5] == "agent"

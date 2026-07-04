@@ -9,9 +9,10 @@
     {% if s.last_prompt or s.last_text %}<span class="expand-btn" data-expand role="button" tabindex="0" aria-label="expand messages" title="expand">⌄</span>{% endif %}
   </div>
   {% if s.last_prompt or s.last_text %}
-  <div class="card-latest" data-marquee data-prompt="{{ s.last_prompt or '' }}" data-text="{{ s.last_text or '' }}"><span class="latest-scroll">
-    {% if s.last_prompt %}<span class="latest-line"><span class="latest-arrow">↳</span><span class="lt-text">{{ s.last_prompt }}</span></span>{% endif %}
-    {% if s.last_text %}<span class="latest-line agent"><span class="latest-arrow">⟳</span><span class="lt-text">{{ s.last_text }}</span></span>{% endif %}
+  {% set user_line %}{% if s.last_prompt %}<span class="latest-line"><span class="latest-arrow">↳</span><span class="lt-text">{{ s.last_prompt }}</span></span>{% endif %}{% endset %}
+  {% set agent_line %}{% if s.last_text %}<span class="latest-line agent"><span class="latest-arrow">⟳</span><span class="lt-text">{{ s.last_text }}</span></span>{% endif %}{% endset %}
+  <div class="card-latest" data-marquee data-prompt="{{ s.last_prompt or '' }}" data-text="{{ s.last_text or '' }}" data-latest-role="{{ s.last_role or 'agent' }}"><span class="latest-scroll">
+    {% if s.last_role == 'user' %}{{ agent_line }}{{ user_line }}{% else %}{{ user_line }}{{ agent_line }}{% endif %}
   </span></div>
   {% endif %}
   <div class="session-meta">

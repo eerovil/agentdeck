@@ -74,19 +74,17 @@ class ClaudeCodeProvider(SessionProvider):
         # invalidated by mtime, so idle transcripts aren't re-parsed every scan.
         self._meta_cache: dict[
             str,
-            tuple[float, tuple[str | None, str | None, str | None, str | None, str | None]],
+            tuple[float, tuple[str | None, ...]],
         ] = {}
         # last-renderable-event cache (mtime-keyed) — the liveness sweep reads it
         # every few seconds per live session, so idle ones must stay a cache hit.
         self._last_ev_cache: dict[str, tuple[float, TranscriptEvent | None]] = {}
 
-    def _cached_meta(
-        self, path: Path
-    ) -> tuple[str | None, str | None, str | None, str | None, str | None]:
+    def _cached_meta(self, path: Path) -> tuple[str | None, ...]:
         try:
             mtime = path.stat().st_mtime
         except OSError:
-            return (None, None, None, None, None)
+            return (None, None, None, None, None, None)
         hit = self._meta_cache.get(str(path))
         if hit is not None and hit[0] == mtime:
             return hit[1]
@@ -149,9 +147,11 @@ class ClaudeCodeProvider(SessionProvider):
             # Title: prefer the transcript's AI-generated title, then history,
             # then the first user message; last_prompt/cwd likewise from the
             # transcript when the registry/history don't have them.
-            ai_title = last_prompt = first_user = tcwd = last_text = None
+            ai_title = last_prompt = first_user = tcwd = last_text = last_role = None
             if tpath is not None:
-                ai_title, last_prompt, first_user, tcwd, last_text = self._cached_meta(tpath)
+                ai_title, last_prompt, first_user, tcwd, last_text, last_role = self._cached_meta(
+                    tpath
+                )
 
             cwd: Path | None = None
             if entry and entry.cwd:
@@ -196,6 +196,7 @@ class ClaudeCodeProvider(SessionProvider):
                     title=title,
                     last_prompt=last_prompt,
                     last_text=last_text,
+                    last_role=last_role,
                     kind=entry.kind if entry else None,
                     pid=entry.pid if (entry and is_live) else None,
                     proc_start=entry.proc_start if entry else None,
@@ -219,15 +220,17 @@ class ClaudeCodeProvider(SessionProvider):
             activity_now = None
             last_prompt_now = s.last_prompt
             last_text_now = s.last_text
+            last_role_now = s.last_role
             if live_now:
                 tp = self._transcript_path(account, s)
                 activity_now = self._activity(True, tp, _mtime(tp) if tp else None)
                 if tp is not None:
                     # keep the list's messages as fresh as the detail tail — this
                     # is the mtime-cached meta, so idle transcripts cost nothing.
-                    _at, lp, _fu, _cwd, lt = self._cached_meta(tp)
+                    _at, lp, _fu, _cwd, lt, lr = self._cached_meta(tp)
                     last_prompt_now = lp or s.last_prompt
                     last_text_now = lt or s.last_text
+                    last_role_now = lr or s.last_role
             thinking_now = activity_now is not None
             pid_now = entry.pid if (entry and live_now) else None
             deep_link_now = (
@@ -239,6 +242,7 @@ class ClaudeCodeProvider(SessionProvider):
                 or activity_now != s.activity
                 or last_prompt_now != s.last_prompt
                 or last_text_now != s.last_text
+                or last_role_now != s.last_role
                 or pid_now != s.pid
                 or deep_link_now != s.deep_link
             ):
@@ -247,6 +251,7 @@ class ClaudeCodeProvider(SessionProvider):
                 s.activity = activity_now
                 s.last_prompt = last_prompt_now
                 s.last_text = last_text_now
+                s.last_role = last_role_now
                 s.pid = pid_now
                 s.deep_link = deep_link_now
                 s.kind = entry.kind if entry else s.kind

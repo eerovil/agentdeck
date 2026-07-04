@@ -257,19 +257,22 @@ def _assistant_text(obj: dict) -> str | None:
 
 def transcript_meta(
     path: Path, *, head: int = 65536, tail: int = 32768
-) -> tuple[str | None, str | None, str | None, str | None, str | None]:
+) -> tuple[str | None, str | None, str | None, str | None, str | None, str | None]:
     """Cheap extraction without parsing the whole file → (ai_title, last_prompt,
-    first_user_text, cwd, last_agent_text). Claude Code writes an ``ai-title``
-    line (a concise session summary), ``last-prompt`` lines, and a ``cwd`` field
-    on every entry; we read the head (ai-title/first prompt/cwd live there) and
-    the tail (latest last-prompt + latest assistant reply), latest occurrence
-    winning. ``cwd`` is shown for idle sessions too — the live-process registry
-    is gone once a session is idle."""
+    first_user_text, cwd, last_agent_text, last_role). Claude Code writes an
+    ``ai-title`` line (a concise session summary), ``last-prompt`` lines, and a
+    ``cwd`` field on every entry; we read the head (ai-title/first prompt/cwd
+    live there) and the tail (latest last-prompt + latest assistant reply),
+    latest occurrence winning. ``last_role`` ("user"/"agent") is who sent the
+    most recent *text* message, so the card can order the two lines correctly.
+    ``cwd`` is shown for idle sessions too — the live-process registry is gone
+    once a session is idle."""
     ai_title: str | None = None
     last_prompt: str | None = None
     first_user: str | None = None
     cwd: str | None = None
     last_text: str | None = None
+    last_role: str | None = None
     try:
         size = path.stat().st_size
         with path.open("rb") as f:
@@ -279,10 +282,10 @@ def transcript_meta(
                 f.seek(max(head, size - tail))
                 tail_bytes = f.read()
     except OSError:
-        return (None, None, None, None, None)
+        return (None, None, None, None, None, None)
 
     def scan(blob: bytes, skip_first_partial: bool) -> None:
-        nonlocal ai_title, last_prompt, first_user, cwd, last_text
+        nonlocal ai_title, last_prompt, first_user, cwd, last_text, last_role
         lines = blob.split(b"\n")
         if skip_first_partial and lines:
             lines = lines[1:]  # a mid-file seek can land inside a line
@@ -306,7 +309,10 @@ def transcript_meta(
                 # turn, so the real user line below is what keeps us in sync.
                 last_prompt = obj["lastPrompt"].strip() or last_prompt
             elif t == "assistant":
-                last_text = _assistant_text(obj) or last_text
+                at = _assistant_text(obj)
+                if at:
+                    last_text = at
+                    last_role = "agent"
             elif t == "user":
                 if not obj.get("isMeta") and not obj.get("isSidechain"):
                     ut = _user_text(obj)  # None for tool_result-only user lines
@@ -314,6 +320,7 @@ def transcript_meta(
                         if first_user is None:
                             first_user = ut
                         last_prompt = ut  # authoritative newest prompt (matches detail)
+                        last_role = "user"
             elif (
                 t == "queue-operation"
                 and obj.get("operation") == "enqueue"
@@ -321,11 +328,12 @@ def transcript_meta(
                 and obj["content"].strip()
             ):
                 last_prompt = obj["content"].strip()  # typed-while-busy message
+                last_role = "user"
 
     scan(head_bytes, skip_first_partial=False)
     if tail_bytes:
         scan(tail_bytes, skip_first_partial=True)
-    return (ai_title, last_prompt, first_user, cwd, last_text)
+    return (ai_title, last_prompt, first_user, cwd, last_text, last_role)
 
 
 def token_totals(events: list[TranscriptEvent]) -> TokenTotals:
