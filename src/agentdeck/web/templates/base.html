@@ -71,20 +71,18 @@
     window.addEventListener('pageshow', function (e) { if (e.persisted) location.reload(); });
   })();
 
-  // Auto-scroll ("marquee") for session cards whose latest text overflows the
-  // fixed ~4-line window. Pure CSS can't measure overflow, so we measure here
-  // and hand the distance/duration to the CSS animation. Re-run after every SSE
-  // list swap, since the cards are replaced wholesale.
+  // Per-card live feed with a typewriter reveal for new replies. Re-run after
+  // every SSE list swap, since the cards are replaced wholesale.
   (function () {
     // Each card is a small live feed. The whole list is swapped wholesale on any
     // update, so we keep the accumulated feed per session (keyed by its URL) in
-    // JS across swaps: when a card's latest prompt/reply changes, we APPEND it to
-    // that card's feed and re-run the marquee; otherwise the card just rests at
-    // the bottom. Full messages, never truncated — the marquee scrolls them.
+    // JS across swaps. When a card's reply changes, the newest text is revealed
+    // with a typewriter effect; otherwise the card just rests at the bottom.
     var MAXLEN = 16;             // keep the most recent N messages per card
     var feed = new Map();        // href -> [{role, text}]
     var lastSeen = new Map();    // href -> {prompt, text}
     var expanded = new Set();    // hrefs whose card is expanded inline (persists across swaps)
+    var typing = new Map();      // href -> {full, shown, el, box, inner, md} — active typewriter
 
     // Read the current latest from stable data-attributes on the box — NOT from
     // the inner DOM, which renderFeed() rebuilds (so re-reading it would return
@@ -92,9 +90,19 @@
     function latestOf(box) {
       return { prompt: (box.dataset.prompt || '').trim(), text: (box.dataset.text || '').trim() };
     }
-    function renderFeed(inner, arr, md) {
+    function renderInto(el, text, md, cursor) {
+      if (md) { el.innerHTML = mdToHtml(text); el.setAttribute('data-md', ''); }
+      else { el.textContent = text; }
+      if (cursor) { var c = document.createElement('span'); c.className = 'type-caret'; el.appendChild(c); }
+    }
+    function toBottom(box, inner) {
+      var ov = inner.scrollHeight - box.clientHeight;
+      inner.style.transform = ov > 6 ? 'translateY(' + (-ov) + 'px)' : '';
+    }
+    function renderFeed(inner, arr, md, key) {
       inner.textContent = '';
-      arr.forEach(function (m) {
+      var t = typing.get(key);
+      arr.forEach(function (m, idx) {
         var line = document.createElement('span');
         line.className = 'latest-line' + (m.role === 'agent' ? ' agent' : '');
         var arrow = document.createElement('span');
@@ -102,8 +110,12 @@
         arrow.textContent = m.role === 'agent' ? '⟳' : '↳';
         var txt = document.createElement('span');
         txt.className = 'lt-text';
-        if (md) { txt.innerHTML = mdToHtml(m.text); txt.setAttribute('data-md', ''); }
-        else { txt.textContent = m.text; }        // collapsed: plain text for the marquee
+        if (t && idx === arr.length - 1) {         // the line being typed out
+          t.el = txt; t.box = inner.parentElement; t.inner = inner; t.md = md; t.full = m.text;
+          renderInto(txt, m.text.slice(0, t.shown), md, t.shown < m.text.length);
+        } else {
+          renderInto(txt, m.text, md, false);
+        }
         line.appendChild(arrow); line.appendChild(txt);
         inner.appendChild(line);
       });
@@ -120,58 +132,59 @@
         var prev = lastSeen.get(key) || {};
         var arr = feed.get(key) || [];
         var last = arr.length ? arr[arr.length - 1] : null;
-        var newMessage = false;                   // a genuinely new turn (not streaming growth)
+        var typeFrom = null;                      // char index to start the typewriter at
         if (cur.prompt && cur.prompt !== prev.prompt) {
-          arr.push({ role: 'user', text: cur.prompt }); newMessage = true;
+          arr.push({ role: 'user', text: cur.prompt });   // the user's own prompt appears instantly
           last = arr[arr.length - 1];
         }
         if (cur.text && cur.text !== prev.text) {
           if (last && last.role === 'agent') {
-            last.text = cur.text;                 // same reply still streaming — update in place
+            var oldLen = last.text.length; last.text = cur.text;  // reply still streaming
+            typeFrom = typing.has(key) ? Math.min(typing.get(key).shown, cur.text.length) : oldLen;
           } else {
-            arr.push({ role: 'agent', text: cur.text }); newMessage = true;  // new reply
+            arr.push({ role: 'agent', text: cur.text }); last = arr[arr.length - 1];
+            typeFrom = 0;                          // a brand-new reply types from the start
           }
         }
         if (arr.length > MAXLEN) arr = arr.slice(arr.length - MAXLEN);
         lastSeen.set(key, cur);
         feed.set(key, arr);
-        renderFeed(inner, arr, expanded.has(key));  // markdown only when expanded
 
-        // Marquee is reserved for a NEW message arriving while the page is open.
-        // On first load and on reorder (no new message) just snap to the bottom
-        // instantly — no scrolling animation.
-        box.classList.remove('marquee');
-        inner.style.transform = '';
-        box.style.removeProperty('--marquee-dist');
-        box.style.removeProperty('--marquee-dur');
+        // Start/continue the typewriter — but never on first load or when the
+        // card is expanded (reading mode shows the full text at once).
+        if (typeFrom !== null && known && !expanded.has(key)) {
+          typing.set(key, { full: last.text, shown: typeFrom });
+        }
         // Re-apply the (client-only) expanded state, which survives list swaps.
         if (card.classList.contains('expanded') !== expanded.has(key)) {
           card.classList.toggle('expanded', expanded.has(key));
         }
-        if (expanded.has(key)) {
-          if (newMessage) box.scrollTop = box.scrollHeight;  // keep newest in view
-          return;                                            // expanded: full height, no marquee
-        }
-        var overflow = inner.scrollHeight - box.clientHeight;
-        if (overflow <= 6) return;                // fits — nothing to scroll
-        if (known && newMessage) {
-          box.style.setProperty('--marquee-dist', (-overflow) + 'px');
-          box.style.setProperty('--marquee-dur', Math.min(30, Math.max(4, overflow / 35)).toFixed(1) + 's');
-          box.classList.add('marquee');           // scroll once to the new bottom
-        } else {
-          inner.style.transform = 'translateY(' + (-overflow) + 'px)';  // instant to bottom
-        }
+        if (expanded.has(key)) typing.delete(key);
+
+        renderFeed(inner, arr, expanded.has(key), key);
+        inner.style.transform = '';
+        if (expanded.has(key)) { box.scrollTop = box.scrollHeight; return; }
+        toBottom(box, inner);                     // keep the newest text in view
       });
     }
-    // Run synchronously on swap (before paint) so a reorder never flashes the
-    // content from the top before snapping to the bottom.
+    // Advance every active typewriter ~25 fps; each finishes in ~1.5s regardless
+    // of length. Re-reads t.el each tick (renderFeed re-sets it after a swap).
+    setInterval(function () {
+      typing.forEach(function (t, key) {
+        if (!t.el || t.full == null) return;
+        t.shown = Math.min(t.full.length, t.shown + Math.max(1, Math.ceil(t.full.length / 38)));
+        renderInto(t.el, t.full.slice(0, t.shown), t.md, t.shown < t.full.length);
+        if (t.box && t.inner) toBottom(t.box, t.inner);
+        if (t.shown >= t.full.length) typing.delete(key);
+      });
+    }, 40);
+
+    // Run synchronously on swap (before paint) so a reorder never flashes.
     window.addEventListener('load', function () { requestAnimationFrame(function () { setup(); }); });
     document.body.addEventListener('htmx:afterSwap', function (e) { setup(e.target); });
 
     // Inline expand/collapse toggle. The button lives inside the card <a>, so
-    // stop it from navigating; toggle the persisted set and re-run setup so the
-    // card grows to show the full accumulated feed (and stays expanded across
-    // the wholesale list swaps).
+    // stop it from navigating; toggle the persisted set and re-run setup.
     document.addEventListener('click', function (e) {
       var btn = e.target.closest('.expand-btn');
       if (!btn) return;
