@@ -167,17 +167,21 @@
         toBottom(box, inner);                     // keep the newest text in view
       });
     }
-    // Advance every active typewriter ~25 fps; each finishes in ~1.5s regardless
-    // of length. Re-reads t.el each tick (renderFeed re-sets it after a swap).
+    // Advance every active typewriter at a fixed 200 WPM (standard 5 chars/word
+    // ≈ 16.7 chars/sec). t.shown is fractional and accumulates across ticks, so
+    // the pace is independent of the 40ms tick rate. Re-reads t.el each tick
+    // (renderFeed re-sets it after a swap).
+    var TICK_MS = 40, CHARS_PER_MS = 200 * 5 / 60 / 1000;  // 200 wpm
     setInterval(function () {
       typing.forEach(function (t, key) {
         if (!t.el || t.full == null) return;
-        t.shown = Math.min(t.full.length, t.shown + Math.max(1, Math.ceil(t.full.length / 38)));
-        renderInto(t.el, t.full.slice(0, t.shown), t.md, t.shown < t.full.length);
+        t.shown = Math.min(t.full.length, t.shown + CHARS_PER_MS * TICK_MS);
+        var n = Math.floor(t.shown);
+        renderInto(t.el, t.full.slice(0, n), t.md, n < t.full.length);
         if (t.box && t.inner) toBottom(t.box, t.inner);
-        if (t.shown >= t.full.length) typing.delete(key);
+        if (n >= t.full.length) typing.delete(key);
       });
-    }, 40);
+    }, TICK_MS);
 
     // Run synchronously on swap (before paint) so a reorder never flashes.
     window.addEventListener('load', function () { requestAnimationFrame(function () { setup(); }); });
