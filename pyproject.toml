@@ -25,6 +25,7 @@ agentdeck = "agentdeck.__main__:main"
 
 [dependency-groups]
 dev = [
+    "playwright>=1.61.0",
     "pytest",
     "pytest-asyncio",
     "respx",
