@@ -77,6 +77,29 @@ async def test_dashboard_renders_usage_and_session(tmp_path):
     assert "42%" in r.text
 
 
+async def test_pwa_routes(tmp_path):
+    app = _app_with_state(tmp_path)
+    async with _client(app) as c:
+        sw = await c.get("/sw.js")
+        mf = await c.get("/manifest.webmanifest")
+        dash = await c.get("/")
+    # Service worker: served from root (so its scope covers the whole app),
+    # with the correct JS type and the scope-broadening header.
+    assert sw.status_code == 200
+    assert sw.headers["content-type"].startswith("text/javascript")
+    assert sw.headers["service-worker-allowed"] == "/"
+    assert "addEventListener('fetch'" in sw.text
+    # Manifest: correct content type + installability essentials.
+    assert mf.status_code == 200
+    assert mf.headers["content-type"].startswith("application/manifest+json")
+    body = mf.json()
+    assert body["display"] == "standalone"
+    assert any(i.get("purpose") == "maskable" for i in body["icons"])
+    # The page registers the worker and links the manifest.
+    assert "/manifest.webmanifest" in dash.text
+    assert "serviceWorker.register('/sw.js')" in dash.text
+
+
 async def test_partial_sessions(tmp_path):
     app = _app_with_state(tmp_path)
     async with _client(app) as c:

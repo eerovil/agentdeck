@@ -17,6 +17,7 @@ from .state import AppState
 from .web import render as render_mod
 from .web.routes_pages import router as pages_router
 from .web.routes_partials import router as partials_router
+from .web.routes_pwa import router as pwa_router
 from .web.routes_sse import router as sse_router
 
 log = logging.getLogger(__name__)
@@ -56,4 +57,5 @@ def create_app(config: AppConfig) -> FastAPI:
     app.include_router(pages_router)
     app.include_router(partials_router)
     app.include_router(sse_router)
+    app.include_router(pwa_router)
     return app
