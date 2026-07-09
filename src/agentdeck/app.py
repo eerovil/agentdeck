@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -26,6 +27,25 @@ _WEB_DIR = Path(__file__).parent / "web"
 _TEMPLATES_DIR = _WEB_DIR / "templates"
 _STATIC_DIR = _WEB_DIR / "static"
 
+VERSION = "0.3.1"
+
+
+def _build_id() -> str:
+    """Short git SHA of the running tree, shown in the footer so you can tell at
+    a glance (on the phone) whether an install picked up the latest code. Falls
+    back to 'dev' outside a checkout."""
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(Path(__file__).resolve().parent.parent.parent),
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        return out.stdout.strip() or "dev"
+    except Exception:
+        return "dev"
+
 
 def create_app(config: AppConfig) -> FastAPI:
     db = make_db(
@@ -34,6 +54,8 @@ def create_app(config: AppConfig) -> FastAPI:
     state = AppState(db=db)
     templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
     render_mod.register_filters(templates)
+    templates.env.globals["app_version"] = VERSION
+    templates.env.globals["build_id"] = _build_id()
     collector = Collector(config, state)
 
     @asynccontextmanager
@@ -45,7 +67,7 @@ def create_app(config: AppConfig) -> FastAPI:
             await collector.stop()
             db.close()
 
-    app = FastAPI(title="agentdeck", version="0.3.1", lifespan=lifespan)
+    app = FastAPI(title="agentdeck", version=VERSION, lifespan=lifespan)
     app.state.config = config
     app.state.app_state = state
     app.state.accounts = config.build_accounts()

@@ -40,6 +40,7 @@
   <main>
     {% block content %}{% endblock %}
   </main>
+  <footer class="build">agentdeck v{{ app_version }} · {{ build_id }}</footer>
   <script>
   // Minimal, injection-safe markdown → HTML (escape first, then format). Used to
   // prettify transcript messages in the detail view and expanded list cards.
@@ -84,29 +85,40 @@
   // check the stream and reload if it's dead (what pull-to-refresh did by hand).
   (function () {
     var sources = new Set();
+    // The server pushes a `usage` event at least every 30s (plus a ping comment
+    // every 15s), so under health we hear from it constantly. Track the last
+    // time we did: this is the reliable liveness signal. EventSource.readyState
+    // is NOT — a socket the OS froze in the background commonly still reports
+    // OPEN, so a readyState check would think a dead stream is fine.
+    var lastMsgAt = Date.now();
     document.body.addEventListener('htmx:sseOpen', function (e) {
       if (e.detail && e.detail.source) sources.add(e.detail.source);
+      lastMsgAt = Date.now();
     });
+    document.body.addEventListener('htmx:sseMessage', function () { lastMsgAt = Date.now(); });
     document.body.addEventListener('htmx:sseClose', function (e) {
       if (e.detail && e.detail.source) sources.delete(e.detail.source);
     });
-    function streamAlive() {
-      for (var s of sources) if (s.readyState === EventSource.OPEN) return true;
-      return false;
+    // Dead if we've heard nothing for well past the 30s usage cadence.
+    function streamStale() { return Date.now() - lastMsgAt > 75000; }
+    function recover() {
+      if (document.visibilityState === 'visible' && streamStale()) location.reload();
     }
+
     window.addEventListener('pagehide', function () {
       sources.forEach(function (s) { try { s.close(); } catch (_) {} });
       sources.clear();
     });
     window.addEventListener('pageshow', function (e) { if (e.persisted) location.reload(); });
+    // Installed as a PWA, mobile freezes the app in the background and tears the
+    // SSE socket down without reliably firing pagehide/onerror. On return, give
+    // any in-flight reconnect a moment, then reload if the stream is stale.
     document.addEventListener('visibilitychange', function () {
-      if (document.visibilityState !== 'visible') return;
-      // Give a frozen stream a moment to reconnect on its own before we reload,
-      // so a quick app-switch doesn't flash the page when the socket survived.
-      setTimeout(function () {
-        if (document.visibilityState === 'visible' && !streamAlive()) location.reload();
-      }, 1500);
+      if (document.visibilityState === 'visible') setTimeout(recover, 2000);
     });
+    // And a watchdog while visible, to catch a socket that silently died mid-use
+    // (a zombie OPEN EventSource never fires onerror, so htmx won't reconnect).
+    setInterval(recover, 20000);
   })();
 
   // Per-card live feed with a typewriter reveal for new replies. Re-run after

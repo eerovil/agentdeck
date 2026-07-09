@@ -35,7 +35,7 @@ async def dashboard(request: Request) -> HTMLResponse:
     state = get_state(request)
     from .render import _usage_rows, session_labels
 
-    return templates.TemplateResponse(
+    resp = templates.TemplateResponse(
         request,
         "dashboard.html",
         {
@@ -44,6 +44,10 @@ async def dashboard(request: Request) -> HTMLResponse:
             "labels": session_labels(accounts),
         },
     )
+    # Live dashboard — always revalidate so a deploy's HTML (and the inline
+    # SSE-recovery JS) reaches the phone instead of a stale browser-cached copy.
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
 
 
 @router.get(
@@ -68,7 +72,7 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
     label = activity_label(live, bool(session.thinking), last_ev, age)
     account_label = session_labels(get_accounts(request)).get(session.account_key)
 
-    return templates.TemplateResponse(
+    resp = templates.TemplateResponse(
         request,
         "session.html",
         {
@@ -83,3 +87,5 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
             "rows": _usage_rows(get_accounts(request), get_state(request)),
         },
     )
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp

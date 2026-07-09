@@ -98,6 +98,13 @@ async def test_pwa_routes(tmp_path):
     # The page registers the worker and links the manifest.
     assert "/manifest.webmanifest" in dash.text
     assert "serviceWorker.register('/sw.js')" in dash.text
+    # Live-stream recovery hook + a build stamp so the phone can prove freshness.
+    assert "visibilitychange" in dash.text
+    assert "streamStale" in dash.text
+    assert 'class="build"' in dash.text
+    assert "agentdeck v" in dash.text
+    # Dashboard HTML must not be cached, so a deploy's inline JS actually lands.
+    assert dash.headers["cache-control"] == "no-cache"
 
 
 async def test_partial_sessions(tmp_path):
