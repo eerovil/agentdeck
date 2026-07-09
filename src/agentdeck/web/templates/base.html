@@ -73,20 +73,40 @@
     return out.replace(/<br>(\s*<(?:ul|pre))/g, '$1').replace(/(<\/(?:ul|pre)>)<br>/g, '$1').replace(/<br>\s*$/, '');
   }
 
-  // Connection hygiene: over HTTP/1.1 a browser allows ~6 sockets per host, and
-  // each open page holds a long-lived SSE stream. A bfcached page keeps its
-  // EventSource, so a few navigations exhaust the cap and the next page stalls.
-  // Close streams on leave; if the page is later restored from bfcache (where
-  // they won't reconnect), reload fresh.
+  // Connection hygiene + live-stream recovery across the (mobile PWA) lifecycle.
+  // Over HTTP/1.1 a browser allows ~6 sockets per host and each open page holds
+  // a long-lived SSE stream, so a few navigations exhaust the cap. We close
+  // streams on leave; a bfcached page keeps its EventSource but won't reconnect,
+  // so reload on restore. The harder case is an installed PWA: mobile freezes
+  // the app in the background and tears the SSE socket down, and a source we've
+  // .close()d never fires htmx's auto-reconnect — so on return the cards sit
+  // stale until a manual refresh. Fix: when the page becomes visible again,
+  // check the stream and reload if it's dead (what pull-to-refresh did by hand).
   (function () {
     var sources = new Set();
     document.body.addEventListener('htmx:sseOpen', function (e) {
       if (e.detail && e.detail.source) sources.add(e.detail.source);
     });
+    document.body.addEventListener('htmx:sseClose', function (e) {
+      if (e.detail && e.detail.source) sources.delete(e.detail.source);
+    });
+    function streamAlive() {
+      for (var s of sources) if (s.readyState === EventSource.OPEN) return true;
+      return false;
+    }
     window.addEventListener('pagehide', function () {
       sources.forEach(function (s) { try { s.close(); } catch (_) {} });
+      sources.clear();
     });
     window.addEventListener('pageshow', function (e) { if (e.persisted) location.reload(); });
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState !== 'visible') return;
+      // Give a frozen stream a moment to reconnect on its own before we reload,
+      // so a quick app-switch doesn't flash the page when the socket survived.
+      setTimeout(function () {
+        if (document.visibilityState === 'visible' && !streamAlive()) location.reload();
+      }, 1500);
+    });
   })();
 
   // Per-card live feed with a typewriter reveal for new replies. Re-run after
