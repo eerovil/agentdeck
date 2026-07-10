@@ -206,12 +206,16 @@ details.ev.tool > .ev-text { margin-top: 6px; max-height: 420px; overflow: auto;
 .build { text-align: center; color: var(--muted); font-size: 11px; opacity: .6;
   padding: 10px 0 calc(14px + env(safe-area-inset-bottom, 0)); }
 
-/* List-view filter box. 16px font avoids iOS zoom-on-focus; sits inside <main>
-   so it inherits the 12px page padding (no extra horizontal inset). */
-.searchbar { margin-bottom: 10px; }
-.searchbar input { width: 100%; box-sizing: border-box; font-size: 16px;
-  padding: 9px 12px; color: var(--fg); background: var(--panel2);
+/* List-view filter box. Matches the card surface (panel + hairline line) so it
+   reads as part of the deck, not a heavy grey slab. 16px font avoids iOS
+   zoom-on-focus; sits inside <main> so it inherits the 12px page padding. */
+.searchbar { position: relative; margin-bottom: 10px; }
+.searchbar .search-ico { position: absolute; left: 11px; top: 50%; width: 15px; height: 15px;
+  transform: translateY(-50%); color: var(--muted); pointer-events: none; }
+.searchbar input { width: 100%; box-sizing: border-box; font-size: 16px; line-height: 1.2;
+  padding: 8px 12px 8px 34px; color: var(--fg); background: var(--panel);
   border: 1px solid var(--line); border-radius: var(--radius); outline: none;
   -webkit-appearance: none; appearance: none; }
 .searchbar input:focus { border-color: var(--remote); }
+.searchbar:focus-within .search-ico { color: var(--remote); }
 .searchbar input::placeholder { color: var(--muted); }
