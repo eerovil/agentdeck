@@ -115,6 +115,17 @@ async def test_partial_sessions(tmp_path):
     assert "Hello World Session" in r.text
 
 
+async def test_dashboard_has_list_search(tmp_path):
+    app = _app_with_state(tmp_path)
+    async with _client(app) as c:
+        r = await c.get("/")
+    # Filter input lives outside #sessions so live swaps don't wipe it, and the
+    # re-apply hook fires on each swap.
+    assert 'id="q"' in r.text
+    assert r.text.index('id="q"') < r.text.index('id="sessions"')
+    assert "htmx:afterSwap" in r.text
+
+
 async def test_card_shows_agent_response(tmp_path):
     app = _app_with_state(tmp_path)
     app.state.app_state.update_session(

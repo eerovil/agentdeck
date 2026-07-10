@@ -3,7 +3,60 @@
 {% block limit_bars %}{% include "partials/limit_bars.html" %}{% endblock %}
 
 {% block content %}
+{# Search lives OUTSIDE #sessions: that div is swapped wholesale on every SSE
+   `sessions` push, so an input inside it would lose its value + focus on each
+   update. We keep the query here and re-apply the filter after every swap. #}
+<div class="searchbar">
+  <input id="q" type="search" inputmode="search" autocomplete="off" enterkeyhint="search"
+         placeholder="Filter sessions…" aria-label="Filter sessions">
+</div>
+<div id="search-empty" class="empty" hidden>no matching sessions</div>
 <div id="sessions" sse-swap="sessions">
   {% include "partials/session_list.html" %}
 </div>
+
+<script>
+(function () {
+  var input = document.getElementById('q');
+  var emptyNote = document.getElementById('search-empty');
+  if (!input) return;
+  var KEY = 'agentdeck.listQuery';
+
+  // Everything worth matching on, pulled from stable attributes (data-prompt /
+  // data-text hold the FULL latest messages, not the typewriter-truncated view).
+  function haystack(card) {
+    var title = card.querySelector('.card-title');
+    var latest = card.querySelector('.card-latest');
+    var cwd = card.querySelector('.cwd');
+    var badge = card.querySelector('.acct-badge');
+    return [
+      title ? title.textContent : '',
+      latest ? (latest.dataset.prompt || '') + ' ' + (latest.dataset.text || '') : '',
+      cwd ? (cwd.getAttribute('title') || cwd.textContent) : '',
+      badge ? badge.textContent : '',
+    ].join(' ').toLowerCase();
+  }
+
+  function apply() {
+    var q = input.value.trim().toLowerCase();
+    var cards = document.querySelectorAll('#sessions a.session');
+    var shown = 0;
+    cards.forEach(function (c) {
+      var match = !q || haystack(c).indexOf(q) !== -1;
+      c.style.display = match ? '' : 'none';
+      if (match) shown++;
+    });
+    // Only show the "no matches" note when a query is filtering everything out —
+    // an empty list with no query already renders its own "no active sessions".
+    if (emptyNote) emptyNote.hidden = !(q && cards.length && shown === 0);
+    try { sessionStorage.setItem(KEY, input.value); } catch (_) {}
+  }
+
+  try { input.value = sessionStorage.getItem(KEY) || ''; } catch (_) {}
+  input.addEventListener('input', apply);
+  // Re-filter after each live swap (the cards were just replaced) + on load.
+  document.getElementById('sessions').addEventListener('htmx:afterSwap', apply);
+  apply();
+})();
+</script>
 {% endblock %}
