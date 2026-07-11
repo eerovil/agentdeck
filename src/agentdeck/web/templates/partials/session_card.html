@@ -11,7 +11,7 @@
   </div>
   {% if s.question %}
   <div class="card-question" title="the agent is waiting on your answer">
-    <span class="q-dot"></span><span class="q-text">{{ s.question }}</span>
+    <span class="q-dot"></span><span class="q-text"><bdi>{{ s.question }}</bdi></span>
   </div>
   {% endif %}
   {% if s.last_prompt or s.last_text %}

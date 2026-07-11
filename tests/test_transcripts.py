@@ -17,6 +17,10 @@ def test_trailing_question():
     # Newlines are flattened.
     assert tq("Here is the plan.\n\nWant me to proceed with it?") == (
         "Want me to proceed with it?")
+    # A bulleted / colon block (no full stops) must not swallow the whole thing
+    # into one giant "sentence" — the trailing line is the question.
+    recap = "Recap of what shipped:\n- kanban titles\n- colour stripes\n\nWhat's next?"
+    assert tq(recap) == "What's next?"
     # No question → None.
     assert tq("All done, pushed to master.") is None
     assert tq("") is None

@@ -240,24 +240,26 @@ def _user_text(obj: dict) -> str | None:
 
 # Shortest fragment we'll treat as a real question (filters ternaries / "y?").
 _QUESTION_MIN_LEN = 8
-_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+# Split on sentence terminators OR line breaks — a bulleted / colon-terminated
+# block has no full stops, so a newline is often the only boundary before a
+# trailing "So, what's next?".
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|[\r\n]+")
 
 
 def trailing_question(text: str | None) -> str | None:
     """The last natural-language question in an agent message, or None.
 
-    Heuristic: flatten whitespace, split into sentences, and return the final
+    Heuristic: split into sentences (also on line breaks) and return the final
     one ending in ``?`` — skipping short or code-like fragments (a lone token, a
     ternary, a URL query string) that end in a question mark without being a
     question. Used to surface "the agent is waiting on an answer" on the card."""
     if not text or "?" not in text:
         return None
-    flat = " ".join(text.split())
-    for part in reversed(_SENTENCE_SPLIT.split(flat)):
-        p = part.strip()
+    for part in reversed(_SENTENCE_SPLIT.split(text)):
+        p = " ".join(part.split())  # flatten any internal whitespace
         # A real question ends "word?"; a ternary ("a ? b") has a space before
-        # the mark, and a URL query keeps the "?" mid-sentence (handled above by
-        # the sentence split not ending there).
+        # the mark, and a URL query keeps the "?" mid-sentence (so the split
+        # never ends a segment there).
         if p.endswith("?") and len(p) >= _QUESTION_MIN_LEN and p[-2] != " ":
             return p
     return None
