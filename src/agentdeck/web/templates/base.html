@@ -13,19 +13,32 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/app.css?v={{ asset_ver }}">
   <script>
   // Register the service worker (installable PWA / standalone display). Served
   // from the site root so its scope covers the whole app; failures are non-fatal
   // (e.g. plain-HTTP remote origin, which is not a secure context).
   if ('serviceWorker' in navigator) {
+    // Auto-update: force an update check on each load, and when a freshly
+    // activated worker takes control (the new SW calls skipWaiting +
+    // clients.claim), reload once so stale cached CSS/JS is replaced without
+    // the user having to clear site data. The page HTML is never SW-cached, so
+    // this script always runs fresh even behind an out-of-date worker.
+    var reloading = false;
+    navigator.serviceWorker.addEventListener('controllerchange', function () {
+      if (reloading) return;
+      reloading = true;
+      window.location.reload();
+    });
     window.addEventListener('load', function () {
-      navigator.serviceWorker.register('/sw.js').catch(function () {});
+      navigator.serviceWorker.register('/sw.js').then(function (reg) {
+        reg.update();
+      }).catch(function () {});
     });
   }
   </script>
-  <script src="/static/htmx.min.js" defer></script>
-  <script src="/static/sse.js" defer></script>
+  <script src="/static/htmx.min.js?v={{ asset_ver }}" defer></script>
+  <script src="/static/sse.js?v={{ asset_ver }}" defer></script>
 </head>
 <body hx-ext="sse" {% block body_sse %}sse-connect="/events"{% endblock %}>
   <header class="topbar">
@@ -270,6 +283,17 @@
       if (!key) return;
       if (expanded.has(key)) expanded.delete(key); else expanded.add(key);
       setup(card);
+    });
+
+    // External jump buttons (claude.ai deep link, GitHub issue). They sit inside
+    // the card <a>, so stop the card from navigating and open the target in a
+    // new tab instead.
+    document.addEventListener('click', function (e) {
+      var btn = e.target.closest('.cc-btn, .gh-btn');
+      if (!btn) return;
+      e.preventDefault(); e.stopPropagation();
+      var url = btn.getAttribute('data-href');
+      if (url) window.open(url, '_blank', 'noopener');
     });
   })();
 

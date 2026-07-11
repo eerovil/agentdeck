@@ -8,7 +8,11 @@
 // and kills the live tail. Same for navigations and `/partials/*`, which must
 // always reflect current server state.
 
-const CACHE = 'agentdeck-static-v2';
+// The cache name carries a content hash of the shell assets, substituted when
+// /sw.js is served. Any change to app.css/sse.js/etc. changes this string, so
+// the browser installs a fresh worker and re-fetches the assets — no manual
+// version bump, no stale CSS after a deploy.
+const CACHE = 'agentdeck-static-__CACHE_STAMP__';
 const ASSETS = [
   '/static/app.css',
   '/static/htmx.min.js',
@@ -49,19 +53,17 @@ self.addEventListener('fetch', (event) => {
   const managed = url.pathname.startsWith('/static/') || url.pathname === '/manifest.webmanifest';
   if (!managed) return;
 
-  // Stale-while-revalidate: serve the cached copy instantly, refresh in the
-  // background so a new deploy's assets are picked up on the next load.
+  // Network-first: this is an always-online dashboard, so fetch the live asset
+  // (a changed app.css/sse.js shows up immediately, no stale copy), update the
+  // cache, and fall back to the cache only when the network is unreachable.
   event.respondWith(
     caches.open(CACHE).then((cache) =>
-      cache.match(req).then((cached) => {
-        const network = fetch(req)
-          .then((res) => {
-            if (res && res.ok) cache.put(req, res.clone());
-            return res;
-          })
-          .catch(() => cached);
-        return cached || network;
-      })
+      fetch(req)
+        .then((res) => {
+          if (res && res.ok) cache.put(req, res.clone());
+          return res;
+        })
+        .catch(() => cache.match(req))
     )
   );
 });

@@ -18,6 +18,7 @@ from .state import AppState
 from .web import render as render_mod
 from .web.routes_pages import router as pages_router
 from .web.routes_partials import router as partials_router
+from .web.routes_pwa import cache_stamp
 from .web.routes_pwa import router as pwa_router
 from .web.routes_sse import router as sse_router
 
@@ -56,6 +57,10 @@ def create_app(config: AppConfig) -> FastAPI:
     render_mod.register_filters(templates)
     templates.env.globals["app_version"] = VERSION
     templates.env.globals["build_id"] = _build_id()
+    # Content hash appended to static asset URLs so a changed file is fetched
+    # fresh — a request for app.css?v=<new> misses any stale SW/HTTP cache keyed
+    # to the old URL and falls through to the network.
+    templates.env.globals["asset_ver"] = cache_stamp()
     collector = Collector(config, state)
 
     @asynccontextmanager

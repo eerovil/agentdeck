@@ -63,6 +63,8 @@ class Session:
     activity: str | None = None  # what it's doing now: "Using tools" / "Working"
     model: str | None = None  # last assistant line's model (v0.2)
     kind: str | None = None  # "interactive" | "sdk-cli" | RC worker …
+    worker_type: str | None = None  # "kanban" | "cloud" | "you" — drives list colour
+    issue_url: str | None = None  # GitHub issue/PR link for kanban worker sessions
     pid: int | None = None
     proc_start: str | None = None  # /proc starttime token — pid-reuse guard
     started_at: datetime | None = None

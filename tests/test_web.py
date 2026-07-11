@@ -6,6 +6,7 @@ from httpx import ASGITransport, AsyncClient
 from agentdeck.app import create_app
 from agentdeck.config import AccountConfig, AppConfig, HistoryConfig
 from agentdeck.models import Capability, Session, SessionStatus, UsageSnapshot
+from agentdeck.providers.claude_code.provider import worker_type
 
 
 def _app_with_state(tmp_path, *, with_transcript=False):
@@ -77,6 +78,41 @@ async def test_dashboard_renders_usage_and_session(tmp_path):
     assert "42%" in r.text
 
 
+def test_worker_type_classification():
+    assert worker_type(True, False) == "kanban"  # kanban dispatch always wins
+    assert worker_type(True, True) == "kanban"  # even when also RC-spawned
+    assert worker_type(False, True) == "cloud"  # cloud/RC, non-kanban
+    assert worker_type(False, False) == "you"  # your own interactive chat
+
+
+async def test_card_colour_class_and_direct_claudeai_button(tmp_path):
+    app = _app_with_state(tmp_path)
+    app.state.app_state.update_session(
+        Session(
+            key="claude_code:test:kb1",
+            account_key="claude_code:test",
+            session_id="kb1",
+            status=SessionStatus.LIVE,
+            title="store#2728 · Fix things",
+            worker_type="kanban",
+            deep_link="https://claude.ai/code/session_kb1",
+            issue_url="https://github.com/ScandinavianOutdoor/store/issues/2728",
+        )
+    )
+    async with _client(app) as c:
+        r = await c.get("/")
+    # Worker-type colour class on the card, and the default session (no
+    # worker_type) falls back to the "you" stripe.
+    assert "wt-kanban" in r.text
+    assert "wt-you" in r.text
+    # A direct claude.ai button, wired to the deep link — not the transcript URL.
+    assert 'class="cc-btn"' in r.text
+    assert 'data-href="https://claude.ai/code/session_kb1"' in r.text
+    # And a GitHub issue button wired to the issue URL.
+    assert 'class="gh-btn"' in r.text
+    assert 'data-href="https://github.com/ScandinavianOutdoor/store/issues/2728"' in r.text
+
+
 async def test_pwa_routes(tmp_path):
     app = _app_with_state(tmp_path)
     async with _client(app) as c:
@@ -89,6 +125,10 @@ async def test_pwa_routes(tmp_path):
     assert sw.headers["content-type"].startswith("text/javascript")
     assert sw.headers["service-worker-allowed"] == "/"
     assert "addEventListener('fetch'" in sw.text
+    # The cache name is stamped with a content hash (no unresolved placeholder),
+    # so any asset change busts the SW cache without a manual version bump.
+    assert "__CACHE_STAMP__" not in sw.text
+    assert "agentdeck-static-" in sw.text
     # Manifest: correct content type + installability essentials.
     assert mf.status_code == 200
     assert mf.headers["content-type"].startswith("application/manifest+json")

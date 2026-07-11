@@ -27,6 +27,7 @@ from ...models import (
 )
 from ..base import SessionProvider
 from . import history as history_mod
+from . import kanban as kanban_mod
 from . import registry as registry_mod
 from . import transcripts as transcripts_mod
 from .usage import UsagePoller, fetch_usage_once
@@ -43,6 +44,18 @@ MAX_IDLE_SESSIONS = 200
 # A LIVE session whose transcript was written within this window is "thinking"
 # (streaming a response); past it, the agent is live but waiting for input.
 THINKING_WINDOW_S = 25.0
+
+
+def worker_type(is_kanban: bool, has_deep_link: bool) -> str:
+    """Classify a session for list colouring: an autonomous kanban worker, a
+    cloud/RC-spawned session, or one of your own interactive chats. Kanban wins
+    over cloud — a live kanban worker is also RC-spawned, but "kanban" is the
+    more useful label."""
+    if is_kanban:
+        return "kanban"
+    if has_deep_link:
+        return "cloud"
+    return "you"
 
 
 def _mtime(path: Path) -> datetime | None:
@@ -79,6 +92,8 @@ class ClaudeCodeProvider(SessionProvider):
         # last-renderable-event cache (mtime-keyed) — the liveness sweep reads it
         # every few seconds per live session, so idle ones must stay a cache hit.
         self._last_ev_cache: dict[str, tuple[float, TranscriptEvent | None]] = {}
+        # Resolves kanban dispatch prompts to real GitHub issue titles.
+        self._kanban = kanban_mod.KanbanTitleCache()
 
     def _cached_meta(self, path: Path) -> tuple[str | None, ...]:
         try:
@@ -137,6 +152,25 @@ class ClaudeCodeProvider(SessionProvider):
         keep = {sid for sid, _ in ranked[:MAX_IDLE_SESSIONS]}
         keep |= {sid for sid, ok in alive.items() if ok}
 
+        # Kanban worker sessions carry a fixed dispatch prompt instead of a real
+        # title; resolve the referenced GitHub issue title (cached) up front so
+        # the build loop below can substitute it. Best-effort — a miss just
+        # leaves the existing title fallback in place.
+        krefs = []
+        for sid in keep:
+            tpath = transcripts.get(sid)
+            if tpath is None:
+                continue
+            first_user = self._cached_meta(tpath)[2]
+            kref = kanban_mod.parse_ref(first_user)
+            if kref is not None:
+                krefs.append(kref)
+        if krefs:
+            try:
+                await self._kanban.resolve_missing(krefs, datetime.now(UTC).timestamp())
+            except Exception as exc:  # noqa: BLE001 — title polish must never break a scan
+                log.debug("kanban title resolve failed: %s", exc)
+
         sessions: list[Session] = []
         for sid in keep:
             entry = entries.get(sid)
@@ -163,6 +197,17 @@ class ClaudeCodeProvider(SessionProvider):
                 # transcript's cwd is what keeps idle sessions injectable.
                 cwd = Path(tcwd)
             title = ai_title or (h.title if h else None) or first_user
+            # A kanban dispatch prompt makes a poor title; prefer the resolved
+            # issue title, then fall back to the bare "repo#n" reference (which
+            # still beats the raw, near-identical dispatch string).
+            kref = kanban_mod.parse_ref(first_user)
+            issue_url = None
+            if kref is not None:
+                issue_url = kanban_mod.issue_url(kref)
+                issue_title = self._kanban.get(kref)
+                title = kanban_mod.format_title(kref, issue_title) if issue_title else (
+                    ai_title or kanban_mod.format_title(kref, None)
+                )
             last_prompt = last_prompt or (h.last_prompt if h else None)
 
             last_activity = _mtime(tpath) if tpath else (entry.started_at if entry else None)
@@ -184,6 +229,8 @@ class ClaudeCodeProvider(SessionProvider):
             if deep_link is not None:
                 caps.add(Capability.DEEPLINK)
 
+            wtype = worker_type(kref is not None, deep_link is not None)
+
             sessions.append(
                 Session(
                     key=f"{account.key}:{sid}",
@@ -198,6 +245,8 @@ class ClaudeCodeProvider(SessionProvider):
                     last_text=last_text,
                     last_role=last_role,
                     kind=entry.kind if entry else None,
+                    worker_type=wtype,
+                    issue_url=issue_url,
                     pid=entry.pid if (entry and is_live) else None,
                     proc_start=entry.proc_start if entry else None,
                     started_at=entry.started_at if entry else None,
