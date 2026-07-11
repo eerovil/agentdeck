@@ -212,6 +212,11 @@ class ClaudeCodeProvider(SessionProvider):
                 if badge is not None:
                     issue_status, issue_status_kind = badge
             last_prompt = last_prompt or (h.last_prompt if h else None)
+            # When the agent spoke last and ended on a question, surface it — the
+            # session is paused waiting on your answer.
+            question = (
+                transcripts_mod.trailing_question(last_text) if last_role == "agent" else None
+            )
 
             last_activity = _mtime(tpath) if tpath else (entry.started_at if entry else None)
 
@@ -247,6 +252,7 @@ class ClaudeCodeProvider(SessionProvider):
                     last_prompt=last_prompt,
                     last_text=last_text,
                     last_role=last_role,
+                    question=question,
                     kind=entry.kind if entry else None,
                     worker_type=wtype,
                     issue_url=issue_url,
@@ -285,6 +291,11 @@ class ClaudeCodeProvider(SessionProvider):
                     last_prompt_now = lp or s.last_prompt
                     last_text_now = lt or s.last_text
                     last_role_now = lr or s.last_role
+            question_now = (
+                transcripts_mod.trailing_question(last_text_now)
+                if last_role_now == "agent"
+                else None
+            )
             thinking_now = activity_now is not None
             pid_now = entry.pid if (entry and live_now) else None
             deep_link_now = (
@@ -297,6 +308,7 @@ class ClaudeCodeProvider(SessionProvider):
                 or last_prompt_now != s.last_prompt
                 or last_text_now != s.last_text
                 or last_role_now != s.last_role
+                or question_now != s.question
                 or pid_now != s.pid
                 or deep_link_now != s.deep_link
             ):
@@ -306,6 +318,7 @@ class ClaudeCodeProvider(SessionProvider):
                 s.last_prompt = last_prompt_now
                 s.last_text = last_text_now
                 s.last_role = last_role_now
+                s.question = question_now
                 s.pid = pid_now
                 s.deep_link = deep_link_now
                 s.kind = entry.kind if entry else s.kind

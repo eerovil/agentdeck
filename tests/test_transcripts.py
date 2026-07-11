@@ -7,6 +7,25 @@ def _write(path, lines):
     path.write_text("".join(json.dumps(x) + "\n" for x in lines))
 
 
+def test_trailing_question():
+    tq = transcripts.trailing_question
+    # Picks the question sentence even when a statement follows.
+    assert tq("Sounds good. Should I push both commits? Let me know.") == (
+        "Should I push both commits?")
+    # Last question wins when there are several.
+    assert tq("Do you want A? Or would B be better?") == "Or would B be better?"
+    # Newlines are flattened.
+    assert tq("Here is the plan.\n\nWant me to proceed with it?") == (
+        "Want me to proceed with it?")
+    # No question → None.
+    assert tq("All done, pushed to master.") is None
+    assert tq("") is None
+    assert tq(None) is None
+    # Guards: a URL query or a ternary must not register as a question.
+    assert tq("Fetching /static/app.css?v=abc now.") is None
+    assert tq("The value is a ? b : c in that branch.") is None
+
+
 ASSISTANT = {
     "type": "assistant",
     "timestamp": "2026-07-03T08:00:01Z",

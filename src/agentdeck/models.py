@@ -60,6 +60,7 @@ class Session:
     last_prompt: str | None = None  # user's most recent prompt
     last_text: str | None = None  # agent's most recent response text
     last_role: str | None = None  # "user" | "agent": who sent the most recent message
+    question: str | None = None  # trailing question from the agent's latest reply (awaiting you)
     activity: str | None = None  # what it's doing now: "Using tools" / "Working"
     model: str | None = None  # last assistant line's model (v0.2)
     kind: str | None = None  # "interactive" | "sdk-cli" | RC worker …

@@ -101,6 +101,8 @@ async def test_card_colour_class_and_direct_claudeai_button(tmp_path):
             issue_url="https://github.com/ScandinavianOutdoor/store/issues/2728",
             issue_status="open",
             issue_status_kind="open",
+            last_role="agent",
+            question="Should I push both commits?",
         )
     )
     async with _client(app) as c:
@@ -117,6 +119,9 @@ async def test_card_colour_class_and_direct_claudeai_button(tmp_path):
     assert 'data-href="https://github.com/ScandinavianOutdoor/store/issues/2728"' in r.text
     # GitHub state badge.
     assert 'class="st-badge st-open"' in r.text
+    # Trailing agent question surfaced separately.
+    assert 'class="card-question"' in r.text
+    assert "Should I push both commits?" in r.text
 
 
 async def test_pwa_routes(tmp_path):
