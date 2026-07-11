@@ -14,6 +14,9 @@
   <input id="q" type="search" inputmode="search" autocomplete="off" enterkeyhint="search"
          placeholder="Filter sessions…" aria-label="Filter sessions">
 </div>
+<div class="filter-row">
+  <button id="hide-closed" type="button" class="toggle-btn" aria-pressed="false">Hide closed</button>
+</div>
 <div id="search-empty" class="empty" hidden>no matching sessions</div>
 <div id="sessions" sse-swap="sessions">
   {% include "partials/session_list.html" %}
@@ -23,8 +26,16 @@
 (function () {
   var input = document.getElementById('q');
   var emptyNote = document.getElementById('search-empty');
+  var hideBtn = document.getElementById('hide-closed');
   if (!input) return;
   var KEY = 'agentdeck.listQuery';
+  var HKEY = 'agentdeck.hideClosed';
+
+  // "Hide closed" drops any kanban card whose GitHub state badge is terminal
+  // (anything but open — done/merged/closed/dropped). Cards with no badge
+  // (non-kanban, or state not resolved yet) are always kept.
+  var hideClosed = false;
+  try { hideClosed = localStorage.getItem(HKEY) === '1'; } catch (_) {}
 
   // Everything worth matching on, pulled from stable attributes (data-prompt /
   // data-text hold the FULL latest messages, not the typewriter-truncated view).
@@ -46,15 +57,31 @@
     var cards = document.querySelectorAll('#sessions a.session');
     var shown = 0;
     cards.forEach(function (c) {
-      var match = !q || haystack(c).indexOf(q) !== -1;
+      var closed = hideClosed && c.querySelector('.st-badge:not(.st-open)');
+      var match = !closed && (!q || haystack(c).indexOf(q) !== -1);
       c.style.display = match ? '' : 'none';
       if (match) shown++;
     });
-    // Only show the "no matches" note when a query is filtering everything out —
-    // an empty list with no query already renders its own "no active sessions".
-    if (emptyNote) emptyNote.hidden = !(q && cards.length && shown === 0);
+    // Only show the "no matches" note when a filter is hiding everything —
+    // an empty list with no filter already renders its own "no active sessions".
+    if (emptyNote) emptyNote.hidden = !((q || hideClosed) && cards.length && shown === 0);
     try { sessionStorage.setItem(KEY, input.value); } catch (_) {}
   }
+
+  function syncBtn() {
+    if (!hideBtn) return;
+    hideBtn.setAttribute('aria-pressed', hideClosed ? 'true' : 'false');
+    hideBtn.classList.toggle('on', hideClosed);
+  }
+  if (hideBtn) {
+    hideBtn.addEventListener('click', function () {
+      hideClosed = !hideClosed;
+      try { localStorage.setItem(HKEY, hideClosed ? '1' : '0'); } catch (_) {}
+      syncBtn();
+      apply();
+    });
+  }
+  syncBtn();
 
   try { input.value = sessionStorage.getItem(KEY) || ''; } catch (_) {}
   input.addEventListener('input', apply);

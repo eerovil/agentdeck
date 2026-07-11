@@ -246,3 +246,9 @@ details.ev.tool > .ev-text { margin-top: 6px; max-height: 420px; overflow: auto;
 .searchbar input:focus { border-color: var(--remote); }
 .searchbar:focus-within .search-ico { color: var(--remote); }
 .searchbar input::placeholder { color: var(--muted); }
+.filter-row { display: flex; gap: 8px; margin-bottom: 10px; }
+.toggle-btn { font-size: 12px; font-weight: 600; cursor: pointer; user-select: none;
+  color: var(--muted); background: var(--panel2); border: 1px solid var(--line);
+  padding: 4px 11px; border-radius: 999px; -webkit-tap-highlight-color: transparent; }
+.toggle-btn.on { color: var(--live); border-color: color-mix(in srgb, var(--live) 45%, transparent);
+  background: color-mix(in srgb, var(--live) 12%, transparent); }

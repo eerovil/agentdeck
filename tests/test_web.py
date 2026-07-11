@@ -76,6 +76,8 @@ async def test_dashboard_renders_usage_and_session(tmp_path):
     assert r.status_code == 200
     assert "Hello World Session" in r.text
     assert "42%" in r.text
+    # The "hide closed" filter toggle is present.
+    assert 'id="hide-closed"' in r.text
 
 
 def test_worker_type_classification():
