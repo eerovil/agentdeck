@@ -92,17 +92,46 @@ def format_title(ref: KanbanRef, issue_title: str | None) -> str:
     return base
 
 
+# One jq expression pulls the title and everything needed to derive the state
+# badge, so a single gh call per ref covers both.
+_ISSUE_JQ = (
+    "{title, state, state_reason, "
+    "is_pr: (.pull_request != null), "
+    "merged: (.pull_request.merged_at != null)}"
+)
+
+
+def status_label(rec: dict | None) -> tuple[str, str] | None:
+    """(text, kind) badge for a resolved issue/PR record, or None when unknown.
+
+    ``kind`` is a CSS modifier: open (active), merged, done (issue closed as
+    completed), dropped (closed as not-planned), closed (PR closed unmerged)."""
+    state = (rec or {}).get("state")
+    if not state:
+        return None
+    if state == "open":
+        return ("open", "open")
+    if rec.get("is_pr"):
+        return ("merged", "merged") if rec.get("merged") else ("closed", "closed")
+    if rec.get("state_reason") == "not_planned":
+        return ("closed", "dropped")
+    return ("closed", "done")
+
+
 class KanbanTitleCache:
-    """Disk-backed ``owner/repo#n`` → issue-title cache resolved via ``gh api``.
+    """Disk-backed ``owner/repo#n`` → issue title + GitHub state cache, resolved
+    via ``gh api``.
 
     Held on the (singleton) provider so it persists across scans; mirrored to a
-    JSON file so it survives restarts. Both hits and misses are cached, on
-    separate TTLs, so a renamed issue eventually refreshes and a 404/offline
-    lookup isn't retried on every scan.
+    JSON file so it survives restarts. Titles rarely change, but state does, so
+    the refresh TTL is state-aware: open issues re-poll often, terminal ones
+    (closed/merged) rarely, and a failed lookup backs off further still.
     """
 
-    # Re-resolve a known title at most this often (issues get renamed rarely).
-    TTL_S = 7 * 24 * 3600
+    # Re-poll an *open* issue's state at most this often (state can change).
+    OPEN_TTL_S = 180
+    # A closed/merged issue is effectively terminal — re-check rarely.
+    TERMINAL_TTL_S = 3600
     # Re-try a failed lookup no sooner than this (avoid hammering on 404/offline).
     NEG_TTL_S = 6 * 3600
     # Per-scan bound on new gh calls so a cold cache can't stall one scan.
@@ -137,15 +166,25 @@ class KanbanTitleCache:
         rec = self._cache.get(ref.key)
         return (rec or {}).get("title") or None
 
+    def get_status(self, ref: KanbanRef) -> tuple[str, str] | None:
+        """(text, kind) GitHub-state badge for the ref, or None if unresolved."""
+        return status_label(self._cache.get(ref.key))
+
     def _needs_fetch(self, ref: KanbanRef, now: float) -> bool:
         rec = self._cache.get(ref.key)
         if rec is None:
             return True
         age = now - rec.get("fetched_at", 0.0)
-        return age > (self.TTL_S if rec.get("title") else self.NEG_TTL_S)
+        if not rec.get("title"):  # a cached miss
+            return age > self.NEG_TTL_S
+        state = rec.get("state")
+        if state and state != "open":  # terminal (closed/merged)
+            return age > self.TERMINAL_TTL_S
+        return age > self.OPEN_TTL_S  # open, or a legacy record with no state yet
 
     async def resolve_missing(self, refs: list[KanbanRef], now: float) -> bool:
-        """Fetch titles for up to ``MAX_FETCH_PER_SWEEP`` stale/unknown refs.
+        """Fetch title + state for up to ``MAX_FETCH_PER_SWEEP`` stale/unknown
+        refs.
 
         Returns True if the cache changed (so the caller can re-read it). A
         no-op — returning False — when ``gh`` is absent or nothing is stale.
@@ -160,12 +199,18 @@ class KanbanTitleCache:
         if not batch:
             return False
         results = await asyncio.gather(*(self._fetch(ref) for ref in batch))
-        for ref, title in results:
-            self._cache[ref.key] = {"title": title, "fetched_at": now}
+        for ref, rec in results:
+            if rec is not None:
+                self._cache[ref.key] = {**rec, "fetched_at": now}
+            elif (self._cache.get(ref.key) or {}).get("title"):
+                # Transient failure — keep the good data, just back off normally.
+                self._cache[ref.key]["fetched_at"] = now
+            else:
+                self._cache[ref.key] = {"fetched_at": now}  # negative cache
         self._save()
         return True
 
-    async def _fetch(self, ref: KanbanRef) -> tuple[KanbanRef, str | None]:
+    async def _fetch(self, ref: KanbanRef) -> tuple[KanbanRef, dict | None]:
         assert self._gh is not None
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -173,15 +218,21 @@ class KanbanTitleCache:
                 "api",
                 f"repos/{ref.owner}/{ref.repo}/issues/{ref.number}",
                 "--jq",
-                ".title",
+                _ISSUE_JQ,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
             )
             out, _ = await asyncio.wait_for(proc.communicate(), self.FETCH_TIMEOUT_S)
         except (OSError, TimeoutError) as exc:
-            log.debug("gh title fetch failed for %s: %s", ref.key, exc)
+            log.debug("gh issue fetch failed for %s: %s", ref.key, exc)
             return (ref, None)
         if proc.returncode != 0:
             return (ref, None)
-        title = out.decode("utf-8", "replace").strip()
-        return (ref, title or None)
+        try:
+            rec = json.loads(out.decode("utf-8", "replace"))
+        except ValueError:
+            return (ref, None)
+        if not isinstance(rec, dict) or not rec.get("title"):
+            return (ref, None)
+        rec["title"] = str(rec["title"]).strip()
+        return (ref, rec)

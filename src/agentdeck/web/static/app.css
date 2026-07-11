@@ -142,6 +142,14 @@ body.usage-open .limit-bars { display: flex; }
 .session.expanded .expand-btn { color: var(--fg); transform: rotate(180deg); }
 .session.expanded .card-latest { height: auto; max-height: 65vh; overflow-y: auto; }
 .session-meta { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 12px; margin-top: 5px; }
+/* GitHub issue/PR state badge on kanban cards. */
+.st-badge { font-size: 11px; font-weight: 600; line-height: 1; padding: 1px 6px; border-radius: 8px;
+  text-transform: uppercase; letter-spacing: .03em;
+  border: 1px solid currentColor; background: color-mix(in srgb, currentColor 12%, transparent); }
+.st-open { color: var(--live); }
+.st-merged, .st-done { color: var(--wt-cloud); }
+.st-closed { color: var(--crit); }
+.st-dropped { color: var(--muted); }
 .cwd { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; }
 .empty { color: var(--muted); font-size: 13px; padding: 6px 2px; }
 a.session { display: block; text-decoration: none; color: inherit; }

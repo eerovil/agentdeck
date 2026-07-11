@@ -65,6 +65,8 @@ class Session:
     kind: str | None = None  # "interactive" | "sdk-cli" | RC worker …
     worker_type: str | None = None  # "kanban" | "cloud" | "you" — drives list colour
     issue_url: str | None = None  # GitHub issue/PR link for kanban worker sessions
+    issue_status: str | None = None  # GitHub state text: open / closed / merged
+    issue_status_kind: str | None = None  # badge colour: open|merged|done|dropped|closed
     pid: int | None = None
     proc_start: str | None = None  # /proc starttime token — pid-reuse guard
     started_at: datetime | None = None

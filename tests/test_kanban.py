@@ -52,6 +52,23 @@ def test_issue_url():
     assert kanban.issue_url(storm) == "https://github.com/protecomp/storm/issues/244"
 
 
+def test_status_label():
+    assert kanban.status_label(None) is None
+    assert kanban.status_label({}) is None
+    assert kanban.status_label({"state": "open", "is_pr": False}) == ("open", "open")
+    assert kanban.status_label({"state": "open", "is_pr": True}) == ("open", "open")
+    # PRs: merged vs closed-unmerged.
+    assert kanban.status_label({"state": "closed", "is_pr": True, "merged": True}) == (
+        "merged", "merged")
+    assert kanban.status_label({"state": "closed", "is_pr": True, "merged": False}) == (
+        "closed", "closed")
+    # Issues: completed (done) vs not-planned (dropped).
+    assert kanban.status_label(
+        {"state": "closed", "is_pr": False, "state_reason": "completed"}) == ("closed", "done")
+    assert kanban.status_label(
+        {"state": "closed", "is_pr": False, "state_reason": "not_planned"}) == ("closed", "dropped")
+
+
 def test_format_title():
     ref = kanban.parse_ref("Run the kanban-worker skill for ScandinavianOutdoor/store#2728.")
     assert kanban.format_title(ref, "Fix intro text duplication") == (
@@ -77,7 +94,7 @@ def test_cache_persists_and_dedupes(tmp_path, monkeypatch):
 
     async def fake_fetch(ref):
         calls.append(ref.key)
-        return (ref, f"Title for {ref.short}")
+        return (ref, {"title": f"Title for {ref.short}", "state": "open", "is_pr": False})
 
     monkeypatch.setattr(cache, "_fetch", fake_fetch)
 
@@ -88,17 +105,19 @@ def test_cache_persists_and_dedupes(tmp_path, monkeypatch):
 
     import asyncio
 
-    # Two refs to the same issue → one fetch; title lands in the cache + on disk.
+    # Two refs to the same issue → one fetch; title + state land in the cache/disk.
     changed = asyncio.run(cache.resolve_missing([ref, dup_mode], now=1000.0))
     assert changed is True
     assert calls == ["ScandinavianOutdoor/store#2728"]
     assert cache.get(ref) == "Title for store#2728"
+    assert cache.get_status(ref) == ("open", "open")
 
-    # A fresh instance reads the persisted title without re-fetching.
+    # A fresh instance reads the persisted record without re-fetching.
     reloaded = kanban.KanbanTitleCache(path=path)
     reloaded._gh = "/usr/bin/gh"
     assert reloaded.get(ref) == "Title for store#2728"
-    assert reloaded.resolve_missing.__self__ is reloaded  # sanity: bound method
+    assert reloaded.get_status(ref) == ("open", "open")
+    # Open state re-polls after OPEN_TTL_S, not before.
     assert asyncio.run(reloaded.resolve_missing([ref], now=1000.0 + 60)) is False
 
 
@@ -106,10 +125,10 @@ def test_negative_cache_retries_after_ttl(tmp_path, monkeypatch):
     cache = kanban.KanbanTitleCache(path=tmp_path / "k.json")
     cache._gh = "/usr/bin/gh"
 
-    result = {"title": None}
+    result = {"rec": None}
 
     async def fake_fetch(ref):
-        return (ref, result["title"])
+        return (ref, result["rec"])
 
     monkeypatch.setattr(cache, "_fetch", fake_fetch)
     ref = kanban.parse_ref("Run the kanban-worker skill for ScandinavianOutdoor/issues#1.")
@@ -122,9 +141,15 @@ def test_negative_cache_retries_after_ttl(tmp_path, monkeypatch):
     assert asyncio.run(cache.resolve_missing([ref], now=cache.NEG_TTL_S - 1)) is False
 
     # After the negative TTL it retries, and now succeeds.
-    result["title"] = "Recovered title"
+    result["rec"] = {"title": "Recovered title", "state": "closed", "state_reason": "completed"}
     assert asyncio.run(cache.resolve_missing([ref], now=cache.NEG_TTL_S + 1)) is True
     assert cache.get(ref) == "Recovered title"
+    assert cache.get_status(ref) == ("closed", "done")
+    # Terminal state uses the long TTL: past OPEN_TTL_S but under TERMINAL_TTL_S
+    # it must NOT re-poll (an open issue would have).
+    later = cache.NEG_TTL_S + 1 + cache.OPEN_TTL_S + 60
+    assert cache.OPEN_TTL_S < (later - (cache.NEG_TTL_S + 1)) < cache.TERMINAL_TTL_S
+    assert asyncio.run(cache.resolve_missing([ref], now=later)) is False
 
 
 def test_resolve_noop_without_gh(tmp_path):

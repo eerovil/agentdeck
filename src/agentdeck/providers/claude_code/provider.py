@@ -201,13 +201,16 @@ class ClaudeCodeProvider(SessionProvider):
             # issue title, then fall back to the bare "repo#n" reference (which
             # still beats the raw, near-identical dispatch string).
             kref = kanban_mod.parse_ref(first_user)
-            issue_url = None
+            issue_url = issue_status = issue_status_kind = None
             if kref is not None:
                 issue_url = kanban_mod.issue_url(kref)
                 issue_title = self._kanban.get(kref)
                 title = kanban_mod.format_title(kref, issue_title) if issue_title else (
                     ai_title or kanban_mod.format_title(kref, None)
                 )
+                badge = self._kanban.get_status(kref)
+                if badge is not None:
+                    issue_status, issue_status_kind = badge
             last_prompt = last_prompt or (h.last_prompt if h else None)
 
             last_activity = _mtime(tpath) if tpath else (entry.started_at if entry else None)
@@ -247,6 +250,8 @@ class ClaudeCodeProvider(SessionProvider):
                     kind=entry.kind if entry else None,
                     worker_type=wtype,
                     issue_url=issue_url,
+                    issue_status=issue_status,
+                    issue_status_kind=issue_status_kind,
                     pid=entry.pid if (entry and is_live) else None,
                     proc_start=entry.proc_start if entry else None,
                     started_at=entry.started_at if entry else None,
