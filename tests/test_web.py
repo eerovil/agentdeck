@@ -215,6 +215,29 @@ def test_tool_events_hidden_and_live_marker(tmp_path):
     assert "tool-wait" not in render_tool_activity(templates, None)
 
 
+def test_ask_user_question_renders_in_transcript(tmp_path):
+    """An AskUserQuestion line is a tool_use with no text, so the generic
+    tool-drop rule would hide it — but it carries the prompt in `question` and
+    must stay visible so the choice the agent is waiting on shows in the view."""
+    from agentdeck.models import TranscriptEvent
+    from agentdeck.web.render import render_transcript_events
+
+    app = _app_with_state(tmp_path)
+    templates = app.state.templates
+    events = [
+        TranscriptEvent(
+            seq=1,
+            role="assistant",
+            tool_name="AskUserQuestion",
+            question="Which database should we use?",
+            text=None,
+        ),
+    ]
+    html = render_transcript_events(templates, events)
+    assert "Which database should we use?" in html
+    assert "ev-question" in html
+
+
 def test_activity_label_fallback():
     from agentdeck.models import TranscriptEvent
     from agentdeck.web.render import activity_label
@@ -238,6 +261,11 @@ def test_activity_label_fallback():
     # open turn but no write for ages → stalled worker, not "Using tools" forever
     assert activity_label(True, False, tool_call, age_s=10_000) is None
     assert activity_label(True, False, user_msg, age_s=10_000) is None
+    # an unanswered AskUserQuestion is waiting on the user, not busy — even though
+    # it is a tool_use and even right after it was written (streaming).
+    ask = TranscriptEvent(seq=1, role="assistant", tool_name="AskUserQuestion", question="Pick?")
+    assert activity_label(True, False, ask) is None
+    assert activity_label(True, True, ask) is None
 
 
 def test_working_sessions_sort_first(tmp_path):
@@ -343,6 +371,66 @@ async def test_session_detail_renders_transcript(tmp_path):
     assert "42%" in r.text
     # the page binds its single SSE connection to the per-session stream
     assert 'sse-connect="/events/sessions/claude_code:test:sid1"' in r.text
+
+
+async def test_session_detail_renders_ask_user_question(tmp_path):
+    """End-to-end: an AskUserQuestion line (a tool_use with no text block) is
+    written to the transcript file and must survive the JSONL → parse → HTTP
+    render path — the choice the agent is waiting on shows on the detail page.
+    Regression for the viewer silently dropping it as generic tool noise."""
+    import json
+
+    proj = tmp_path / "projects" / "-tmp"
+    proj.mkdir(parents=True)
+    lines = [
+        {"type": "user", "message": {"role": "user", "content": "set up the db"}},
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "model": "claude-opus-4-8",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "AskUserQuestion",
+                        "input": {
+                            "questions": [
+                                {
+                                    "question": "Which database should we use?",
+                                    "header": "DB",
+                                    "options": [{"label": "Postgres", "description": "..."}],
+                                }
+                            ]
+                        },
+                    }
+                ],
+            },
+        },
+    ]
+    (proj / "ask1.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines))
+
+    from agentdeck.config import AccountConfig, AppConfig, HistoryConfig
+
+    config = AppConfig(
+        history=HistoryConfig(enabled=False),
+        accounts=[AccountConfig(provider="claude_code", label="test", config_dir=str(tmp_path))],
+    )
+    app = create_app(config)
+    app.state.app_state.update_session(
+        Session(
+            key="claude_code:test:ask1",
+            account_key="claude_code:test",
+            session_id="ask1",
+            status=SessionStatus.LIVE,
+            title="DB setup",
+            capabilities=frozenset({Capability.TRANSCRIPT}),
+        )
+    )
+    async with _client(app) as c:
+        r = await c.get("/sessions/claude_code:test:ask1")
+    assert r.status_code == 200
+    assert "Which database should we use?" in r.text  # the choice question is visible
+    assert "ev-question" in r.text  # rendered via the dedicated question block
 
 
 async def test_session_detail_unknown_404(tmp_path):

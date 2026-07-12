@@ -30,6 +30,71 @@ def test_trailing_question():
     assert tq("The value is a ? b : c in that branch.") is None
 
 
+ASK_QUESTION = {
+    "type": "assistant",
+    "timestamp": "2026-07-03T08:00:02Z",
+    "message": {
+        "role": "assistant",
+        "model": "claude-opus-4-8",
+        "content": [
+            {
+                "type": "tool_use",
+                "name": "AskUserQuestion",
+                "input": {
+                    "questions": [
+                        {
+                            "question": "Which database should we use?",
+                            "header": "DB",
+                            "options": [{"label": "Postgres", "description": "..."}],
+                        }
+                    ]
+                },
+            },
+        ],
+    },
+}
+ASK_ANSWER = {
+    "type": "user",
+    "message": {
+        "role": "user",
+        "content": [
+            {"type": "tool_result", "content": 'Your questions have been answered: "Postgres".'}
+        ],
+    },
+}
+
+
+def test_ask_user_question_extracted_as_question(tmp_path):
+    """The multiple-choice tool carries its prompt in tool_use input, not a text
+    block — it must still surface as the event's question."""
+    p = tmp_path / "t.jsonl"
+    _write(p, [USER, ASK_QUESTION])
+    read = transcripts.read_events(p)
+    ev = read.events[-1]
+    assert ev.tool_name == "AskUserQuestion"
+    assert ev.question == "Which database should we use?"
+    # last_event (busy/waiting probe) sees the unanswered question too.
+    assert transcripts.last_event(p).question == "Which database should we use?"
+
+
+def test_ask_user_question_multiple_joined(tmp_path):
+    p = tmp_path / "t.jsonl"
+    two = json.loads(json.dumps(ASK_QUESTION))
+    two["message"]["content"][0]["input"]["questions"].append(
+        {"question": "And which cache?", "header": "Cache", "options": []}
+    )
+    _write(p, [two])
+    ev = transcripts.read_events(p).events[-1]
+    assert ev.question == "Which database should we use? And which cache?"
+
+
+def test_answered_question_clears_pending(tmp_path):
+    """Once answered, the trailing event is the tool_result — no pending question."""
+    p = tmp_path / "t.jsonl"
+    _write(p, [USER, ASK_QUESTION, ASK_ANSWER])
+    assert transcripts.last_event(p).question is None
+
+
 ASSISTANT = {
     "type": "assistant",
     "timestamp": "2026-07-03T08:00:01Z",

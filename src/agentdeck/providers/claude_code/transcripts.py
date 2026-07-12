@@ -42,15 +42,19 @@ def _parse_ts(value: object) -> datetime | None:
         return None
 
 
-def _text_from_content(content: object) -> tuple[str | None, str | None, str | None]:
-    """Return (text, tool_name, tool_summary) from a message.content value."""
+def _text_from_content(
+    content: object,
+) -> tuple[str | None, str | None, str | None, str | None]:
+    """Return (text, tool_name, tool_summary, question) from a message.content
+    value. ``question`` is the AskUserQuestion prompt when this line asks one."""
     if isinstance(content, str):
-        return (content[:_MAX_TEXT] or None, None, None)
+        return (content[:_MAX_TEXT] or None, None, None, None)
     if not isinstance(content, list):
-        return (None, None, None)
+        return (None, None, None, None)
     texts: list[str] = []
     tool_name: str | None = None
     tool_summary: str | None = None
+    question: str | None = None
     for block in content:
         if not isinstance(block, dict):
             continue
@@ -59,13 +63,35 @@ def _text_from_content(content: object) -> tuple[str | None, str | None, str | N
             texts.append(block["text"])
         elif btype == "tool_use":
             tool_name = block.get("name")
-            tool_summary = _summarize_tool_input(block.get("input"))
+            if tool_name == "AskUserQuestion":
+                question = _ask_question(block.get("input"))
+                tool_summary = question or _summarize_tool_input(block.get("input"))
+            else:
+                tool_summary = _summarize_tool_input(block.get("input"))
         elif btype == "tool_result":
             texts.append(_stringify_tool_result(block.get("content")))
         elif btype == "thinking" and isinstance(block.get("thinking"), str):
             texts.append(block["thinking"])
     text = "\n".join(t for t in texts if t).strip()
-    return (text[:_MAX_TEXT] or None, tool_name, tool_summary)
+    return (text[:_MAX_TEXT] or None, tool_name, tool_summary, question)
+
+
+def _ask_question(value: object) -> str | None:
+    """The prompt(s) from an AskUserQuestion tool input — its question text lives
+    in ``input.questions[].question`` (the multiple-choice tool), not in any text
+    block, so it is invisible to the plain-text extractors. Multiple questions are
+    joined so the whole ask surfaces."""
+    if not isinstance(value, dict):
+        return None
+    questions = value.get("questions")
+    if not isinstance(questions, list):
+        return None
+    asks = [
+        q["question"].strip()
+        for q in questions
+        if isinstance(q, dict) and isinstance(q.get("question"), str) and q["question"].strip()
+    ]
+    return " ".join(asks)[:_MAX_TEXT] or None if asks else None
 
 
 def _summarize_tool_input(value: object) -> str | None:
@@ -112,7 +138,7 @@ def _event_from_line(seq: int, data: dict, subagent: str | None = None) -> Trans
         return None  # skip mode/summary lines
     message = data.get("message")
     content = message.get("content") if isinstance(message, dict) else None
-    text, tool_name, tool_summary = _text_from_content(content)
+    text, tool_name, tool_summary, question = _text_from_content(content)
     model = message.get("model") if isinstance(message, dict) else None
     usage = message.get("usage") if isinstance(message, dict) else None
     is_tool_result = tool_name is None and ltype == "user" and _looks_like_tool_result(content)
@@ -125,6 +151,7 @@ def _event_from_line(seq: int, data: dict, subagent: str | None = None) -> Trans
         text=text,
         tool_name=tool_name,
         tool_summary=tool_summary,
+        question=question,
         model=model if isinstance(model, str) else None,
         usage=usage if isinstance(usage, dict) else None,
         ts=_parse_ts(data.get("timestamp")),

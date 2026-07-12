@@ -1,6 +1,11 @@
 # Changelog
 
 ## v0.3.0 (unreleased)
+- Cards recognise the **AskUserQuestion** (multiple-choice) tool: its prompt —
+  which lives in the tool input, not a text block — is surfaced as the card's
+  waiting-on-your-answer question, and an unanswered one reads as *waiting*
+  rather than "Using tools". The transcript detail view renders the prompt too
+  (as its own amber question block) instead of dropping the line as tool noise.
 - Sessions show a pulsing **thinking** indicator (dot + label) in both the list
   and the detail header when the agent is actively streaming — a LIVE session
   whose transcript was written in the last ~25s — vs. live-but-waiting. Refreshed

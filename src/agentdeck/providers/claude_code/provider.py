@@ -205,16 +205,21 @@ class ClaudeCodeProvider(SessionProvider):
             if kref is not None:
                 issue_url = kanban_mod.issue_url(kref)
                 issue_title = self._kanban.get(kref)
-                title = kanban_mod.format_title(kref, issue_title) if issue_title else (
-                    ai_title or kanban_mod.format_title(kref, None)
+                title = (
+                    kanban_mod.format_title(kref, issue_title)
+                    if issue_title
+                    else (ai_title or kanban_mod.format_title(kref, None))
                 )
                 badge = self._kanban.get_status(kref)
                 if badge is not None:
                     issue_status, issue_status_kind = badge
             last_prompt = last_prompt or (h.last_prompt if h else None)
-            # When the agent spoke last and ended on a question, surface it — the
-            # session is paused waiting on your answer.
-            question = (
+            # When the agent is paused on your answer, surface the question. An
+            # unanswered AskUserQuestion (multiple-choice tool) carries its prompt
+            # on the last event, not in any text block — prefer it; otherwise fall
+            # back to a plain-text question the agent ended its turn on.
+            last_ev = self._cached_last_event(tpath) if tpath is not None else None
+            question = (last_ev.question if last_ev else None) or (
                 transcripts_mod.trailing_question(last_text) if last_role == "agent" else None
             )
 
@@ -281,6 +286,7 @@ class ClaudeCodeProvider(SessionProvider):
             last_prompt_now = s.last_prompt
             last_text_now = s.last_text
             last_role_now = s.last_role
+            last_ev_now = None
             if live_now:
                 tp = self._transcript_path(account, s)
                 activity_now = self._activity(True, tp, _mtime(tp) if tp else None)
@@ -291,11 +297,20 @@ class ClaudeCodeProvider(SessionProvider):
                     last_prompt_now = lp or s.last_prompt
                     last_text_now = lt or s.last_text
                     last_role_now = lr or s.last_role
-            question_now = (
-                transcripts_mod.trailing_question(last_text_now)
-                if last_role_now == "agent"
-                else None
-            )
+                    last_ev_now = self._cached_last_event(tp)  # cache hit (_activity read it)
+            if last_ev_now is not None and last_ev_now.question:
+                # Unanswered AskUserQuestion → surface its prompt (see scan_sessions).
+                question_now = last_ev_now.question
+            elif live_now:
+                question_now = (
+                    transcripts_mod.trailing_question(last_text_now)
+                    if last_role_now == "agent"
+                    else None
+                )
+            else:
+                # Idle: no fresh read this sweep — keep whatever the last full scan
+                # surfaced rather than recomputing from stale text.
+                question_now = s.question
             thinking_now = activity_now is not None
             pid_now = entry.pid if (entry and live_now) else None
             deep_link_now = (
@@ -366,9 +381,7 @@ class ClaudeCodeProvider(SessionProvider):
         read = transcripts_mod.read_events(path)
         return [e for e in read.events if e.seq > after_seq]
 
-    async def last_event(
-        self, account: Account, session: Session
-    ) -> TranscriptEvent | None:
+    async def last_event(self, account: Account, session: Session) -> TranscriptEvent | None:
         path = self._transcript_path(account, session)
         return transcripts_mod.last_event(path) if path is not None else None
 

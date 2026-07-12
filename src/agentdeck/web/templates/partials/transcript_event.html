@@ -1,8 +1,10 @@
 {# one transcript event. `e` = TranscriptEvent.
    Past tool noise (tool results + tool-call lines) is dropped entirely; a live
    "Using tools…" marker is shown separately (#tool-activity) only while the
-   session is actively working right now. #}
-{%- if e.role == 'tool' or (e.tool_name and not e.text) -%}
+   session is actively working right now. An AskUserQuestion line is a tool_use
+   with no text, but it carries the prompt in `e.question` — keep it so the
+   choice the agent is waiting on is visible in the transcript. #}
+{%- if e.role == 'tool' or (e.tool_name and not e.text and not e.question) -%}
 {%- else -%}
 <div class="ev {{ e.role }}{% if e.subagent %} sub{% endif %}{% if e.queued %} queued{% endif %}">
   <div class="ev-head">
@@ -10,5 +12,6 @@
     {% if e.model %}<span class="ev-model">{{ e.model }}</span>{% endif %}
   </div>
   {% if e.text %}<div class="ev-text">{{ e.text }}</div>{% endif %}
+  {% if e.question %}<div class="ev-question" title="the agent asked you to choose"><span class="q-dot"></span><span class="q-text"><bdi>{{ e.question }}</bdi></span></div>{% endif %}
 </div>
 {%- endif -%}

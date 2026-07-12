@@ -114,6 +114,8 @@ def activity_label(
 
     Keyed off the *open turn*, not just recent writes, so a long tool run or a
     slow first token doesn't read as idle:
+    - last line is an unanswered AskUserQuestion → None (the agent is paused on
+      *your* answer, not working — the question is surfaced separately);
     - last line is a tool call / tool result → "Using tools" (persists through
       long tools, where the transcript is quiet for the tool's whole duration);
     - last line is an unanswered user/queued prompt → "Working";
@@ -121,6 +123,11 @@ def activity_label(
     - open turn but no write for ``stall_s`` → stalled, treated as idle;
     - otherwise (LIVE but quiet, last line a finished reply) → None (idle)."""
     if not live:
+        return None
+    # An unanswered AskUserQuestion is the agent waiting on the user, not busy —
+    # regardless of how recently it was written (streaming just finished a
+    # question). Surfaced as a question on the card instead of an activity badge.
+    if last_ev is not None and last_ev.tool_name == "AskUserQuestion":
         return None
     if last_ev is not None and age_s < stall_s:
         if last_ev.role == "tool" or last_ev.tool_name:
@@ -139,6 +146,7 @@ class TranscriptEvent:  # normalized transcript line (parsed from v0.2)
     text: str | None = None
     tool_name: str | None = None
     tool_summary: str | None = None  # short rendering of tool_use input
+    question: str | None = None  # AskUserQuestion prompt, when this line asks one
     model: str | None = None
     usage: dict | None = None  # raw usage block passthrough
     ts: datetime | None = None
