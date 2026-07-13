@@ -26,6 +26,7 @@
     {% if s.issue_status %}<span class="st-badge st-{{ s.issue_status_kind }}">{{ s.issue_status }}</span>{% endif %}
     {% if s.cwd %}<span class="cwd" title="{{ s.cwd }}">{{ s.cwd.name or s.cwd }}</span>{% endif %}
     {% if s.kind %}<span class="kind">{{ s.kind }}</span>{% endif %}
+    {% if s.context_tokens %}<span class="ctx {{ s.context_tokens | ctx_level }}" title="context window in use ({{ '{:,}'.format(s.context_tokens) }} tokens on the last request)">{{ s.context_tokens | ktok }} ctx</span>{% endif %}
     {% if s.last_activity %}<span class="ago">{{ s.last_activity | reltime_ago }}</span>{% endif %}
   </div>
 </a>

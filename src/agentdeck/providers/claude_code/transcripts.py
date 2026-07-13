@@ -117,6 +117,51 @@ def _stringify_tool_result(content: object) -> str:
     return ""
 
 
+# Slash-command echoes are written as `user` lines wrapped in these tags (the
+# `/compact` command, its stdout, the injected caveat). They are bookkeeping,
+# not real user turns, so they must not read as "the agent is working" nor
+# clobber the last-prompt / context readings.
+_COMMAND_NOISE_PREFIXES = (
+    "<command-name>",
+    "<command-message>",
+    "<command-args>",
+    "<local-command-stdout>",
+    "<local-command-stderr>",
+    "<local-command-caveat>",
+)
+
+
+def _user_content_text(obj: dict) -> str | None:
+    """First text of a user line's content (string or first text block), or None."""
+    message = obj.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        for b in content:
+            if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str):
+                return b["text"]
+    return None
+
+
+def _is_slash_command_line(obj: dict) -> bool:
+    text = _user_content_text(obj)
+    return isinstance(text, str) and text.lstrip().startswith(_COMMAND_NOISE_PREFIXES)
+
+
+def _is_compact_boundary(obj: dict) -> bool:
+    """A completed local command or a compaction summary: the *user* took the
+    turn, so the agent's prior turn is closed (idle), not open/working. Used to
+    stop a post-``/compact`` transcript reading as a live, in-progress turn."""
+    return bool(obj.get("isCompactSummary")) or _is_slash_command_line(obj)
+
+
+def _is_noise_user(obj: dict) -> bool:
+    """User lines that are bookkeeping, not conversation: meta caveats, the
+    compaction summary, and local slash-command echoes."""
+    return bool(obj.get("isMeta") or obj.get("isCompactSummary")) or _is_slash_command_line(obj)
+
+
 def _event_from_line(seq: int, data: dict, subagent: str | None = None) -> TranscriptEvent | None:
     ltype = data.get("type")
     if ltype == "queue-operation":
@@ -136,6 +181,8 @@ def _event_from_line(seq: int, data: dict, subagent: str | None = None) -> Trans
         return None
     if ltype not in ("user", "assistant", "system"):
         return None  # skip mode/summary lines
+    if ltype == "user" and _is_noise_user(data):
+        return None  # meta caveat, compaction summary, or slash-command echo
     message = data.get("message")
     content = message.get("content") if isinstance(message, dict) else None
     text, tool_name, tool_summary, question = _text_from_content(content)
@@ -243,10 +290,62 @@ def last_event(path: Path, *, tail: int = 65536) -> TranscriptEvent | None:
             continue
         if not isinstance(obj, dict):
             continue
+        if _is_compact_boundary(obj):
+            # A completed /compact (or other slash command) closes the turn: the
+            # agent is idle afterwards, not mid-work. Drop whatever tool_result /
+            # prompt preceded it so the open-turn probe reads as waiting.
+            found = None
+            continue
         ev = _event_from_line(0, obj)
         if ev is not None:
             found = ev
     return found
+
+
+def last_context_tokens(path: Path, *, tail: int = 65536) -> int | None:
+    """Current context-window occupancy in tokens: the input side of the most
+    recent usage block (``input + cache_read + cache_creation``) — i.e. how large
+    the prompt last sent to the model was, which is how full the context window
+    is right now. Deliberately NOT ``token_totals``: that sums cache reads over
+    every turn and so balloons far past the window. Read cheaply from the tail
+    (the latest usage block lives near the end); None when no usage is present."""
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as f:
+            if size > tail:
+                f.seek(size - tail)
+                f.readline()  # discard the partial first line after a mid-file seek
+            data = f.read()
+    except OSError:
+        return None
+    latest: dict | None = None
+    reset = False  # a compaction *after* the last usage block makes it stale
+    for raw in data.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        if obj.get("isCompactSummary"):
+            reset = True  # context was just compacted; the last usage predates it
+        message = obj.get("message")
+        usage = message.get("usage") if isinstance(message, dict) else None
+        if isinstance(usage, dict):
+            latest = usage
+            reset = False  # a usage block after the compaction reflects the new size
+    if latest is None or reset:
+        # No usage yet, or the only usage predates a compaction — the real
+        # (smaller) context isn't known until the session's next turn.
+        return None
+    return (
+        int(latest.get("input_tokens", 0) or 0)
+        + int(latest.get("cache_read_input_tokens", 0) or 0)
+        + int(latest.get("cache_creation_input_tokens", 0) or 0)
+    )
 
 
 def _user_text(obj: dict) -> str | None:
@@ -328,6 +427,7 @@ def transcript_meta(
     cwd: str | None = None
     last_text: str | None = None
     last_role: str | None = None
+    compacted = False  # a /compact with no real prompt after it → drop stale last-prompt
     try:
         size = path.stat().st_size
         with path.open("rb") as f:
@@ -340,7 +440,7 @@ def transcript_meta(
         return (None, None, None, None, None, None)
 
     def scan(blob: bytes, skip_first_partial: bool) -> None:
-        nonlocal ai_title, last_prompt, first_user, cwd, last_text, last_role
+        nonlocal ai_title, last_prompt, first_user, cwd, last_text, last_role, compacted
         lines = blob.split(b"\n")
         if skip_first_partial and lines:
             lines = lines[1:]  # a mid-file seek can land inside a line
@@ -354,14 +454,27 @@ def transcript_meta(
                 continue
             if not isinstance(obj, dict):
                 continue
+            if _is_compact_boundary(obj):
+                # A completed /compact resets the conversation: drop the stale
+                # pre-compact prompt/reply so the card doesn't resurface an old
+                # turn (the cheap head+tail read can't reach the real latest
+                # message past a huge summary). A real turn after the compaction
+                # repopulates these below.
+                compacted = True
+                last_prompt = None
+                last_text = None
+                last_role = None
+                continue
             if cwd is None and isinstance(obj.get("cwd"), str) and obj["cwd"]:
                 cwd = obj["cwd"]
             t = obj.get("type")
             if t == "ai-title" and isinstance(obj.get("aiTitle"), str):
                 ai_title = obj["aiTitle"].strip() or ai_title
-            elif t == "last-prompt" and isinstance(obj.get("lastPrompt"), str):
+            elif t == "last-prompt" and not compacted and isinstance(obj.get("lastPrompt"), str):
                 # bookkeeping fallback — written a few lines *after* the user
                 # turn, so the real user line below is what keeps us in sync.
+                # Skipped after a compaction: its record is the stale pre-compact
+                # prompt, which would undo the reset above.
                 last_prompt = obj["lastPrompt"].strip() or last_prompt
             elif t == "assistant":
                 at = _assistant_text(obj)
@@ -369,13 +482,14 @@ def transcript_meta(
                     last_text = at
                     last_role = "agent"
             elif t == "user":
-                if not obj.get("isMeta") and not obj.get("isSidechain"):
+                if not _is_noise_user(obj) and not obj.get("isSidechain"):
                     ut = _user_text(obj)  # None for tool_result-only user lines
                     if ut:
                         if first_user is None:
                             first_user = ut
                         last_prompt = ut  # authoritative newest prompt (matches detail)
                         last_role = "user"
+                        compacted = False  # a genuine post-compact prompt is current
             elif (
                 t == "queue-operation"
                 and obj.get("operation") == "enqueue"
@@ -384,6 +498,7 @@ def transcript_meta(
             ):
                 last_prompt = obj["content"].strip()  # typed-while-busy message
                 last_role = "user"
+                compacted = False
 
     scan(head_bytes, skip_first_partial=False)
     if tail_bytes:

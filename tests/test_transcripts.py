@@ -118,6 +118,19 @@ TOOL_RESULT = {
     "type": "user",
     "message": {"role": "user", "content": [{"type": "tool_result", "content": "file listing"}]},
 }
+# The bookkeeping a completed /compact leaves in the transcript.
+COMPACT_SUMMARY = {
+    "type": "user",
+    "isCompactSummary": True,
+    "isVisibleInTranscriptOnly": True,
+    "message": {"role": "user", "content": "This session is being continued from a previous…"},
+}
+COMPACT_CMD = {
+    "type": "user",
+    "message": {"role": "user", "content": "<command-name>/compact</command-name>"},
+}
+_STDOUT = "<local-command-stdout>Compacted</local-command-stdout>"
+COMPACT_STDOUT = {"type": "user", "message": {"role": "user", "content": _STDOUT}}
 
 
 def _enqueue(text):
@@ -199,6 +212,93 @@ def test_token_totals(tmp_path):
     assert tot.output_tokens == 40
     assert tot.cache_read_tokens == 10
     assert tot.total == 256
+
+
+def test_last_context_tokens_uses_latest_usage_block(tmp_path):
+    # context = input + cache_read + cache_creation of the *most recent* usage
+    # block — not summed over the transcript. A later, bigger turn wins, and a
+    # trailing tool-result line (no usage) doesn't reset it.
+    bigger = {
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "model": "claude-opus-4-8",
+            "content": [{"type": "text", "text": "more"}],
+            "usage": {
+                "input_tokens": 1000,
+                "output_tokens": 50,
+                "cache_read_input_tokens": 40000,
+                "cache_creation_input_tokens": 200,
+            },
+        },
+    }
+    p = tmp_path / "t.jsonl"
+    _write(p, [ASSISTANT, bigger, TOOL_RESULT])
+    assert transcripts.last_context_tokens(p) == 41200  # 1000 + 40000 + 200
+
+
+def test_last_context_tokens_none_without_usage(tmp_path):
+    p = tmp_path / "t.jsonl"
+    _write(p, [USER, TOOL_RESULT])
+    assert transcripts.last_context_tokens(p) is None
+    assert transcripts.last_context_tokens(tmp_path / "missing.jsonl") is None
+
+
+def test_last_context_tokens_reset_by_compaction(tmp_path):
+    # After /compact the last usage block predates the compaction and no longer
+    # reflects the (now much smaller) context — report unknown, not the old size.
+    p = tmp_path / "t.jsonl"
+    _write(p, [ASSISTANT, COMPACT_SUMMARY, COMPACT_CMD, COMPACT_STDOUT])
+    assert transcripts.last_context_tokens(p) is None
+
+
+def test_last_context_tokens_after_post_compact_turn(tmp_path):
+    # A real turn after the compaction produces a fresh usage block → shown again.
+    post = {
+        "type": "assistant",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": "back"}],
+                    "usage": {"input_tokens": 300, "cache_read_input_tokens": 0,
+                              "cache_creation_input_tokens": 0}},
+    }
+    p = tmp_path / "t.jsonl"
+    _write(p, [ASSISTANT, COMPACT_SUMMARY, post])
+    assert transcripts.last_context_tokens(p) == 300
+
+
+def test_last_event_idle_after_compact(tmp_path):
+    # A tool_result left open, then /compact: the agent is idle afterwards, so the
+    # open-turn probe must NOT read the tool_result as an in-progress turn.
+    p = tmp_path / "t.jsonl"
+    _write(p, [USER, ASSISTANT, TOOL_RESULT, COMPACT_SUMMARY, COMPACT_CMD, COMPACT_STDOUT])
+    assert transcripts.last_event(p) is None
+
+
+def test_read_events_skips_compact_and_command_noise(tmp_path):
+    p = tmp_path / "t.jsonl"
+    _write(p, [USER, ASSISTANT, COMPACT_SUMMARY, COMPACT_CMD, COMPACT_STDOUT])
+    read = transcripts.read_events(p)
+    # only the real user + assistant render; compaction/command noise is dropped
+    assert [e.role for e in read.events] == ["user", "assistant"]
+
+
+def test_transcript_meta_resets_stale_prompt_after_compact(tmp_path):
+    stale = {"type": "last-prompt", "lastPrompt": "the original prompt"}
+    p = tmp_path / "t.jsonl"
+    _write(p, [USER, ASSISTANT, stale, COMPACT_SUMMARY, COMPACT_CMD, COMPACT_STDOUT, stale])
+    _t, last_prompt, first_user, _cwd, last_text, last_role = transcripts.transcript_meta(p)
+    assert last_prompt is None  # stale pre-compact prompt (and bookkeeping) dropped
+    assert last_text is None  # stale pre-compact reply dropped
+    assert last_role is None
+    assert first_user == "hello there"  # retained for title / kanban resolution
+
+
+def test_transcript_meta_keeps_real_prompt_after_compact(tmp_path):
+    fresh = {"type": "user", "message": {"role": "user", "content": "fresh question"}}
+    p = tmp_path / "t.jsonl"
+    _write(p, [USER, ASSISTANT, COMPACT_SUMMARY, COMPACT_CMD, fresh])
+    _t, last_prompt, _fu, _cwd, _lt, last_role = transcripts.transcript_meta(p)
+    assert last_prompt == "fresh question"  # a genuine post-compact prompt is current
+    assert last_role == "user"
 
 
 def test_last_model(tmp_path):

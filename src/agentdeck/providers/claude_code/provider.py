@@ -92,6 +92,9 @@ class ClaudeCodeProvider(SessionProvider):
         # last-renderable-event cache (mtime-keyed) — the liveness sweep reads it
         # every few seconds per live session, so idle ones must stay a cache hit.
         self._last_ev_cache: dict[str, tuple[float, TranscriptEvent | None]] = {}
+        # Context-window occupancy (mtime-keyed), read from the transcript tail —
+        # same cheap-cache treatment as meta/last-event so idle sessions cost nothing.
+        self._ctx_cache: dict[str, tuple[float, int | None]] = {}
         # Resolves kanban dispatch prompts to real GitHub issue titles.
         self._kanban = kanban_mod.KanbanTitleCache()
 
@@ -118,6 +121,18 @@ class ClaudeCodeProvider(SessionProvider):
         ev = transcripts_mod.last_event(path)
         self._last_ev_cache[str(path)] = (mtime, ev)
         return ev
+
+    def _cached_context_tokens(self, path: Path) -> int | None:
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return None
+        hit = self._ctx_cache.get(str(path))
+        if hit is not None and hit[0] == mtime:
+            return hit[1]
+        ctx = transcripts_mod.last_context_tokens(path)
+        self._ctx_cache[str(path)] = (mtime, ctx)
+        return ctx
 
     def _activity(self, is_live: bool, tpath: Path | None, last_write) -> str | None:
         """Activity label for a live session, from its open turn (cheap, mtime
@@ -223,6 +238,8 @@ class ClaudeCodeProvider(SessionProvider):
                 transcripts_mod.trailing_question(last_text) if last_role == "agent" else None
             )
 
+            context_tokens = self._cached_context_tokens(tpath) if tpath is not None else None
+
             last_activity = _mtime(tpath) if tpath else (entry.started_at if entry else None)
 
             status = SessionStatus.LIVE if is_live else SessionStatus.IDLE
@@ -267,6 +284,7 @@ class ClaudeCodeProvider(SessionProvider):
                     proc_start=entry.proc_start if entry else None,
                     started_at=entry.started_at if entry else None,
                     last_activity=last_activity,
+                    context_tokens=context_tokens,
                     deep_link=deep_link,
                     capabilities=frozenset(caps),
                 )
@@ -286,6 +304,7 @@ class ClaudeCodeProvider(SessionProvider):
             last_prompt_now = s.last_prompt
             last_text_now = s.last_text
             last_role_now = s.last_role
+            context_now = s.context_tokens
             last_ev_now = None
             if live_now:
                 tp = self._transcript_path(account, s)
@@ -298,6 +317,7 @@ class ClaudeCodeProvider(SessionProvider):
                     last_text_now = lt or s.last_text
                     last_role_now = lr or s.last_role
                     last_ev_now = self._cached_last_event(tp)  # cache hit (_activity read it)
+                    context_now = self._cached_context_tokens(tp)
             if last_ev_now is not None and last_ev_now.question:
                 # Unanswered AskUserQuestion → surface its prompt (see scan_sessions).
                 question_now = last_ev_now.question
@@ -324,6 +344,7 @@ class ClaudeCodeProvider(SessionProvider):
                 or last_text_now != s.last_text
                 or last_role_now != s.last_role
                 or question_now != s.question
+                or context_now != s.context_tokens
                 or pid_now != s.pid
                 or deep_link_now != s.deep_link
             ):
@@ -334,6 +355,7 @@ class ClaudeCodeProvider(SessionProvider):
                 s.last_text = last_text_now
                 s.last_role = last_role_now
                 s.question = question_now
+                s.context_tokens = context_now
                 s.pid = pid_now
                 s.deep_link = deep_link_now
                 s.kind = entry.kind if entry else s.kind

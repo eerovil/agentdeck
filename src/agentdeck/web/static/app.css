@@ -162,6 +162,9 @@ body.usage-open .limit-bars { display: flex; }
 .st-closed { color: var(--crit); }
 .st-dropped { color: var(--muted); }
 .cwd { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; }
+.ctx { font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--live); }
+.ctx.warn { color: var(--warn); }
+.ctx.crit { color: var(--crit); font-weight: 600; }
 .empty { color: var(--muted); font-size: 13px; padding: 6px 2px; }
 a.session { display: block; text-decoration: none; color: inherit; }
 a.session:active { background: var(--panel2); }

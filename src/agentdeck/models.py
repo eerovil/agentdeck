@@ -73,6 +73,7 @@ class Session:
     started_at: datetime | None = None
     last_activity: datetime | None = None
     tokens: TokenTotals | None = None  # summed from transcript usage blocks (v0.2)
+    context_tokens: int | None = None  # context-window occupancy (input side of latest usage block)
     deep_link: str | None = None  # claude.ai URL when applicable
     capabilities: frozenset[Capability] = field(default_factory=frozenset)
 

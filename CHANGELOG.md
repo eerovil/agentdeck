@@ -1,6 +1,21 @@
 # Changelog
 
 ## v0.3.0 (unreleased)
+- **Post-`/compact` cards no longer misreport.** A completed compaction (and
+  other slash-command echoes) is bookkeeping, not a live turn, so cards used to
+  read the *pre*-compact tail: a stale huge context size, a false "working"
+  badge, and an old prompt/reply. Compaction is now a turn boundary — the
+  context counter hides until the next real turn reveals the new (smaller) size,
+  the open-turn probe reads idle, and the stale prompt/reply are dropped
+  (`ai-title` still labels the card). Command/compaction lines are also filtered
+  from the transcript view.
+- Session cards show a **context-size** counter (`47k ctx`) in the meta row —
+  how full the context window is now, taken from the input side of the latest
+  usage block (input + cache-read + cache-create), not the cumulative token
+  total. Read cheaply from the transcript tail (mtime-cached) and refreshed on
+  the liveness sweep, so it ticks up live as a session works. Colour-coded like
+  the usage bars — green under 500k, amber past the halfway mark of the 1M-token
+  window, red in the near-full (800k+) auto-compaction zone.
 - Cards recognise the **AskUserQuestion** (multiple-choice) tool: its prompt —
   which lives in the tool input, not a text block — is surfaced as the card's
   waiting-on-your-answer question, and an unanswered one reads as *waiting*

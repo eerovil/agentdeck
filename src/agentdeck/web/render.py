@@ -56,9 +56,44 @@ def reltime_ago(value: datetime | None) -> str:
     return f"{days}d {hours}h ago"
 
 
+def ktok(value) -> str:
+    """Compact token count: 940 -> '940', 1200 -> '1.2k', 47000 -> '47k'."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return ""
+    if n < 1000:
+        return str(n)
+    k = n / 1000
+    return f"{k:.1f}k" if k < 10 else f"{k:.0f}k"
+
+
+# Context-size colour thresholds, referenced to the 1M-token (beta) window most
+# sessions run on: amber past the halfway mark, red in the near-full zone where
+# auto-compaction bites.
+CTX_WARN_TOKENS = 500_000
+CTX_CRIT_TOKENS = 800_000
+
+
+def ctx_level(value) -> str:
+    """Traffic-light class for a context size: '' (green) / 'warn' / 'crit' —
+    same modifier vocabulary as the usage bars."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return ""
+    if n >= CTX_CRIT_TOKENS:
+        return "crit"
+    if n >= CTX_WARN_TOKENS:
+        return "warn"
+    return ""
+
+
 def register_filters(templates: Jinja2Templates) -> None:
     templates.env.filters["reltime"] = reltime
     templates.env.filters["reltime_ago"] = reltime_ago
+    templates.env.filters["ktok"] = ktok
+    templates.env.filters["ctx_level"] = ctx_level
 
 
 def _usage_rows(accounts: list[Account], state: AppState) -> list[dict]:
