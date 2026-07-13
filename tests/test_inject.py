@@ -18,6 +18,7 @@ from agentdeck.models import (
     Session,
     SessionStatus,
 )
+from agentdeck.providers.codex import WRITABLE_ROOTS_CONFIG_OVERRIDE
 from agentdeck.providers.codex.inject import (
     inject_session,
     is_injectable_rollout,
@@ -104,11 +105,13 @@ async def test_inject_session_passes_prompt_on_stdin(tmp_path):
     assert process.input == b"do the next thing\n"
     assert "do the next thing" not in spawned["args"]
     assert spawned["args"][:4] == ("codex", "exec", "resume", session.session_id)
-    assert spawned["args"][4:8] == (
+    assert spawned["args"][4:10] == (
         "--config",
         'web_search="live"',
         "--config",
         "sandbox_workspace_write.network_access=true",
+        "--config",
+        WRITABLE_ROOTS_CONFIG_OVERRIDE,
     )
     assert spawned["kwargs"]["env"]["CODEX_HOME"] == str(tmp_path)
     assert spawned["kwargs"]["start_new_session"] is True
@@ -212,6 +215,8 @@ async def test_start_session_passes_first_prompt_on_stdin(tmp_path):
         'web_search="live"',
         "--config",
         "sandbox_workspace_write.network_access=true",
+        "--config",
+        WRITABLE_ROOTS_CONFIG_OVERRIDE,
         "--json",
         "--skip-git-repo-check",
         "-",

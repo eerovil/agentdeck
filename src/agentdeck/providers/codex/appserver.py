@@ -20,7 +20,11 @@ from ...models import (
     InteractionQuestion,
     PendingInteraction,
 )
-from . import NETWORK_ACCESS_CONFIG_OVERRIDE, WEB_SEARCH_CONFIG_OVERRIDE
+from . import (
+    NETWORK_ACCESS_CONFIG_OVERRIDE,
+    WEB_SEARCH_CONFIG_OVERRIDE,
+    WRITABLE_ROOTS_CONFIG_OVERRIDE,
+)
 
 log = logging.getLogger(__name__)
 
@@ -188,6 +192,8 @@ class CodexAppServer:
                     WEB_SEARCH_CONFIG_OVERRIDE,
                     "--config",
                     NETWORK_ACCESS_CONFIG_OVERRIDE,
+                    "--config",
+                    WRITABLE_ROOTS_CONFIG_OVERRIDE,
                     "--stdio",
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,

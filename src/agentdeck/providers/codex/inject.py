@@ -8,7 +8,12 @@ import signal
 from pathlib import Path
 
 from ...models import Account, InjectResult, Session
-from . import NETWORK_ACCESS_CONFIG_OVERRIDE, WEB_SEARCH_CONFIG_OVERRIDE, transcripts
+from . import (
+    NETWORK_ACCESS_CONFIG_OVERRIDE,
+    WEB_SEARCH_CONFIG_OVERRIDE,
+    WRITABLE_ROOTS_CONFIG_OVERRIDE,
+    transcripts,
+)
 
 
 def is_injectable_rollout(path: Path, kind: str | None) -> bool:
@@ -61,6 +66,8 @@ async def inject_session(
             WEB_SEARCH_CONFIG_OVERRIDE,
             "--config",
             NETWORK_ACCESS_CONFIG_OVERRIDE,
+            "--config",
+            WRITABLE_ROOTS_CONFIG_OVERRIDE,
             "-",
             "--json",
             "--skip-git-repo-check",
@@ -109,6 +116,8 @@ async def start_session(
             WEB_SEARCH_CONFIG_OVERRIDE,
             "--config",
             NETWORK_ACCESS_CONFIG_OVERRIDE,
+            "--config",
+            WRITABLE_ROOTS_CONFIG_OVERRIDE,
             "--json",
             "--skip-git-repo-check",
             "-",
