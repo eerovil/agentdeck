@@ -101,9 +101,9 @@ than crash. Details of the Claude surfaces will be documented in
 ## Multi-account
 
 Each `[[accounts]]` entry is an independent provider config directory. Usage
-data renders where the provider exposes it (Codex currently does not); sessions
-are grouped by account. Labels must be unique and slug-safe (they appear in
-URLs and cache filenames).
+data renders for both providers; Codex delegates authentication and rolling
+limit reads to `codex app-server`. Sessions are grouped by account. Labels must
+be unique and slug-safe (they appear in URLs and cache filenames).
 
 ## Message injection & safety interlocks
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -19,10 +20,13 @@ from ...models import (
 )
 from ..base import SessionProvider
 from . import transcripts as transcripts_mod
+from .usage import UsagePoller, fetch_usage_once
 
 DETAIL_WINDOW = 400
 MAX_SESSIONS = 200
 LIVE_WINDOW_S = 30.0
+
+log = logging.getLogger(__name__)
 
 
 def _mtime(path: Path) -> datetime | None:
@@ -213,7 +217,19 @@ class CodexProvider(SessionProvider):
         return changed
 
     async def fetch_usage(self, account: Account) -> UsageSnapshot | None:
-        return None
+        try:
+            return await fetch_usage_once(account)
+        except Exception as exc:  # noqa: BLE001 -- one failed usage read is non-fatal
+            log.debug("fetch_usage failed for %s: %s", account.key, exc)
+            return None
+
+    def make_usage_poller(self, account: Account, state, bus, **kwargs):
+        return UsagePoller(
+            account,
+            state,
+            interval_s=kwargs.get("interval_s", 300.0),
+            cache_dir=kwargs.get("cache_dir"),
+        )
 
     async def read_transcript(
         self, account: Account, session: Session, after_seq: int = 0

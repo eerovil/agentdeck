@@ -284,9 +284,9 @@ async def test_codex_full_reads_run_in_thread(tmp_path, monkeypatch):
     assert calls == ["transcript_cursor", "_read_transcript_file", "_load_transcript_file"]
 
 
-async def test_codex_usage_unavailable_and_registration(tmp_path):
+def test_codex_usage_poller_and_registration(tmp_path):
     provider = CodexProvider()
-    assert await provider.fetch_usage(_account(tmp_path)) is None
+    assert provider.make_usage_poller(_account(tmp_path), object(), object()) is not None
     assert PROVIDERS["codex"].provider_id == "codex"
     config = AccountConfig(provider="codex", label="local", config_dir=str(tmp_path))
     assert config.root == tmp_path

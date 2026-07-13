@@ -81,6 +81,24 @@ async def test_dashboard_renders_usage_and_session(tmp_path):
     assert 'id="hide-closed"' in r.text
 
 
+async def test_dashboard_collapsed_usage_renders_weekly_only_plan(tmp_path):
+    app = _app_with_state(tmp_path)
+    app.state.app_state.set_usage(
+        UsageSnapshot(
+            account_key="claude_code:test",
+            five_hour_pct=None,
+            five_hour_resets_at=None,
+            seven_day_pct=12.0,
+            seven_day_resets_at=None,
+            fetched_at=datetime.now(UTC),
+        )
+    )
+    async with _client(app) as c:
+        response = await c.get("/")
+    assert '<b class="mini-pct ">12%</b>' in response.text
+    assert '<span class="mini-7d">7d</span>' in response.text
+
+
 def test_worker_type_classification():
     assert worker_type(True, False) == "kanban"  # kanban dispatch always wins
     assert worker_type(True, True) == "kanban"  # even when also RC-spawned

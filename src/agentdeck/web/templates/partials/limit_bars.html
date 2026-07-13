@@ -8,6 +8,9 @@
     {% if u and u.five_hour_pct is not none %}
     <b class="mini-pct {% if u.five_hour_pct >= 90 %}crit{% elif u.five_hour_pct >= 70 %}warn{% endif %}">{{ u.five_hour_pct | round | int }}%</b>
     {%- if u.seven_day_pct is not none %}<span class="mini-7d">{{ u.seven_day_pct | round | int }}%</span>{% endif %}
+    {% elif u and u.seven_day_pct is not none %}
+    <b class="mini-pct {% if u.seven_day_pct >= 90 %}crit{% elif u.seven_day_pct >= 70 %}warn{% endif %}">{{ u.seven_day_pct | round | int }}%</b>
+    <span class="mini-7d">7d</span>
     {% else %}<span class="mini-7d">—</span>{% endif %}
   </span>
   {% endfor %}

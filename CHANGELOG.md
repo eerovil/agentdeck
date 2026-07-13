@@ -4,9 +4,10 @@
 - Added a **Codex CLI provider**. Local
   `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` chats now share the session
   cards, transcript detail view, live tail, model metadata, and token/context
-  counters used by Claude Code. Codex exposes no process registry or usage-limit
-  source, so LIVE/IDLE is inferred from recent rollout writes and account usage
-  bars remain unavailable.
+  counters used by Claude Code. LIVE/IDLE is inferred from recent rollout
+  writes because Codex exposes no process registry. Account usage bars are read
+  through `codex app-server`: windows are matched by duration, including plans
+  that currently return only a weekly limit.
 - **Post-`/compact` cards no longer misreport.** A completed compaction (and
   other slash-command echoes) is bookkeeping, not a live turn, so cards used to
   read the *pre*-compact tail: a stale huge context size, a false "working"
