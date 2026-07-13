@@ -54,6 +54,8 @@ async def test_app_server_enables_live_web_search(tmp_path):
         "app-server",
         "--config",
         'web_search="live"',
+        "--config",
+        "sandbox_workspace_write.network_access=true",
         "--stdio",
     )
     assert spawned["kwargs"]["env"]["CODEX_HOME"] == str(tmp_path)
