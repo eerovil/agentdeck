@@ -246,6 +246,54 @@ def test_codex_partial_and_malformed_lines_resume(tmp_path):
     assert tail.byte_offset == path.stat().st_size
 
 
+def test_codex_filters_only_internal_system_preamble(tmp_path):
+    path = tmp_path / "rollout.jsonl"
+    messages = [
+        _message("developer", "<permissions instructions>internal sandbox policy"),
+        _message(
+            "system",
+            "You are /root, the primary agent in a team of agents collaborating here",
+        ),
+        _message("developer", "<multi_agent_mode>Do not delegate</multi_agent_mode>"),
+        _message("system", "A genuine system-visible conversation message"),
+        _message("user", "<permissions instructions>please explain this tag"),
+    ]
+    path.write_text("".join(json.dumps(message) + "\n" for message in messages))
+
+    visible = transcripts.read_events(path).events
+
+    assert [(event.role, event.text) for event in visible] == [
+        ("system", "A genuine system-visible conversation message"),
+        ("user", "<permissions instructions>please explain this tag"),
+    ]
+
+
+def test_codex_preserves_long_conversation_messages(tmp_path):
+    path = tmp_path / "rollout.jsonl"
+    long_user_text = "begin\n" + ("user content " * 500) + "\nuser end"
+    long_assistant_text = "begin\n" + ("assistant content " * 500) + "\nassistant end"
+    lines = [
+        _message("user", long_user_text),
+        _message("assistant", long_assistant_text),
+        _line(
+            "response_item",
+            {
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": long_assistant_text}],
+            },
+        ),
+    ]
+    path.write_text("".join(json.dumps(line) + "\n" for line in lines))
+
+    events = transcripts.read_events(path).events
+
+    assert [event.text for event in events] == [
+        long_user_text,
+        long_assistant_text,
+        long_assistant_text,
+    ]
+
+
 async def test_codex_sweep_refreshes_status_and_tail_metadata(tmp_path):
     sid = "019f5b2b-c830-7922-a1ce-8c9c69526c06"
     path = _rollout(tmp_path, sid, old=True)

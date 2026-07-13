@@ -18,7 +18,7 @@ from ...models import TokenTotals, TranscriptEvent
 
 log = logging.getLogger(__name__)
 
-_MAX_TEXT = 4000
+_MAX_TOOL_OUTPUT = 4000
 _MAX_TITLE = 200
 _MAX_TOOL_SUMMARY = 160
 _META_HEAD = 128 * 1024
@@ -102,11 +102,22 @@ def _text_content(content: object) -> str | None:
         if isinstance(value, str) and value.strip():
             parts.append(value.strip())
     text = "\n".join(parts).strip()
-    return text[:_MAX_TEXT] or None
+    return text or None
 
 
 def _is_noise_user(text: str | None) -> bool:
     return bool(text and text.lstrip().startswith("<environment_context>"))
+
+
+_INTERNAL_SYSTEM_PREFIXES = (
+    "<permissions instructions>",
+    "You are /root, the primary agent in a team of agents",
+    "<multi_agent_mode>",
+)
+
+
+def _is_internal_system(text: str | None) -> bool:
+    return bool(text and text.lstrip().startswith(_INTERNAL_SYSTEM_PREFIXES))
 
 
 def _tool_summary(value: object) -> str | None:
@@ -138,13 +149,13 @@ def _tool_summary(value: object) -> str | None:
 
 def _tool_output(value: object) -> str | None:
     if isinstance(value, str):
-        return value.strip()[:_MAX_TEXT] or None
+        return value.strip()[:_MAX_TOOL_OUTPUT] or None
     if value is None:
         return None
     try:
-        return json.dumps(value, ensure_ascii=False)[:_MAX_TEXT]
+        return json.dumps(value, ensure_ascii=False)[:_MAX_TOOL_OUTPUT]
     except (TypeError, ValueError):
-        return str(value)[:_MAX_TEXT] or None
+        return str(value)[:_MAX_TOOL_OUTPUT] or None
 
 
 def _event_from_line(seq: int, data: dict) -> TranscriptEvent | None:
@@ -172,7 +183,11 @@ def _event_from_line(seq: int, data: dict) -> TranscriptEvent | None:
         if role not in ("user", "assistant", "system"):
             return None
         text = _text_content(payload.get("content"))
-        if text is None or (role == "user" and _is_noise_user(text)):
+        if (
+            text is None
+            or (role == "user" and _is_noise_user(text))
+            or (role == "system" and _is_internal_system(text))
+        ):
             return None
         return TranscriptEvent(seq=seq, role=role, text=text, ts=timestamp)
     if item_type in ("custom_tool_call", "function_call"):
@@ -201,7 +216,7 @@ def _event_from_line(seq: int, data: dict) -> TranscriptEvent | None:
             for item in summary
             if isinstance(item, dict) and isinstance(item.get("text"), str)
         ]
-        text = "\n".join(parts).strip()[:_MAX_TEXT]
+        text = "\n".join(parts).strip()
         if text:
             return TranscriptEvent(seq=seq, role="assistant", text=text, ts=timestamp)
     return None
