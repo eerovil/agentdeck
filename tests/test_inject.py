@@ -357,6 +357,102 @@ async def test_new_session_route_and_enter_to_send_ui(tmp_path, monkeypatch):
     await app.state.injector.stop()
 
 
+async def test_machine_delegation_api_returns_final_message(tmp_path, monkeypatch):
+    app = _web_app(tmp_path)
+    release = asyncio.Event()
+
+    async def fake_start(
+        account,
+        cwd,
+        message,
+        *,
+        timeout_s,
+        sandbox,
+        model,
+        approval_policy,
+    ):
+        assert account.key == "codex:test"
+        assert cwd == tmp_path
+        assert message == "review this change"
+        assert sandbox == "workspace-write"
+        assert model is None
+        assert approval_policy == "on-request"
+        return InjectResult(True, session_id="delegated-thread")
+
+    async def fake_wait(account, session_id, *, timeout_s):
+        assert session_id == "delegated-thread"
+        await release.wait()
+        return InjectResult(True)
+
+    async def fake_result(account, session_id):
+        assert session_id == "delegated-thread"
+        return "The delegated review is complete."
+
+    from agentdeck.providers import PROVIDERS
+
+    provider = PROVIDERS["codex"]
+    monkeypatch.setattr(provider, "start_session", fake_start)
+    monkeypatch.setattr(provider, "wait_for_session", fake_wait)
+    monkeypatch.setattr(provider, "session_result", fake_result)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/delegations",
+            json={"cwd": str(tmp_path), "message": "review this change"},
+        )
+        assert response.status_code == 202
+        delegation_id = response.json()["id"]
+        for _ in range(10):
+            await asyncio.sleep(0)
+            status = await client.get(f"/api/delegations/{delegation_id}")
+            if status.json()["state"] == "running":
+                break
+        assert status.json() == {
+            "id": delegation_id,
+            "state": "running",
+            "account_key": "codex:test",
+            "session_key": "codex:test:delegated-thread",
+            "session_url": "/sessions/codex:test:delegated-thread",
+            "reason": None,
+            "final_message": None,
+            "interaction": None,
+        }
+
+        release.set()
+        for _ in range(10):
+            await asyncio.sleep(0)
+            status = await client.get(f"/api/delegations/{delegation_id}")
+            if status.json()["state"] == "complete":
+                break
+        assert status.json()["final_message"] == "The delegated review is complete."
+
+    await app.state.injector.stop()
+
+
+async def test_machine_delegation_api_validates_requests(tmp_path):
+    disabled = _web_app(tmp_path, enabled=False)
+    async with AsyncClient(
+        transport=ASGITransport(app=disabled), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/delegations",
+            json={"cwd": str(tmp_path), "message": "hello"},
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"] == "message injection is disabled"
+        unsafe = await client.post(
+            "/api/delegations",
+            json={
+                "cwd": str(tmp_path),
+                "message": "hello",
+                "sandbox": "danger-full-access",
+            },
+        )
+        assert unsafe.status_code == 422
+        missing = await client.get("/api/delegations/not-a-real-id")
+        assert missing.status_code == 404
+
+
 async def test_owned_session_question_steer_and_stop_ui(tmp_path, monkeypatch):
     app = _web_app(tmp_path)
     session = app.state.app_state.sessions["codex:test:sid"]

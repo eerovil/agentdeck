@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -30,6 +31,16 @@ class QueuedMessage:
     reason: str | None = None
 
 
+@dataclass(frozen=True)
+class DelegationStatus:
+    id: str
+    state: str
+    account_key: str
+    session_key: str | None = None
+    reason: str | None = None
+    final_message: str | None = None
+
+
 class InjectionService:
     _MAX_STATUSES = 200
 
@@ -40,6 +51,8 @@ class InjectionService:
         self._items: dict[str, list[QueuedMessage]] = {}
         self._new_tasks: dict[str, asyncio.Task] = {}
         self._new_status: dict[str, InjectionStatus] = {}
+        self._delegation_tasks: dict[str, asyncio.Task] = {}
+        self._delegations: dict[str, DelegationStatus] = {}
         self._next_id = 1
 
     def status(self, session_key: str) -> InjectionStatus | None:
@@ -51,6 +64,15 @@ class InjectionService:
 
     def new_status(self, account_key: str) -> InjectionStatus | None:
         return self._new_status.get(account_key)
+
+    def delegation_status(self, delegation_id: str) -> DelegationStatus | None:
+        return self._delegations.get(delegation_id)
+
+    def _remember_delegation(self, status: DelegationStatus) -> None:
+        self._delegations.pop(status.id, None)
+        self._delegations[status.id] = status
+        while len(self._delegations) > self._MAX_STATUSES:
+            self._delegations.pop(next(iter(self._delegations)))
 
     def _remember(self, session_key: str, status: InjectionStatus) -> None:
         self._status.pop(session_key, None)
@@ -211,11 +233,164 @@ class InjectionService:
         finally:
             self._new_tasks.pop(account.key, None)
 
+    async def start_delegation(
+        self,
+        account: Account,
+        provider: SessionProvider,
+        cwd: Path,
+        message: str,
+        *,
+        sandbox: str = "workspace-write",
+        model: str | None = None,
+    ) -> tuple[InjectResult, str | None]:
+        """Start a machine-oriented delegation and retain a pollable result."""
+        if not self.config.enabled:
+            return InjectResult(False, "message injection is disabled"), None
+        if not provider.supports_new_session:
+            return InjectResult(False, "this provider cannot start sessions"), None
+        message = message.strip()
+        if not message:
+            return InjectResult(False, "message is empty"), None
+        if len(message) > self.config.max_message_chars:
+            return InjectResult(False, "message is too long"), None
+        if not cwd.is_dir():
+            return InjectResult(False, "working directory does not exist"), None
+
+        delegation_id = uuid.uuid4().hex
+        self._remember_delegation(
+            DelegationStatus(delegation_id, "starting", account.key)
+        )
+        self._delegation_tasks[delegation_id] = asyncio.create_task(
+            self._run_delegation(
+                delegation_id,
+                account,
+                provider,
+                cwd,
+                message,
+                sandbox,
+                model,
+            ),
+            name=f"delegation:{delegation_id}",
+        )
+        return InjectResult(True), delegation_id
+
+    async def _run_delegation(
+        self,
+        delegation_id: str,
+        account: Account,
+        provider: SessionProvider,
+        cwd: Path,
+        message: str,
+        sandbox: str,
+        model: str | None,
+    ) -> None:
+        session_key = None
+        try:
+            started = await provider.start_session(
+                account,
+                cwd,
+                message,
+                timeout_s=self.config.timeout_s,
+                sandbox=sandbox,
+                model=model,
+                approval_policy="on-request",
+            )
+            if not started.accepted or not started.session_id:
+                self._remember_delegation(
+                    DelegationStatus(
+                        delegation_id,
+                        "failed",
+                        account.key,
+                        reason=started.reason or "Codex did not return a session id",
+                    )
+                )
+                return
+            session_key = f"{account.key}:{started.session_id}"
+            self._remember_delegation(
+                DelegationStatus(
+                    delegation_id,
+                    "running",
+                    account.key,
+                    session_key=session_key,
+                )
+            )
+            completed = await provider.wait_for_session(
+                account,
+                started.session_id,
+                timeout_s=self.config.timeout_s,
+            )
+            if not completed.accepted:
+                self._remember_delegation(
+                    DelegationStatus(
+                        delegation_id,
+                        "failed",
+                        account.key,
+                        session_key=session_key,
+                        reason=completed.reason or "Codex delegation failed",
+                    )
+                )
+                return
+            final_message = None
+            for _ in range(50):
+                final_message = await provider.session_result(account, started.session_id)
+                if final_message:
+                    break
+                await asyncio.sleep(0.2)
+            if not final_message:
+                self._remember_delegation(
+                    DelegationStatus(
+                        delegation_id,
+                        "failed",
+                        account.key,
+                        session_key=session_key,
+                        reason="Codex completed but its final message was unavailable",
+                    )
+                )
+                return
+            self._remember_delegation(
+                DelegationStatus(
+                    delegation_id,
+                    "complete",
+                    account.key,
+                    session_key=session_key,
+                    final_message=final_message,
+                )
+            )
+        except asyncio.CancelledError:
+            self._remember_delegation(
+                DelegationStatus(
+                    delegation_id,
+                    "failed",
+                    account.key,
+                    session_key=session_key,
+                    reason="delegation cancelled",
+                )
+            )
+            raise
+        except Exception as exc:  # noqa: BLE001 -- retain failure for the caller
+            log.exception("delegation failed for %s", delegation_id)
+            self._remember_delegation(
+                DelegationStatus(
+                    delegation_id,
+                    "failed",
+                    account.key,
+                    session_key=session_key,
+                    reason=str(exc),
+                )
+            )
+        finally:
+            self._delegation_tasks.pop(delegation_id, None)
+
     async def stop(self) -> None:
-        tasks = [*self._tasks.values(), *self._new_tasks.values()]
+        tasks = [
+            *self._tasks.values(),
+            *self._new_tasks.values(),
+            *self._delegation_tasks.values(),
+        ]
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._tasks.clear()
         self._new_tasks.clear()
+        self._delegation_tasks.clear()

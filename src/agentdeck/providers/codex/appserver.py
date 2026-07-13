@@ -444,15 +444,30 @@ class CodexAppServer:
                 return request.interaction
         return None
 
-    async def start_thread(self, cwd: Path, message: str) -> InjectResult:
+    async def start_thread(
+        self,
+        cwd: Path,
+        message: str,
+        *,
+        sandbox: str | None = None,
+        model: str | None = None,
+        approval_policy: str | None = None,
+    ) -> InjectResult:
         await self.start()
+        params = {
+            "cwd": str(cwd),
+            "ephemeral": False,
+            "threadSource": "agentdeck",
+        }
+        if sandbox is not None:
+            params["sandbox"] = sandbox
+        if model is not None:
+            params["model"] = model
+        if approval_policy is not None:
+            params["approvalPolicy"] = approval_policy
         result = await self._request(
             "thread/start",
-            {
-                "cwd": str(cwd),
-                "ephemeral": False,
-                "threadSource": "agentdeck",
-            },
+            params,
         )
         thread = result.get("thread")
         if not isinstance(thread, dict) or not isinstance(thread.get("id"), str):
@@ -513,6 +528,18 @@ class CodexAppServer:
         if active is not None:
             await self._wait_for_turn(active)
         return await self.start_turn(thread_id, message)
+
+    async def wait_for_thread(self, thread_id: str) -> InjectResult:
+        turn_id = self.active_turn(thread_id)
+        if turn_id is None:
+            return InjectResult(True)
+        completed = await self._wait_for_turn(turn_id)
+        status = completed.get("status") if isinstance(completed, dict) else None
+        if status == "completed":
+            return InjectResult(True)
+        if status == "interrupted":
+            return InjectResult(False, "turn interrupted")
+        return InjectResult(False, f"Codex turn ended with status {status or 'unknown'}")
 
     async def steer(self, thread_id: str, message: str) -> InjectResult:
         await self.start()

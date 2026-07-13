@@ -2,8 +2,16 @@
 
 from __future__ import annotations
 
+import argparse
+import json
 import logging
+import os
+import sys
+import time
+from pathlib import Path
+from urllib.parse import urljoin
 
+import httpx
 import uvicorn
 
 from .app import create_app
@@ -11,6 +19,10 @@ from .config import config_path, load_config
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "delegate":
+        _delegate(sys.argv[2:])
+        return
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -28,6 +40,78 @@ def main() -> None:
         len(config.accounts),
     )
     uvicorn.run(app, host=config.server.bind, port=config.server.port, log_level="info")
+
+
+def _delegate(argv: list[str]) -> None:
+    parser = argparse.ArgumentParser(
+        prog="agentdeck delegate",
+        description="Delegate a stdin prompt to an AgentDeck-owned Codex chat.",
+    )
+    parser.add_argument("--cwd", default=os.getcwd(), help="Codex working directory")
+    parser.add_argument("--account", help="AgentDeck account key; auto-selected if unique")
+    parser.add_argument(
+        "--sandbox",
+        choices=("read-only", "workspace-write"),
+        default="workspace-write",
+    )
+    parser.add_argument("--model", help="Codex model override")
+    parser.add_argument(
+        "--url",
+        default=os.environ.get("AGENTDECK_URL", "http://127.0.0.1:8756"),
+        help="running AgentDeck base URL",
+    )
+    parser.add_argument("--poll-interval", type=float, default=1.0)
+    args = parser.parse_args(argv)
+
+    message = sys.stdin.read()
+    if not message.strip():
+        parser.error("a prompt must be supplied on stdin")
+    try:
+        cwd = str(Path(args.cwd).expanduser().resolve(strict=True))
+    except (OSError, RuntimeError) as exc:
+        parser.error(f"invalid working directory: {exc}")
+
+    base_url = args.url.rstrip("/") + "/"
+    payload = {"cwd": cwd, "message": message, "sandbox": args.sandbox}
+    if args.account:
+        payload["account_key"] = args.account
+    if args.model:
+        payload["model"] = args.model
+
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            response = client.post(urljoin(base_url, "api/delegations"), json=payload)
+            response.raise_for_status()
+            started = response.json()
+            status_url = urljoin(base_url, started["status_url"].lstrip("/"))
+            delegation_id = started["id"]
+            print(f"AgentDeck delegation {delegation_id} started.", file=sys.stderr)
+            previous = None
+            while True:
+                response = client.get(status_url)
+                response.raise_for_status()
+                status = response.json()
+                state = status["state"]
+                if state != previous:
+                    previous = state
+                    detail = f" ({status['session_url']})" if status.get("session_url") else ""
+                    print(f"AgentDeck delegation: {state}{detail}", file=sys.stderr)
+                    if state == "waiting" and status.get("interaction"):
+                        print(
+                            "Codex needs input in AgentDeck: "
+                            + json.dumps(status["interaction"], ensure_ascii=False),
+                            file=sys.stderr,
+                        )
+                if state == "complete":
+                    final_message = status.get("final_message")
+                    if final_message:
+                        print(final_message)
+                    return
+                if state == "failed":
+                    parser.exit(1, f"AgentDeck delegation failed: {status.get('reason')}\n")
+                time.sleep(max(0.1, args.poll_interval))
+    except (httpx.HTTPError, KeyError, ValueError) as exc:
+        parser.exit(1, f"AgentDeck delegation request failed: {exc}\n")
 
 
 def _install_redaction_filter() -> None:

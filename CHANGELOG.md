@@ -17,6 +17,13 @@
   transcript SSE renders replies. The dashboard can also start new persisted
   Codex `exec` chats in a selected working directory. `[inject]` defaults to
   disabled.
+- Added a machine-oriented delegation API and `agentdeck delegate` client.
+  Local callers such as Claude Code can now submit prompts over stdin to an
+  AgentDeck-owned persistent Codex app-server thread, wait for a structured
+  completion, and receive the final assistant message. Delegated runs expose
+  live steering, Stop, questions, and approval requests in AgentDeck. The
+  bridge permits only read-only or workspace-write sandboxes and always routes
+  approval-requiring actions through AgentDeck.
 - **Post-`/compact` cards no longer misreport.** A completed compaction (and
   other slash-command echoes) is bookkeeping, not a live turn, so cards used to
   read the *pre*-compact tail: a stale huge context size, a false "working"

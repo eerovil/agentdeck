@@ -367,10 +367,19 @@ class CodexProvider(SessionProvider):
         message: str,
         *,
         timeout_s: float,
+        sandbox: str | None = None,
+        model: str | None = None,
+        approval_policy: str | None = None,
     ) -> InjectResult:
         client = self._clients.get(account.key)
         if client is not None:
-            result = await client.start_thread(cwd, message)
+            result = await client.start_thread(
+                cwd,
+                message,
+                sandbox=sandbox,
+                model=model,
+                approval_policy=approval_policy,
+            )
             if result.accepted and result.session_id:
                 state = self._states.get(account.key)
                 if state is not None:
@@ -403,6 +412,38 @@ class CodexProvider(SessionProvider):
             message,
             timeout_s=timeout_s,
         )
+
+    async def wait_for_session(
+        self,
+        account: Account,
+        session_id: str,
+        *,
+        timeout_s: float,
+    ) -> InjectResult:
+        client = self._clients.get(account.key)
+        if client is None:
+            # The fallback ``codex exec`` start call only returns after its turn.
+            return InjectResult(True)
+        try:
+            return await asyncio.wait_for(
+                client.wait_for_thread(session_id),
+                timeout=timeout_s,
+            )
+        except TimeoutError:
+            return InjectResult(False, "Codex delegation timed out")
+
+    async def session_result(self, account: Account, session_id: str) -> str | None:
+        session = Session(
+            key=f"{account.key}:{session_id}",
+            account_key=account.key,
+            session_id=session_id,
+            status=SessionStatus.IDLE,
+        )
+        path = await asyncio.to_thread(self._transcript_path, account, session)
+        if path is None:
+            return None
+        meta = await asyncio.to_thread(transcripts_mod.transcript_meta, path)
+        return meta.last_text
 
     def pending_interaction(
         self, account: Account, session: Session

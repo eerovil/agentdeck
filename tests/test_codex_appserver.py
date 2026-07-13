@@ -135,12 +135,25 @@ async def test_owned_thread_start_steer_and_interrupt(tmp_path):
         return {}
 
     server._request = request
-    result = await server.start_thread(tmp_path, "Build it")
+    result = await server.start_thread(
+        tmp_path,
+        "Build it",
+        sandbox="workspace-write",
+        model="gpt-test",
+        approval_policy="on-request",
+    )
     assert result.accepted
     assert result.session_id == "thread-1"
     assert calls[0] == (
         "thread/start",
-        {"cwd": str(tmp_path), "ephemeral": False, "threadSource": "agentdeck"},
+        {
+            "cwd": str(tmp_path),
+            "ephemeral": False,
+            "threadSource": "agentdeck",
+            "sandbox": "workspace-write",
+            "model": "gpt-test",
+            "approvalPolicy": "on-request",
+        },
     )
     assert server.active_turn("thread-1") == "turn-1"
 
@@ -161,6 +174,17 @@ async def test_owned_thread_start_steer_and_interrupt(tmp_path):
         "turn/interrupt",
         {"threadId": "thread-1", "turnId": "turn-1"},
     )
+
+
+async def test_wait_for_owned_thread_completion(tmp_path):
+    server = _server(tmp_path)
+    server._owned.add("thread-1")
+    server._active_turn["thread-1"] = "turn-1"
+    server._completed_turns["turn-1"] = {"id": "turn-1", "status": "completed"}
+
+    result = await server.wait_for_thread("thread-1")
+
+    assert result.accepted
 
 
 def test_unsafe_mcp_url_is_not_exposed(tmp_path):

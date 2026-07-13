@@ -110,10 +110,27 @@ be unique and slug-safe (they appear in URLs and cache filenames).
 
 From v0.3 you can start a persisted Codex chat from the dashboard or send
 follow-ups to a completed, non-interactive Codex `exec` session from its detail
-page. Enter submits and Shift+Enter inserts a newline. Further submissions are
-shown in a FIFO queue while Codex works. agentdeck runs `codex exec` or
-`codex exec resume <id> - --json` in the selected working directory, passes
-messages over stdin, and lets the normal transcript tail show replies.
+page. AgentDeck-created chats run through one persistent Codex app-server per
+account, enabling active-turn steering, Stop, structured questions, approvals,
+and a FIFO follow-up queue. Enter submits and Shift+Enter inserts a newline.
+Existing external `exec` rollouts retain the conservative completed-turn
+fallback described below.
+
+Local tools can delegate work through the same owned runtime. The prompt is
+read from stdin and only the final Codex message is written to stdout:
+
+```sh
+uv run --directory ~/agentdeck agentdeck delegate \
+  --sandbox workspace-write --cwd /path/to/repo <<'EOF'
+Review the current change, fix any issues, and run the tests.
+EOF
+```
+
+The client polls `POST /api/delegations` / `GET /api/delegations/{id}` and
+prints lifecycle and interaction notices to stderr. When Codex needs input, the
+question or approval remains answerable in AgentDeck. The delegation bridge
+accepts only `read-only` and `workspace-write`; approval-requiring actions use
+the interactive AgentDeck review path.
 
 Standalone Codex TUI sessions remain read-only because Codex exposes no
 cross-process ownership registry. A safety spike confirmed that a second

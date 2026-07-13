@@ -18,6 +18,7 @@ from .inject import InjectionService
 from .state import AppState
 from .web import render as render_mod
 from .web.routes_actions import router as actions_router
+from .web.routes_api import router as api_router
 from .web.routes_pages import router as pages_router
 from .web.routes_partials import router as partials_router
 from .web.routes_pwa import cache_stamp
@@ -87,6 +88,7 @@ def create_app(config: AppConfig) -> FastAPI:
 
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
     app.include_router(pages_router)
+    app.include_router(api_router)
     app.include_router(actions_router)
     app.include_router(partials_router)
     app.include_router(sse_router)

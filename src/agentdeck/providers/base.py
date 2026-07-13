@@ -101,9 +101,26 @@ class SessionProvider(ABC):
         message: str,
         *,
         timeout_s: float,
+        sandbox: str | None = None,
+        model: str | None = None,
+        approval_policy: str | None = None,
     ) -> InjectResult:
         """Start one persisted session with its first turn."""
         return InjectResult(False, "this provider cannot start sessions")
+
+    async def wait_for_session(
+        self,
+        account: Account,
+        session_id: str,
+        *,
+        timeout_s: float,
+    ) -> InjectResult:
+        """Wait for the active turn in a newly started session to finish."""
+        return InjectResult(False, "this provider cannot wait for delegated sessions")
+
+    async def session_result(self, account: Account, session_id: str) -> str | None:
+        """Return the latest assistant text for a delegated session."""
+        return None
 
     def owns_session(self, account: Account, session: Session) -> bool:
         return False
