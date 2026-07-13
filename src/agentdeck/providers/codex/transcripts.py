@@ -41,6 +41,10 @@ class TranscriptMeta:
     title: str | None = None
     last_prompt: str | None = None
     last_text: str | None = None
+    # The agent's canonical final message from the last `task_complete` event.
+    # Unlike last_text (the last assistant *item*), this is what Codex reports as
+    # the turn result, so it is immune to intermediate/approval-path noise.
+    last_agent_message: str | None = None
     last_role: str | None = None
     model: str | None = None
     kind: str | None = None
@@ -322,12 +326,14 @@ def transcript_meta(
     session_id = cwd = kind = model = None
     started_at = None
     title = last_prompt = last_text = last_role = None
+    last_agent_message = None
     tokens = None
     context_tokens = None
 
     def scan(objects: list[dict], *, find_title: bool) -> None:
         nonlocal session_id, cwd, kind, model, started_at
         nonlocal title, last_prompt, last_text, last_role, tokens, context_tokens
+        nonlocal last_agent_message
         for obj in objects:
             payload = obj.get("payload")
             if not isinstance(payload, dict):
@@ -359,6 +365,10 @@ def transcript_meta(
                 elif native_role == "assistant" and text:
                     last_text = text
                     last_role = "agent"
+            elif outer_type == "event_msg" and payload.get("type") == "task_complete":
+                msg = payload.get("last_agent_message")
+                if isinstance(msg, str) and msg.strip():
+                    last_agent_message = msg.strip()
             elif outer_type == "event_msg" and payload.get("type") == "token_count":
                 info = payload.get("info")
                 if not isinstance(info, dict):
@@ -380,6 +390,7 @@ def transcript_meta(
         title=title,
         last_prompt=last_prompt,
         last_text=last_text,
+        last_agent_message=last_agent_message,
         last_role=last_role,
         model=model,
         kind=kind,

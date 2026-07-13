@@ -268,6 +268,43 @@ def test_codex_filters_only_internal_system_preamble(tmp_path):
     ]
 
 
+def test_codex_final_message_prefers_task_complete(tmp_path):
+    # A delegation's final message must be Codex's canonical turn result
+    # (task_complete.last_agent_message), NOT the last assistant item — otherwise
+    # approval/escalation or other intermediate noise can leak in as the reported
+    # result (observed: a delegation returning `{"outcome":"allow"}`).
+    path = tmp_path / "rollout.jsonl"
+    lines = [
+        _message("user", "run the thing"),
+        _message("assistant", "intermediate progress note"),
+        _line(
+            "event_msg",
+            {"type": "task_complete", "last_agent_message": "THE CANONICAL ANSWER"},
+        ),
+        _message("assistant", ""),  # trailing noise must not win
+    ]
+    path.write_text("".join(json.dumps(line) + "\n" for line in lines))
+
+    meta = transcripts.transcript_meta(path)
+    assert meta.last_agent_message == "THE CANONICAL ANSWER"
+    # It overrides the last assistant item, which session_result falls back to.
+    assert meta.last_text == "intermediate progress note"
+
+
+def test_codex_final_message_falls_back_without_task_complete(tmp_path):
+    # No completed turn -> fall back to the last assistant item.
+    path = tmp_path / "rollout.jsonl"
+    lines = [
+        _message("user", "run the thing"),
+        _message("assistant", "partial answer so far"),
+    ]
+    path.write_text("".join(json.dumps(line) + "\n" for line in lines))
+
+    meta = transcripts.transcript_meta(path)
+    assert meta.last_agent_message is None
+    assert meta.last_text == "partial answer so far"
+
+
 def test_codex_preserves_long_conversation_messages(tmp_path):
     path = tmp_path / "rollout.jsonl"
     long_user_text = "begin\n" + ("user content " * 500) + "\nuser end"

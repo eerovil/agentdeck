@@ -443,7 +443,9 @@ class CodexProvider(SessionProvider):
         if path is None:
             return None
         meta = await asyncio.to_thread(transcripts_mod.transcript_meta, path)
-        return meta.last_text
+        # Prefer the turn's canonical final message (task_complete.last_agent_message);
+        # fall back to the last assistant item only if no completed turn is present.
+        return meta.last_agent_message or meta.last_text
 
     def pending_interaction(
         self, account: Account, session: Session
