@@ -20,10 +20,18 @@ from ...models import (
     InteractionQuestion,
     PendingInteraction,
 )
+from . import WEB_SEARCH_CONFIG_OVERRIDE
 
 log = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT_S = 30.0
+
+# The app-server emits one JSON-RPC message per stdout line. asyncio's default
+# StreamReader limit is 64 KiB, so a single large event (e.g. a big tool result)
+# raises LimitOverrunError ("Separator is found, but chunk is longer than
+# limit") and kills the whole turn, dropping Codex's final message. Raise the
+# per-line buffer so realistic tool output does not break the transport.
+STDOUT_LINE_LIMIT = 16 * 1024 * 1024
 
 
 class AppServerError(RuntimeError):
@@ -176,12 +184,15 @@ class CodexAppServer:
                 self._process = await self._process_factory(
                     "codex",
                     "app-server",
+                    "--config",
+                    WEB_SEARCH_CONFIG_OVERRIDE,
                     "--stdio",
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.DEVNULL,
                     env=env,
                     start_new_session=True,
+                    limit=STDOUT_LINE_LIMIT,
                 )
             except (OSError, ValueError) as exc:
                 self._process = None

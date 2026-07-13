@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -9,6 +10,54 @@ from agentdeck.providers.codex.appserver import CodexAppServer
 
 def _server(tmp_path: Path) -> CodexAppServer:
     return CodexAppServer(Account("codex:test", "codex", "test", tmp_path))
+
+
+async def test_app_server_enables_live_web_search(tmp_path):
+    class IdleStdout:
+        async def readline(self):
+            await asyncio.Future()
+
+    class Stdin:
+        def close(self):
+            pass
+
+    class Process:
+        def __init__(self):
+            self.returncode = None
+            self.stdin = Stdin()
+            self.stdout = IdleStdout()
+
+        def terminate(self):
+            self.returncode = 0
+
+        async def wait(self):
+            return self.returncode
+
+    spawned = {}
+
+    async def factory(*args, **kwargs):
+        spawned["args"] = args
+        spawned["kwargs"] = kwargs
+        return Process()
+
+    server = CodexAppServer(
+        Account("codex:test", "codex", "test", tmp_path),
+        process_factory=factory,
+    )
+    server._request = AsyncMock(return_value={})
+    server._notify = AsyncMock()
+    server._recover_owned = AsyncMock()
+
+    await server.start()
+    assert spawned["args"] == (
+        "codex",
+        "app-server",
+        "--config",
+        'web_search="live"',
+        "--stdio",
+    )
+    assert spawned["kwargs"]["env"]["CODEX_HOME"] == str(tmp_path)
+    await server.stop()
 
 
 async def test_request_user_input_round_trip(tmp_path):

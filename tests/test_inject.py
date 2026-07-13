@@ -104,6 +104,7 @@ async def test_inject_session_passes_prompt_on_stdin(tmp_path):
     assert process.input == b"do the next thing\n"
     assert "do the next thing" not in spawned["args"]
     assert spawned["args"][:4] == ("codex", "exec", "resume", session.session_id)
+    assert spawned["args"][4:6] == ("--config", 'web_search="live"')
     assert spawned["kwargs"]["env"]["CODEX_HOME"] == str(tmp_path)
     assert spawned["kwargs"]["start_new_session"] is True
 
@@ -202,6 +203,8 @@ async def test_start_session_passes_first_prompt_on_stdin(tmp_path):
     assert spawned["args"] == (
         "codex",
         "exec",
+        "--config",
+        'web_search="live"',
         "--json",
         "--skip-git-repo-check",
         "-",
