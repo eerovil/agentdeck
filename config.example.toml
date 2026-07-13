@@ -38,6 +38,12 @@ provider = "claude_code"
 label = "main"
 config_dir = "~/.claude"
 
+# Codex CLI rollouts under $CODEX_HOME/sessions/YYYY/MM/DD/.
+[[accounts]]
+provider = "codex"
+label = "codex"
+config_dir = "~/.codex"
+
 #[[accounts]]
 #provider = "claude_code"
 #label = "alt"

@@ -2,6 +2,7 @@ import asyncio
 from datetime import UTC, datetime
 
 from httpx import ASGITransport, AsyncClient
+from playwright.async_api import async_playwright
 
 from agentdeck.app import create_app
 from agentdeck.config import AccountConfig, AppConfig, HistoryConfig
@@ -156,6 +157,51 @@ async def test_pwa_routes(tmp_path):
     assert "agentdeck v" in dash.text
     # Dashboard HTML must not be cached, so a deploy's inline JS actually lands.
     assert dash.headers["cache-control"] == "no-cache"
+
+
+async def test_markdown_links_reject_unsafe_schemes_and_attribute_breakout(tmp_path):
+    app = _app_with_state(tmp_path)
+    async with _client(app) as client:
+        response = await client.get("/")
+    start = response.text.index("function mdEscape")
+    end = response.text.index("// Connection hygiene", start)
+    renderer = response.text[start:end]
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content("<main id=output></main>")
+        await page.add_script_tag(content=renderer)
+        rendered = await page.evaluate(
+            """inputs => inputs.map(input => {
+                const output = document.querySelector('#output');
+                output.innerHTML = mdToHtml(input);
+                const link = output.querySelector('a');
+                return {
+                    html: output.innerHTML,
+                    href: link && link.getAttribute('href'),
+                    attributes: link && Array.from(link.attributes, attr => attr.name),
+                };
+            })""",
+            [
+                "[x](javascript:alert(1))",
+                "[x](data:text/html,&lt;script&gt;alert(1)&lt;/script&gt;)",
+                "[x](vbscript:msgbox(1))",
+                "[x](https://e.com/\"onmouseover=alert(1))",
+                "[x](https://e.com)",
+            ],
+        )
+        await browser.close()
+
+    for result in rendered[:3]:
+        assert result["href"] is None
+        assert "<a " not in result["html"]
+    quote_result = rendered[3]
+    assert quote_result["href"] == 'https://e.com/"onmouseover=alert(1'
+    assert quote_result["attributes"] == ["href", "target", "rel"]
+    assert " onmouseover=" not in quote_result["html"]
+    assert rendered[4]["href"] == "https://e.com"
+    assert '<a href="https://e.com" target="_blank" rel="noopener">x</a>' in rendered[4]["html"]
 
 
 async def test_partial_sessions(tmp_path):

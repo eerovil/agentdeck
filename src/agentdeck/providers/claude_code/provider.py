@@ -8,6 +8,7 @@ read-only viewer — replies happen on claude.ai via the deep link, not here.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
@@ -400,19 +401,26 @@ class ClaudeCodeProvider(SessionProvider):
         path = self._transcript_path(account, session)
         if path is None:
             return []
+        return await asyncio.to_thread(self._read_transcript_file, path, after_seq)
+
+    def _read_transcript_file(self, path: Path, after_seq: int) -> list[TranscriptEvent]:
+        """Read and filter a transcript outside the caller's event loop."""
         read = transcripts_mod.read_events(path)
-        return [e for e in read.events if e.seq > after_seq]
+        return [event for event in read.events if event.seq > after_seq]
 
     async def last_event(self, account: Account, session: Session) -> TranscriptEvent | None:
         path = self._transcript_path(account, session)
-        return transcripts_mod.last_event(path) if path is not None else None
+        return (
+            await asyncio.to_thread(transcripts_mod.last_event, path)
+            if path is not None
+            else None
+        )
 
     async def transcript_cursor(self, account: Account, session: Session) -> tuple[int, int]:
         path = self._transcript_path(account, session)
         if path is None:
             return (0, 0)
-        read = transcripts_mod.read_events(path)
-        return (read.byte_offset, read.seq)
+        return await asyncio.to_thread(transcripts_mod.transcript_cursor, path)
 
     async def tail_transcript(
         self, account: Account, session: Session, byte_offset: int, seq: int
@@ -420,7 +428,9 @@ class ClaudeCodeProvider(SessionProvider):
         path = self._transcript_path(account, session)
         if path is None:
             return ([], byte_offset, seq)
-        read = transcripts_mod.read_events(path, byte_offset=byte_offset, seq=seq)
+        read = await asyncio.to_thread(
+            transcripts_mod.read_events, path, byte_offset=byte_offset, seq=seq
+        )
         return (read.events, read.byte_offset, read.seq)
 
     async def load_transcript(
@@ -438,22 +448,30 @@ class ClaudeCodeProvider(SessionProvider):
                 total_events=0,
                 earliest_seq=0,
             )
-        read = transcripts_mod.read_events(path)
-        events = read.events
-        tokens = transcripts_mod.token_totals(events)
-        model = transcripts_mod.last_model(events)
-        todos = transcripts_mod.load_todos(account.root, session.session_id)
+        return await asyncio.to_thread(
+            self._load_transcript_file,
+            account.root,
+            session.session_id,
+            path,
+            before_seq,
+        )
 
+    def _load_transcript_file(
+        self, root: Path, session_id: str, path: Path, before_seq: int | None
+    ) -> TranscriptDetail:
+        """Build a detail window without blocking the caller's event loop."""
+        read = transcripts_mod.read_events(path)
+        all_events = read.events
+        events = all_events
         if before_seq is not None:
-            events = [e for e in events if e.seq < before_seq]
+            events = [event for event in events if event.seq < before_seq]
         window = events[-DETAIL_WINDOW:]
-        earliest = window[0].seq if window else 0
         return TranscriptDetail(
             events=window,
-            tokens=tokens,
-            model=model,
-            todos=todos,
-            total_events=len(read.events),
-            earliest_seq=earliest,
+            tokens=transcripts_mod.token_totals(all_events),
+            model=transcripts_mod.last_model(all_events),
+            todos=transcripts_mod.load_todos(root, session_id),
+            total_events=len(all_events),
+            earliest_seq=window[0].seq if window else 0,
             skipped=read.skipped,
         )

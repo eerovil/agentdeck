@@ -265,6 +265,22 @@ def read_events(
     return TranscriptRead(events, byte_offset + consumed, seq, skipped)
 
 
+def transcript_cursor(path: Path, *, chunk_size: int = 256 * 1024) -> tuple[int, int]:
+    """End cursor with bounded memory, counting only newline-terminated lines."""
+    offset = seq = position = 0
+    try:
+        with path.open("rb") as handle:
+            while chunk := handle.read(chunk_size):
+                seq += chunk.count(b"\n")
+                last_newline = chunk.rfind(b"\n")
+                if last_newline != -1:
+                    offset = position + last_newline + 1
+                position += len(chunk)
+    except OSError:
+        return (0, 0)
+    return (offset, seq)
+
+
 def last_event(path: Path, *, tail: int = 65536) -> TranscriptEvent | None:
     """The most recent renderable event, read cheaply from the file tail. Used
     to tell whether the agent's turn is still open (last line is a tool call /

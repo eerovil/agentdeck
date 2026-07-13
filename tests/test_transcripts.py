@@ -1,6 +1,9 @@
 import json
 
+from agentdeck.models import Account, Session, SessionStatus
+from agentdeck.providers.claude_code import provider as provider_mod
 from agentdeck.providers.claude_code import transcripts
+from agentdeck.providers.claude_code.provider import ClaudeCodeProvider
 
 
 def _write(path, lines):
@@ -201,6 +204,45 @@ def test_read_events_incremental_and_partial_trailing(tmp_path):
     read2 = transcripts.read_events(p, byte_offset=read1.byte_offset, seq=read1.seq)
     assert [e.text for e in read2.events] == ["more"]
     assert read2.events[0].seq == 3  # seq continued past the first two lines
+
+
+async def test_large_transcript_cursor_and_detail_run_in_thread(tmp_path, monkeypatch):
+    root = tmp_path / "cfg"
+    project = root / "projects" / "-tmp"
+    project.mkdir(parents=True)
+    path = project / "large.jsonl"
+    lines = [
+        {
+            "type": "user",
+            "message": {"role": "user", "content": f"message {index} " + "x" * 1024},
+        }
+        for index in range(1200)
+    ]
+    path.write_text("".join(json.dumps(line) + "\n" for line in lines) + '{"partial":')
+
+    direct_cursor = transcripts.transcript_cursor(path, chunk_size=4096)
+    assert direct_cursor == (path.stat().st_size - len('{"partial":'), 1200)
+
+    provider = ClaudeCodeProvider()
+    account = Account("claude_code:test", "claude_code", "test", root)
+    session = Session("claude_code:test:large", account.key, "large", SessionStatus.IDLE)
+    direct_detail = provider._load_transcript_file(root, "large", path, None)
+    calls: list[str] = []
+    original_to_thread = provider_mod.asyncio.to_thread
+
+    async def tracking_to_thread(func, /, *args, **kwargs):
+        calls.append(func.__name__)
+        return await original_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(provider_mod.asyncio, "to_thread", tracking_to_thread)
+    assert await provider.transcript_cursor(account, session) == direct_cursor
+    direct_events = [event for event in transcripts.read_events(path).events if event.seq > 1198]
+    assert await provider.read_transcript(account, session, after_seq=1198) == direct_events
+    detail = await provider.load_transcript(account, session)
+    assert detail == direct_detail
+    assert len(detail.events) == 400
+    assert detail.total_events == 1200
+    assert calls == ["transcript_cursor", "_read_transcript_file", "_load_transcript_file"]
 
 
 def test_token_totals(tmp_path):

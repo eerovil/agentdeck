@@ -1,9 +1,9 @@
 # agentdeck
 
 Self-hosted, mobile-first dashboard for monitoring and steering coding-agent
-CLI sessions. v1 targets [Claude Code](https://docs.anthropic.com/en/docs/claude-code);
-the architecture is a provider abstraction over "session sources" so other
-agent CLIs can be added later.
+CLI sessions. It reads local sessions from
+[Claude Code](https://docs.anthropic.com/en/docs/claude-code) and Codex CLI
+through a provider abstraction over session sources.
 
 *Screenshot: TODO*
 
@@ -13,16 +13,18 @@ What works today:
 
 - **Usage limit bars** (5-hour / 7-day) per account, live over SSE, with a
   sparkline of recent 5h usage and stale-greying on backoff.
-- **Live/idle session list** across any number of Claude Code config dirs
-  ("accounts"), with titles, last prompts, and claude.ai deep-links.
+- **Live/idle session list** across any number of Claude Code and Codex config
+  dirs ("accounts"), with titles, last prompts, and Claude deep-links where
+  available. Codex liveness is inferred from recent rollout writes because the
+  CLI has no process-to-session registry.
 - **Transcript viewer** (`/sessions/{key}`): per-event role/tool/model
   rendering, token totals, todos, live tail for running sessions, and
   "load earlier" pagination.
 - **Message injection** into idle sessions (opt-in) with spawn-time safety
   interlocks — see below.
 
-Roadmap: interactive streaming chat, provider abstraction for other agent CLIs
-(Codex, Gemini), and `docs/claude-code-internals.md`. See
+Roadmap: interactive streaming chat, more agent CLI providers (Gemini), and
+`docs/claude-code-internals.md`. See
 [docs/BUILD_PLAN.md](docs/BUILD_PLAN.md).
 
 ## Security model
@@ -81,7 +83,8 @@ for the annotated reference. Highlights:
   `~/.cache/agentdeck`) so other tools can read limits without their own
   polling.
 - `[[accounts]]` — one block per agent config dir; for Claude Code, one per
-  `CLAUDE_CONFIG_DIR` (e.g. `~/.claude` and `~/.claude2`).
+  `CLAUDE_CONFIG_DIR` (e.g. `~/.claude` and `~/.claude2`), and for Codex the
+  normal `CODEX_HOME` (usually `~/.codex`).
 
 The config file contains **no secrets** — credentials always come from the
 provider's own store.
@@ -89,16 +92,18 @@ provider's own store.
 ## How it works
 
 agentdeck reads undocumented, unversioned internals of the Claude Code CLI
-(session registry files, `history.jsonl`, the OAuth usage endpoint). These
-can change without notice in any CLI release; every parser is written to
-skip-and-count unknown shapes rather than crash. Details will be documented
-in `docs/claude-code-internals.md` (v0.4).
+(session registry files, `history.jsonl`, the OAuth usage endpoint) and Codex
+CLI (date-partitioned rollout JSONL). These can change without notice in any
+CLI release; every parser is written to skip-and-count unknown shapes rather
+than crash. Details of the Claude surfaces will be documented in
+`docs/claude-code-internals.md` (v0.4).
 
 ## Multi-account
 
-Each `[[accounts]]` entry is an independent `CLAUDE_CONFIG_DIR`. Limit bars
-render per account; sessions are grouped by account. Labels must be unique
-and slug-safe (they appear in URLs and cache filenames).
+Each `[[accounts]]` entry is an independent provider config directory. Usage
+data renders where the provider exposes it (Codex currently does not); sessions
+are grouped by account. Labels must be unique and slug-safe (they appear in
+URLs and cache filenames).
 
 ## Message injection & safety interlocks
 
