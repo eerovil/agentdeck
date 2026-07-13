@@ -1,0 +1,126 @@
+"""Safe one-shot injection for completed non-interactive Codex sessions."""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import signal
+from pathlib import Path
+
+from ...models import Account, InjectResult, Session
+from . import transcripts
+
+
+def is_injectable_rollout(path: Path, kind: str | None) -> bool:
+    return kind == "exec" and transcripts.last_turn_complete(path)
+
+
+async def _terminate_group(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        await asyncio.wait_for(process.wait(), timeout=5.0)
+    except TimeoutError:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        await process.wait()
+
+
+async def inject_session(
+    account: Account,
+    session: Session,
+    path: Path,
+    message: str,
+    *,
+    timeout_s: float,
+    process_factory=None,
+) -> InjectResult:
+    """Resume one completed ``codex exec`` session and wait for its turn."""
+    meta = transcripts.transcript_meta(path)
+    if not is_injectable_rollout(path, meta.kind):
+        return InjectResult(False, "session is not a completed Codex exec turn")
+    if session.cwd is None or not session.cwd.is_dir():
+        return InjectResult(False, "session working directory no longer exists")
+
+    factory = process_factory or asyncio.create_subprocess_exec
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(account.root)
+    try:
+        process = await factory(
+            "codex",
+            "exec",
+            "resume",
+            session.session_id,
+            "-",
+            "--json",
+            "--skip-git-repo-check",
+            cwd=str(session.cwd),
+            env=env,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        return InjectResult(False, f"could not start Codex: {exc}")
+
+    try:
+        await asyncio.wait_for(process.communicate((message + "\n").encode()), timeout=timeout_s)
+    except TimeoutError:
+        await _terminate_group(process)
+        return InjectResult(False, "Codex turn timed out")
+    except asyncio.CancelledError:
+        await _terminate_group(process)
+        raise
+    if process.returncode != 0:
+        return InjectResult(False, "Codex exited without completing the turn")
+    return InjectResult(True)
+
+
+async def start_session(
+    account: Account,
+    cwd: Path,
+    message: str,
+    *,
+    timeout_s: float,
+    process_factory=None,
+) -> InjectResult:
+    """Start one persisted non-interactive Codex session."""
+    if not cwd.is_dir():
+        return InjectResult(False, "working directory does not exist")
+    factory = process_factory or asyncio.create_subprocess_exec
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(account.root)
+    try:
+        process = await factory(
+            "codex",
+            "exec",
+            "--json",
+            "--skip-git-repo-check",
+            "-",
+            cwd=str(cwd),
+            env=env,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        return InjectResult(False, f"could not start Codex: {exc}")
+    try:
+        await asyncio.wait_for(process.communicate((message + "\n").encode()), timeout=timeout_s)
+    except TimeoutError:
+        await _terminate_group(process)
+        return InjectResult(False, "Codex turn timed out")
+    except asyncio.CancelledError:
+        await _terminate_group(process)
+        raise
+    if process.returncode != 0:
+        return InjectResult(False, "Codex exited without completing the turn")
+    return InjectResult(True)

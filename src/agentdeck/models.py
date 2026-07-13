@@ -20,7 +20,11 @@ class SessionStatus(StrEnum):
 
 class Capability(StrEnum):
     TRANSCRIPT = "transcript"
+    INJECT = "inject"
     DEEPLINK = "deeplink"
+    STEER = "steer"
+    INTERRUPT = "interrupt"
+    INTERACT = "interact"
 
 
 @dataclass(frozen=True)
@@ -74,7 +78,9 @@ class Session:
     last_activity: datetime | None = None
     tokens: TokenTotals | None = None  # summed from transcript usage blocks (v0.2)
     context_tokens: int | None = None  # context-window occupancy (input side of latest usage block)
-    deep_link: str | None = None  # claude.ai URL when applicable
+    deep_link: str | None = None  # provider-native URL when applicable
+    deep_link_label: str | None = None
+    show_when_idle: bool = False  # keep in the dashboard after the native process exits
     capabilities: frozenset[Capability] = field(default_factory=frozenset)
 
     @property
@@ -82,8 +88,8 @@ class Session:
         """User-facing state, in the vocabulary that matters: a session with a
         live process that isn't writing is **idle** (alive but resting); only one
         actively writing is **thinking**. (``status`` stays process-based — LIVE
-        means a process exists, and only those are listed; no-process sessions
-        are hidden.)"""
+        means a process exists; providers may still keep no-process sessions in
+        the dashboard with ``show_when_idle``.)"""
         if self.thinking:
             return "thinking"
         if self.status == SessionStatus.LIVE:
@@ -100,6 +106,47 @@ class UsageSnapshot:
     seven_day_resets_at: datetime | None
     fetched_at: datetime
     stale: bool = False  # true when backoff/errors mean this is old data
+
+
+@dataclass(frozen=True)
+class InjectResult:
+    accepted: bool
+    reason: str | None = None
+    session_id: str | None = None
+
+
+@dataclass(frozen=True)
+class InteractionOption:
+    label: str
+    description: str = ""
+    value: str | None = None
+
+
+@dataclass(frozen=True)
+class InteractionQuestion:
+    id: str
+    header: str
+    prompt: str
+    options: tuple[InteractionOption, ...] = ()
+    allow_other: bool = False
+    secret: bool = False
+
+
+@dataclass(frozen=True)
+class PendingInteraction:
+    """A provider-neutral request that blocks an active agent turn."""
+
+    id: str
+    kind: str
+    thread_id: str
+    turn_id: str | None
+    title: str
+    message: str | None = None
+    questions: tuple[InteractionQuestion, ...] = ()
+    command: str | None = None
+    cwd: str | None = None
+    url: str | None = None
+    decisions: tuple[str, ...] = ()
 
 
 # An open turn older than this is considered stalled (hung worker), not busy —

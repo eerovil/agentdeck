@@ -46,13 +46,40 @@
 
 <div id="tool-activity" sse-swap="tools">{% set label = activity_label %}{% include "partials/tool_activity.html" %}</div>
 
+{% if owned_session %}
+{% set interaction = pending_interaction %}
+{% set session_key = session.key %}
+{% include "partials/pending_interaction.html" %}
+{% endif %}
+
 {% if session.deep_link %}
 <div class="chat-bar">
   <div class="chat-bar-row">
     {% if account_label %}<span class="acct-badge acct-{{ account_label }}">{{ account_label }}</span>{% endif %}
-    <a class="chat-link" href="{{ session.deep_link }}" target="_blank" rel="noopener">open in claude.ai ↗</a>
+    <a class="chat-link" href="{{ session.deep_link }}" target="_blank" rel="noopener">{{ session.deep_link_label or 'open session' }} ↗</a>
   </div>
 </div>
+{% endif %}
+
+{% if can_inject %}
+<form class="inject-form" hx-post="/sessions/{{ session.key }}/inject"
+      hx-target="#inject-result" hx-swap="outerHTML" hx-disabled-elt="find button"
+      data-clear-on-send>
+  <label for="inject-message">Message queue</label>
+  <textarea id="inject-message" class="send-on-enter" name="message" rows="3" maxlength="{{ inject_max_chars }}"
+            required placeholder="Send a follow-up…"></textarea>
+  <div class="composer-actions">
+    <span>Enter queues next · Shift+Enter for newline</span>
+    <button type="submit">Queue next</button>
+  </div>
+</form>
+{% if owned_session %}
+{% set session_key = session.key %}
+{% include "partials/owned_controls.html" %}
+{% endif %}
+{% set inject_status = request.app.state.injector.status(session.key) %}
+{% set session_key = session.key %}
+{% include "partials/inject_status.html" %}
 {% endif %}
 
 <script>

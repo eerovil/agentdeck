@@ -364,6 +364,37 @@ def test_working_sessions_sort_first(tmp_path):
     assert keys.index("busy") < keys.index("quiet")  # busy floats above, despite older mtime
 
 
+def test_visible_idle_sessions_are_not_penalized_in_sort(tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    app = _app_with_state(tmp_path)
+    state = app.state.app_state
+    now = datetime.now(UTC)
+    state.update_session(
+        Session(
+            key="codex:test:live",
+            account_key="codex:test",
+            session_id="live",
+            status=SessionStatus.LIVE,
+            last_activity=now - timedelta(minutes=3),
+            show_when_idle=True,
+        )
+    )
+    state.update_session(
+        Session(
+            key="codex:test:idle",
+            account_key="codex:test",
+            session_id="idle",
+            status=SessionStatus.IDLE,
+            last_activity=now,
+            show_when_idle=True,
+        )
+    )
+
+    keys = [s.session_id for s in state.visible_sessions()]
+    assert keys.index("idle") < keys.index("live")
+
+
 async def test_thinking_badge_renders(tmp_path):
     app = _app_with_state(tmp_path)
     app.state.app_state.update_session(
@@ -411,6 +442,23 @@ async def test_idle_sessions_hidden_but_reachable(tmp_path):
     assert "An Old Finished Session" not in listing.text  # hidden from the list
     assert "Hello World Session" in listing.text  # the live one still shows
     assert direct.status_code == 200  # but reachable by direct URL (read-only view)
+
+
+async def test_provider_can_keep_idle_sessions_visible(tmp_path):
+    app = _app_with_state(tmp_path)
+    app.state.app_state.update_session(
+        Session(
+            key="codex:test:idle1",
+            account_key="codex:test",
+            session_id="idle1",
+            status=SessionStatus.IDLE,
+            title="A Quiet Codex Chat",
+            show_when_idle=True,
+        )
+    )
+    async with _client(app) as c:
+        listing = await c.get("/partials/sessions")
+    assert "A Quiet Codex Chat" in listing.text
 
 
 async def test_partial_limit_bars(tmp_path):

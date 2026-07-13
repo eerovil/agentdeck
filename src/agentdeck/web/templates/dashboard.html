@@ -3,6 +3,35 @@
 {% block limit_bars %}{% include "partials/limit_bars.html" %}{% endblock %}
 
 {% block content %}
+{% if new_chat_enabled and new_chat_accounts %}
+<details class="new-chat">
+  <summary>＋ New Codex chat</summary>
+  <form hx-post="/sessions/new" hx-target="#new-session-result" hx-swap="outerHTML"
+        hx-disabled-elt="find button" data-clear-on-send>
+    <label for="new-chat-account">Account</label>
+    <select id="new-chat-account" name="account_key" required>
+      {% for account in new_chat_accounts %}
+      <option value="{{ account.key }}">{{ account.label }}</option>
+      {% endfor %}
+    </select>
+    <label for="new-chat-cwd">Working directory</label>
+    <input id="new-chat-cwd" name="cwd" type="text" list="new-chat-cwds"
+           value="{{ new_chat_cwds[0] if new_chat_cwds else '' }}"
+           autocomplete="off" required placeholder="/path/to/project">
+    <datalist id="new-chat-cwds">
+      {% for cwd in new_chat_cwds %}<option value="{{ cwd }}">{% endfor %}
+    </datalist>
+    <label for="new-chat-message">First message</label>
+    <textarea id="new-chat-message" class="send-on-enter" name="message" rows="3"
+              required placeholder="What should Codex work on?"></textarea>
+    <div class="composer-actions">
+      <span>Enter to send · Shift+Enter for newline</span>
+      <button type="submit">Start chat</button>
+    </div>
+  </form>
+  <div id="new-session-result" class="inject-result"></div>
+</details>
+{% endif %}
 {# Search lives OUTSIDE #sessions: that div is swapped wholesale on every SSE
    `sessions` push, so an input inside it would lose its value + focus on each
    update. We keep the query here and re-apply the filter after every swap. #}

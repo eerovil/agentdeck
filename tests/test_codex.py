@@ -152,8 +152,35 @@ async def test_codex_session_discovery_and_metadata(tmp_path):
     assert live.tokens.cache_read_tokens == 90
     assert live.tokens.total == 210
     assert live.capabilities == frozenset({Capability.TRANSCRIPT})
+    assert live.deep_link is None
+    assert live.show_when_idle is True
     assert found[idle_sid].status == SessionStatus.IDLE
     assert found[idle_sid].thinking is False
+    assert found[idle_sid].show_when_idle is True
+
+
+async def test_completed_exec_session_is_injectable(tmp_path):
+    sid = "019f5b5b-6281-7a00-a197-d020a1243d2d"
+    directory = tmp_path / "sessions" / "2026" / "07" / "13"
+    directory.mkdir(parents=True)
+    path = directory / f"rollout-2026-07-13T10-00-00-{sid}.jsonl"
+    lines = [
+        _line(
+            "session_meta",
+            {"session_id": sid, "cwd": str(tmp_path), "source": "exec"},
+        ),
+        _line("event_msg", {"type": "task_started"}),
+        _line("event_msg", {"type": "task_complete"}),
+    ]
+    path.write_text("".join(json.dumps(line) + "\n" for line in lines))
+    old_time = time.time() - 3600
+    os.utime(path, (old_time, old_time))
+
+    provider = CodexProvider()
+    (session,) = await provider.scan_sessions(_account(tmp_path))
+    assert session.kind == "exec"
+    assert Capability.INJECT in session.capabilities
+    assert Capability.DEEPLINK not in session.capabilities
 
 
 async def test_codex_transcript_parsing_and_token_totals(tmp_path):

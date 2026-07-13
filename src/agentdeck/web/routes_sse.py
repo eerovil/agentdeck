@@ -155,7 +155,7 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
         streaming = live and age < THINKING_OFF_S
         # "Busy" (pulsing dot + activity marker) tracks the open turn, not just
         # recent writes — so a long tool run or slow first token stays busy.
-        label = activity_label(live, streaming, last_ev, age)
+        label = None if current.question else activity_label(live, streaming, last_ev, age)
         busy = label is not None
         if current.status != last_status or busy != last_busy:
             last_status, last_busy = current.status, busy

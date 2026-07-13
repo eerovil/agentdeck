@@ -8,12 +8,15 @@ type.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from ..models import (
     Account,
     Capability,  # re-exported: providers/base is the canonical import site  # noqa: F401
+    InjectResult,
+    PendingInteraction,
     Session,
     TranscriptEvent,
     UsageSnapshot,
@@ -26,6 +29,7 @@ if TYPE_CHECKING:
 
 class SessionProvider(ABC):
     provider_id: ClassVar[str]
+    supports_new_session: ClassVar[bool] = False
 
     @abstractmethod
     async def scan_sessions(self, account: Account) -> list[Session]: ...
@@ -70,3 +74,58 @@ class SessionProvider(ABC):
         """Return an object with an ``async run()`` loop, or None if the
         provider has no usage-limit source."""
         return None
+
+    async def start_account(self, account: Account, state: AppState) -> None:
+        """Start optional provider-owned runtime services for one account."""
+        return None
+
+    async def stop_account(self, account: Account) -> None:
+        """Stop optional provider-owned runtime services for one account."""
+        return None
+
+    async def inject(
+        self,
+        account: Account,
+        session: Session,
+        message: str,
+        *,
+        timeout_s: float,
+    ) -> InjectResult:
+        """Append one turn to a safely injectable session."""
+        return InjectResult(False, "this provider does not support injection")
+
+    async def start_session(
+        self,
+        account: Account,
+        cwd: Path,
+        message: str,
+        *,
+        timeout_s: float,
+    ) -> InjectResult:
+        """Start one persisted session with its first turn."""
+        return InjectResult(False, "this provider cannot start sessions")
+
+    def owns_session(self, account: Account, session: Session) -> bool:
+        return False
+
+    def pending_interaction(
+        self, account: Account, session: Session
+    ) -> PendingInteraction | None:
+        return None
+
+    async def steer(self, account: Account, session: Session, message: str) -> InjectResult:
+        return InjectResult(False, "this provider cannot steer active turns")
+
+    async def interrupt(self, account: Account, session: Session) -> InjectResult:
+        return InjectResult(False, "this provider cannot interrupt active turns")
+
+    async def answer_interaction(
+        self,
+        account: Account,
+        session: Session,
+        interaction_id: str,
+        *,
+        answers: Mapping[str, list[str]],
+        decision: str | None,
+    ) -> InjectResult:
+        return InjectResult(False, "this provider cannot answer interactions")

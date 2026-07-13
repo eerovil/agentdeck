@@ -10,6 +10,8 @@ from pathlib import Path
 from ...models import (
     Account,
     Capability,
+    InjectResult,
+    PendingInteraction,
     Session,
     SessionStatus,
     TokenTotals,
@@ -20,6 +22,14 @@ from ...models import (
 )
 from ..base import SessionProvider
 from . import transcripts as transcripts_mod
+from .appserver import CodexAppServer
+from .inject import (
+    inject_session,
+    is_injectable_rollout,
+)
+from .inject import (
+    start_session as start_codex_session,
+)
 from .usage import UsagePoller, fetch_usage_once
 
 DETAIL_WINDOW = 400
@@ -59,11 +69,66 @@ class CodexProvider(SessionProvider):
     """
 
     provider_id = "codex"
+    supports_new_session = True
 
     def __init__(self) -> None:
         self._meta_cache: dict[str, tuple[float, transcripts_mod.TranscriptMeta]] = {}
         self._last_ev_cache: dict[str, tuple[float, TranscriptEvent | None]] = {}
         self._paths: dict[tuple[str, str], Path] = {}
+        self._clients: dict[str, CodexAppServer] = {}
+        self._states = {}
+
+    async def start_account(self, account: Account, state) -> None:
+        client = CodexAppServer(
+            account,
+            on_change=lambda thread_id: self._runtime_changed(account, state, thread_id),
+        )
+        self._clients[account.key] = client
+        self._states[account.key] = state
+        await client.start()
+
+    async def stop_account(self, account: Account) -> None:
+        client = self._clients.pop(account.key, None)
+        self._states.pop(account.key, None)
+        if client is not None:
+            await client.stop()
+
+    def _runtime_changed(self, account: Account, state, thread_id: str) -> None:
+        session = state.sessions.get(f"{account.key}:{thread_id}")
+        client = self._clients.get(account.key)
+        if session is None or client is None or not client.owns(thread_id):
+            state.bus.publish("sessions")
+            return
+        active = client.active_turn(thread_id) is not None
+        interaction = client.interaction(thread_id)
+        session.status = SessionStatus.LIVE if active else SessionStatus.IDLE
+        session.thinking = active and interaction is None
+        session.activity = "Waiting for you" if interaction else ("Working" if active else None)
+        session.question = self._interaction_summary(interaction)
+        session.kind = "appServer"
+        session.capabilities = self._runtime_capabilities(account, thread_id)
+        state.bus.publish("sessions")
+
+    @staticmethod
+    def _interaction_summary(interaction: PendingInteraction | None) -> str | None:
+        if interaction is None:
+            return None
+        if interaction.questions:
+            return " ".join(question.prompt for question in interaction.questions)
+        return interaction.message or interaction.title
+
+    def _runtime_capabilities(self, account: Account, thread_id: str) -> frozenset[Capability]:
+        client = self._clients.get(account.key)
+        capabilities = {Capability.TRANSCRIPT}
+        if client is None or not client.owns(thread_id):
+            return frozenset(capabilities)
+        active = client.active_turn(thread_id) is not None
+        capabilities.add(Capability.INJECT)
+        if active:
+            capabilities.update({Capability.STEER, Capability.INTERRUPT})
+        if client.interaction(thread_id) is not None:
+            capabilities.add(Capability.INTERACT)
+        return frozenset(capabilities)
 
     def _cached_meta(self, path: Path) -> transcripts_mod.TranscriptMeta:
         try:
@@ -99,6 +164,22 @@ class CodexProvider(SessionProvider):
                 self._paths[(account.key, session.session_id)] = candidate
                 return candidate
         return None
+
+    def _capabilities(
+        self, account: Account, session_id: str, path: Path, meta, status: SessionStatus
+    ) -> frozenset[Capability]:
+        client = self._clients.get(account.key)
+        if client is not None and client.owns(session_id):
+            return self._runtime_capabilities(account, session_id)
+        capabilities = {Capability.TRANSCRIPT}
+        cwd_exists = bool(meta.cwd and Path(meta.cwd).is_dir())
+        if (
+            status == SessionStatus.IDLE
+            and cwd_exists
+            and is_injectable_rollout(path, meta.kind)
+        ):
+            capabilities.add(Capability.INJECT)
+        return frozenset(capabilities)
 
     def _derived_state(
         self, path: Path, last_activity: datetime | None
@@ -136,6 +217,14 @@ class CodexProvider(SessionProvider):
             current_paths[(account.key, session_id)] = path
             last_activity = _mtime(path)
             status, thinking, activity = self._derived_state(path, last_activity)
+            client = self._clients.get(account.key)
+            interaction = None
+            if client is not None and client.owns(session_id):
+                active = client.active_turn(session_id) is not None
+                interaction = client.interaction(session_id)
+                status = SessionStatus.LIVE if active else SessionStatus.IDLE
+                thinking = active and interaction is None
+                activity = "Waiting for you" if interaction else ("Working" if active else None)
             sessions.append(
                 Session(
                     key=f"{account.key}:{session_id}",
@@ -144,19 +233,23 @@ class CodexProvider(SessionProvider):
                     status=status,
                     thinking=thinking,
                     activity=activity,
+                    question=self._interaction_summary(interaction),
                     cwd=Path(meta.cwd) if meta.cwd else None,
                     title=meta.title,
                     last_prompt=meta.last_prompt,
                     last_text=meta.last_text,
                     last_role=meta.last_role,
                     model=meta.model,
-                    kind=meta.kind,
+                    kind="appServer"
+                    if client is not None and client.owns(session_id)
+                    else meta.kind,
                     worker_type="you",
                     started_at=meta.started_at,
                     last_activity=last_activity,
                     tokens=meta.tokens,
                     context_tokens=meta.context_tokens,
-                    capabilities=frozenset({Capability.TRANSCRIPT}),
+                    show_when_idle=True,
+                    capabilities=self._capabilities(account, session_id, path, meta, status),
                 )
             )
         self._paths = {
@@ -175,6 +268,14 @@ class CodexProvider(SessionProvider):
             last_activity = _mtime(path)
             status, thinking, activity = self._derived_state(path, last_activity)
             meta = self._cached_meta(path)
+            client = self._clients.get(account.key)
+            interaction = None
+            if client is not None and client.owns(session.session_id):
+                active = client.active_turn(session.session_id) is not None
+                interaction = client.interaction(session.session_id)
+                status = SessionStatus.LIVE if active else SessionStatus.IDLE
+                thinking = active and interaction is None
+                activity = "Waiting for you" if interaction else ("Working" if active else None)
             values = (
                 status,
                 thinking,
@@ -186,6 +287,8 @@ class CodexProvider(SessionProvider):
                 meta.model,
                 meta.tokens,
                 meta.context_tokens,
+                self._capabilities(account, session.session_id, path, meta, status),
+                self._interaction_summary(interaction),
             )
             current = (
                 session.status,
@@ -198,6 +301,8 @@ class CodexProvider(SessionProvider):
                 session.model,
                 session.tokens,
                 session.context_tokens,
+                session.capabilities,
+                session.question,
             )
             if values == current:
                 continue
@@ -212,6 +317,8 @@ class CodexProvider(SessionProvider):
                 session.model,
                 session.tokens,
                 session.context_tokens,
+                session.capabilities,
+                session.question,
             ) = values
             changed.append(session)
         return changed
@@ -229,6 +336,113 @@ class CodexProvider(SessionProvider):
             state,
             interval_s=kwargs.get("interval_s", 300.0),
             cache_dir=kwargs.get("cache_dir"),
+        )
+
+    async def inject(
+        self,
+        account: Account,
+        session: Session,
+        message: str,
+        *,
+        timeout_s: float,
+    ) -> InjectResult:
+        client = self._clients.get(account.key)
+        if client is not None and client.owns(session.session_id):
+            return await client.queue_turn(session.session_id, message)
+        path = self._transcript_path(account, session)
+        if path is None:
+            return InjectResult(False, "session rollout no longer exists")
+        return await inject_session(
+            account,
+            session,
+            path,
+            message,
+            timeout_s=timeout_s,
+        )
+
+    async def start_session(
+        self,
+        account: Account,
+        cwd: Path,
+        message: str,
+        *,
+        timeout_s: float,
+    ) -> InjectResult:
+        client = self._clients.get(account.key)
+        if client is not None:
+            result = await client.start_thread(cwd, message)
+            if result.accepted and result.session_id:
+                state = self._states.get(account.key)
+                if state is not None:
+                    state.update_session(
+                        Session(
+                            key=f"{account.key}:{result.session_id}",
+                            account_key=account.key,
+                            session_id=result.session_id,
+                            status=SessionStatus.LIVE,
+                            thinking=True,
+                            activity="Working",
+                            cwd=cwd,
+                            title=message[:200],
+                            last_prompt=message,
+                            last_role="user",
+                            kind="appServer",
+                            worker_type="you",
+                            started_at=datetime.now(UTC),
+                            last_activity=datetime.now(UTC),
+                            show_when_idle=True,
+                            capabilities=self._runtime_capabilities(
+                                account, result.session_id
+                            ),
+                        )
+                    )
+            return result
+        return await start_codex_session(
+            account,
+            cwd,
+            message,
+            timeout_s=timeout_s,
+        )
+
+    def pending_interaction(
+        self, account: Account, session: Session
+    ) -> PendingInteraction | None:
+        client = self._clients.get(account.key)
+        return client.interaction(session.session_id) if client is not None else None
+
+    def owns_session(self, account: Account, session: Session) -> bool:
+        client = self._clients.get(account.key)
+        return bool(client and client.owns(session.session_id))
+
+    async def steer(self, account: Account, session: Session, message: str) -> InjectResult:
+        client = self._clients.get(account.key)
+        if client is None:
+            return InjectResult(False, "Codex app-server is unavailable")
+        return await client.steer(session.session_id, message)
+
+    async def interrupt(self, account: Account, session: Session) -> InjectResult:
+        client = self._clients.get(account.key)
+        if client is None:
+            return InjectResult(False, "Codex app-server is unavailable")
+        return await client.interrupt(session.session_id)
+
+    async def answer_interaction(
+        self,
+        account: Account,
+        session: Session,
+        interaction_id: str,
+        *,
+        answers,
+        decision: str | None,
+    ) -> InjectResult:
+        client = self._clients.get(account.key)
+        if client is None:
+            return InjectResult(False, "Codex app-server is unavailable")
+        return await client.answer(
+            session.session_id,
+            interaction_id,
+            answers=answers,
+            decision=decision,
         )
 
     async def read_transcript(

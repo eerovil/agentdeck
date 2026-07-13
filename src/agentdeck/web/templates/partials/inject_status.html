@@ -1,0 +1,28 @@
+{% if inject_status %}
+<div id="inject-result" class="inject-result {{ inject_status.state }}"
+     {% if inject_status.state in ('running', 'queued') %}
+     hx-get="/partials/sessions/{{ session_key }}/inject-status"
+     hx-trigger="load delay:2s" hx-swap="outerHTML"
+     {% endif %}>
+  <div class="queue-summary">
+    {% if inject_status.state == 'running' %}Codex is working…
+    {% elif inject_status.state == 'queued' %}Messages queued…
+    {% elif inject_status.state == 'complete' %}Queue completed.
+    {% elif inject_status.state == 'failed' %}{{ inject_status.reason or 'Injection failed.' }}
+    {% endif %}
+  </div>
+  {% if inject_status.items %}
+  <ol class="message-queue">
+    {% for item in inject_status.items %}
+    <li class="{{ item.state }}">
+      <span class="queue-state">{% if item.state == 'running' %}sending{% elif item.state == 'complete' %}sent{% else %}{{ item.state }}{% endif %}</span>
+      <span class="queue-text">{{ item.text }}</span>
+      {% if item.reason %}<span class="queue-error">{{ item.reason }}</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ol>
+  {% endif %}
+</div>
+{% else %}
+<div id="inject-result" class="inject-result"></div>
+{% endif %}

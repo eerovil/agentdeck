@@ -1,0 +1,50 @@
+<section id="pending-interaction" class="pending-interaction"
+         hx-get="/partials/sessions/{{ session_key }}/interaction"
+         hx-trigger="load delay:2s" hx-swap="outerHTML">
+{% if interaction %}
+  <h2>{{ interaction.title }}</h2>
+  {% if interaction.message %}<p>{{ interaction.message }}</p>{% endif %}
+  {% if interaction.command %}<pre><code>{{ interaction.command }}</code></pre>{% endif %}
+  {% if interaction.cwd %}<div class="interaction-cwd">{{ interaction.cwd }}</div>{% endif %}
+  {% if interaction.url %}
+  <p><a href="{{ interaction.url }}" target="_blank" rel="noopener">Continue in browser ↗</a></p>
+  {% endif %}
+  <form hx-post="/sessions/{{ session_key }}/interaction"
+        hx-target="#pending-interaction" hx-swap="outerHTML">
+    <input type="hidden" name="interaction_id" value="{{ interaction.id }}">
+    {% for question in interaction.questions %}
+    <fieldset>
+      <legend><span>{{ question.header }}</span>{{ question.prompt }}</legend>
+      {% for option in question.options %}
+      <label class="interaction-option">
+        <input type="radio" name="answer__{{ question.id }}"
+               value="{{ option.value or option.label }}"{% if not question.allow_other %} required{% endif %}>
+        <span><strong>{{ option.label }}</strong>{% if option.description %}<small>{{ option.description }}</small>{% endif %}</span>
+      </label>
+      {% endfor %}
+      {% if question.allow_other or not question.options %}
+      <input class="interaction-other" type="{{ 'password' if question.secret else 'text' }}"
+             name="other__{{ question.id }}" placeholder="Type your answer…"
+             {% if not question.options %}required{% endif %}>
+      {% endif %}
+    </fieldset>
+    {% endfor %}
+    {% if interaction.kind in ('question', 'mcp_form') %}
+    <button type="submit" name="decision" value="accept">Submit answer</button>
+    {% elif interaction.kind == 'mcp_url' %}
+    <div class="interaction-actions">
+      <button type="submit" name="decision" value="accept">Done, continue</button>
+      <button class="secondary" type="submit" name="decision" value="decline">Decline</button>
+      <button class="danger" type="submit" name="decision" value="cancel">Cancel turn</button>
+    </div>
+    {% else %}
+    <div class="interaction-actions">
+      <button type="submit" name="decision" value="accept">Allow once</button>
+      <button class="secondary" type="submit" name="decision" value="acceptForSession">Allow for session</button>
+      <button class="secondary" type="submit" name="decision" value="decline">Decline</button>
+      <button class="danger" type="submit" name="decision" value="cancel">Cancel turn</button>
+    </div>
+    {% endif %}
+  </form>
+{% endif %}
+</section>

@@ -14,8 +14,10 @@ from fastapi.templating import Jinja2Templates
 from .collector import Collector
 from .config import AppConfig
 from .db import make_db
+from .inject import InjectionService
 from .state import AppState
 from .web import render as render_mod
+from .web.routes_actions import router as actions_router
 from .web.routes_pages import router as pages_router
 from .web.routes_partials import router as partials_router
 from .web.routes_pwa import cache_stamp
@@ -62,6 +64,7 @@ def create_app(config: AppConfig) -> FastAPI:
     # to the old URL and falls through to the network.
     templates.env.globals["asset_ver"] = cache_stamp()
     collector = Collector(config, state)
+    injector = InjectionService(config.inject)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -69,6 +72,7 @@ def create_app(config: AppConfig) -> FastAPI:
         try:
             yield
         finally:
+            await injector.stop()
             await collector.stop()
             db.close()
 
@@ -78,10 +82,12 @@ def create_app(config: AppConfig) -> FastAPI:
     app.state.accounts = config.build_accounts()
     app.state.templates = templates
     app.state.collector = collector
+    app.state.injector = injector
     app.state.db = db
 
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
     app.include_router(pages_router)
+    app.include_router(actions_router)
     app.include_router(partials_router)
     app.include_router(sse_router)
     app.include_router(pwa_router)

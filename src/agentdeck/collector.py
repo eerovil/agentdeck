@@ -79,6 +79,10 @@ class Collector:
 
     async def start(self) -> None:
         for account in self.accounts:
+            try:
+                await self._provider(account).start_account(account, self.state)
+            except Exception as exc:  # noqa: BLE001 -- scans remain useful without controls
+                log.warning("provider runtime failed for %s: %s", account.key, exc)
             self._tasks.append(
                 asyncio.create_task(self._scan_loop(account), name=f"scan:{account.key}")
             )
@@ -99,3 +103,8 @@ class Collector:
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
         self._tasks.clear()
+        for account in self.accounts:
+            try:
+                await self._provider(account).stop_account(account)
+            except Exception as exc:  # noqa: BLE001 -- finish stopping other accounts
+                log.debug("provider runtime stop failed for %s: %s", account.key, exc)

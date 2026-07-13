@@ -8,6 +8,15 @@
   writes because Codex exposes no process registry. Account usage bars are read
   through `codex app-server`: windows are matched by duration, including plans
   that currently return only a weekly limit.
+- Added opt-in injection for completed non-interactive Codex `exec` sessions.
+  The provider checks the durable `task_complete` turn boundary at discovery
+  and again immediately before `codex exec resume`; active/incomplete and TUI
+  sessions fail closed and remain read-only. Prompts travel over stdin,
+  agentdeck serializes follow-ups in a visible
+  FIFO queue, Enter submits (Shift+Enter adds a newline), and the existing
+  transcript SSE renders replies. The dashboard can also start new persisted
+  Codex `exec` chats in a selected working directory. `[inject]` defaults to
+  disabled.
 - **Post-`/compact` cards no longer misreport.** A completed compaction (and
   other slash-command echoes) is bookkeeping, not a live turn, so cards used to
   read the *pre*-compact tail: a stale huge context size, a false "working"
@@ -34,11 +43,6 @@
   on the ~10s liveness sweep. On the session detail page the header's thinking
   state is driven directly off the live tail (server-pushed `status` events), so
   it reacts within ~1.5s instead of waiting for the sweep.
-- Interactive streaming chat (opt-in, same `[inject]` kill-switch): a long-lived
-  `claude -p --resume --input-format stream-json` child per session. Chat page
-  with a composer, live bubbles over SSE, Stop button, and a replay buffer for
-  reconnects. Same spawn-time interlocks as inject; idle chats are reaped and all
-  children are torn down (process-group kill) on shutdown.
 - Session cards now show a real title from the transcript's `ai-title` line
   (falling back to the first user prompt), plus a latest-prompt line — instead
   of a bare session id. Titles are mtime-cached so idle transcripts aren't
@@ -46,15 +50,6 @@
 - Transcript viewer collapses long tool-result output into a `<details>`
   accordion (one-line peek until expanded).
 
-- Message injection into idle sessions: `POST /sessions/{key}/inject` runs
-  `claude -p --resume` in the session's cwd, appending a turn (the collector's
-  tail then shows the reply). Inject form on the detail page for idle sessions.
-- Safety interlocks, re-checked at spawn time: refuses when the session's pid is
-  live (single-writer JSONL), when the cwd is missing, or when the cwd is not
-  trusted (`hasTrustDialogAccepted`); `[inject] enabled` kill-switch (default
-  honoured — the live deploy ships it off until you opt in).
-- `Capability.INJECT` surfaced on injectable sessions; the web layer keys the
-  form off capabilities, never off provider type.
 
 ## v0.2.0 (unreleased)
 

@@ -1,0 +1,17 @@
+<div id="owned-controls" class="owned-controls"
+     hx-get="/partials/sessions/{{ session_key }}/controls"
+     hx-trigger="load delay:2s" hx-swap="outerHTML">
+  {% if can_steer %}
+  <button type="button" hx-post="/sessions/{{ session_key }}/steer"
+          hx-include="#inject-message" hx-target="#steer-result" hx-swap="outerHTML">
+    Send now
+  </button>
+  {% endif %}
+  {% if can_interrupt %}
+  <button class="danger" type="button" hx-post="/sessions/{{ session_key }}/interrupt"
+          hx-target="#steer-result" hx-swap="outerHTML">
+    Stop
+  </button>
+  {% endif %}
+  <div id="steer-result" class="inject-result"></div>
+</div>

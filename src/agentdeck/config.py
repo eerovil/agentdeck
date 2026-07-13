@@ -41,6 +41,26 @@ class HistoryConfig(BaseModel):  # used from v0.2
     usage_retention_days: int = 30
 
 
+class InjectConfig(BaseModel):
+    enabled: bool = False
+    timeout_s: float = 900.0
+    max_message_chars: int = 16_000
+
+    @field_validator("timeout_s")
+    @classmethod
+    def _positive_timeout(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("inject.timeout_s must be positive")
+        return value
+
+    @field_validator("max_message_chars")
+    @classmethod
+    def _positive_message_limit(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("inject.max_message_chars must be positive")
+        return value
+
+
 class AccountConfig(BaseModel):
     provider: str
     label: str
@@ -74,6 +94,7 @@ class AppConfig(BaseModel):
     polling: PollingConfig = PollingConfig()
     usage: UsageConfig = UsageConfig()
     history: HistoryConfig = HistoryConfig()
+    inject: InjectConfig = InjectConfig()
     accounts: list[AccountConfig] = []
 
     @model_validator(mode="after")

@@ -392,6 +392,33 @@ def last_event(path: Path, *, tail: int = _META_TAIL) -> TranscriptEvent | None:
     return found
 
 
+def last_turn_complete(path: Path, *, tail: int = _META_TAIL) -> bool:
+    """Whether the most recent native turn boundary is a completed turn.
+
+    Codex does not expose a cross-process session registry. For non-interactive
+    ``exec`` rollouts, a final ``task_complete`` is the durable indication that
+    the owning process finished its turn; ``task_started`` means another writer
+    may still be active even when the file has been quiet for a long tool call.
+    """
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            if size > tail:
+                handle.seek(size - tail)
+            blob = handle.read(tail)
+    except OSError:
+        return False
+    boundary = None
+    for obj in _objects(blob, skip_first_partial=size > tail, require_final_newline=True):
+        payload = obj.get("payload")
+        if obj.get("type") != "event_msg" or not isinstance(payload, dict):
+            continue
+        event_type = payload.get("type")
+        if event_type in ("task_started", "task_complete", "turn_aborted"):
+            boundary = event_type
+    return boundary == "task_complete"
+
+
 def token_totals(events: list[TranscriptEvent]) -> TokenTotals:
     input_tokens = output_tokens = cached_tokens = 0
     for event in events:

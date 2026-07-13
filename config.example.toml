@@ -27,9 +27,9 @@ db_path = "~/.local/share/agentdeck/agentdeck.db"
 usage_retention_days = 30
 
 [inject]
-enabled = true              # kill-switch for message injection (used from v0.3)
-timeout_s = 600
-chat_idle_timeout_s = 600
+enabled = false             # write-capability kill-switch; opt in only on a trusted bind
+timeout_s = 900
+max_message_chars = 16000
 
 # One [[accounts]] block per agent-CLI config dir. Labels must be unique,
 # lowercase slug-safe (they appear in URLs and cache filenames).

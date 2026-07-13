@@ -50,8 +50,13 @@ class AppState:
         self.bus.publish("sessions")
 
     def _sort_key(self, s: Session) -> tuple[int, int, float]:
+        status_order = _STATUS_ORDER.get(s.status, 9)
+        if s.status == SessionStatus.IDLE and s.show_when_idle:
+            # Providers such as Codex cannot reliably map native process state
+            # to session activity, so do not penalize their visible idle sessions.
+            status_order = _STATUS_ORDER[SessionStatus.LIVE]
         return (
-            _STATUS_ORDER.get(s.status, 9),
+            status_order,
             0 if s.thinking else 1,  # actively-working sessions float to the top
             -(s.last_activity.timestamp() if s.last_activity else 0.0),
         )
@@ -63,14 +68,20 @@ class AppState:
         )
 
     def all_sessions(self) -> list[Session]:
-        """All sessions across accounts, LIVE first then most-recently-active."""
+        """All sessions across accounts, working first then most-recently-active."""
         return sorted(self.sessions.values(), key=self._sort_key)
 
     def visible_sessions(self) -> list[Session]:
-        """Sessions worth listing: live (and remote) only. Idle/finished ones are
-        never acted on and just bury the live ones, so they're hidden from the
-        list — but stay in ``sessions`` and reachable by direct URL (read-only)."""
-        return [s for s in self.all_sessions() if s.status != SessionStatus.IDLE]
+        """Sessions providers consider useful in the dashboard.
+
+        Idle sessions are hidden by default, but providers whose process state
+        cannot be mapped reliably (such as Codex) can keep them visible.
+        """
+        return [
+            s
+            for s in self.all_sessions()
+            if s.status != SessionStatus.IDLE or s.show_when_idle
+        ]
 
     # --- usage --------------------------------------------------------
 

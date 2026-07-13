@@ -287,6 +287,7 @@ class ClaudeCodeProvider(SessionProvider):
                     last_activity=last_activity,
                     context_tokens=context_tokens,
                     deep_link=deep_link,
+                    deep_link_label="open in claude.ai" if deep_link else None,
                     capabilities=frozenset(caps),
                 )
             )

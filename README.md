@@ -20,8 +20,9 @@ What works today:
 - **Transcript viewer** (`/sessions/{key}`): per-event role/tool/model
   rendering, token totals, todos, live tail for running sessions, and
   "load earlier" pagination.
-- **Message injection** into idle sessions (opt-in) with spawn-time safety
-  interlocks — see below.
+- **Codex chat controls** (opt-in): start persisted chats, queue follow-up
+  messages on completed non-interactive sessions, and watch replies arrive in
+  the existing transcript view — see the safety limits below.
 
 Roadmap: interactive streaming chat, more agent CLI providers (Gemini), and
 `docs/claude-code-internals.md`. See
@@ -107,22 +108,31 @@ be unique and slug-safe (they appear in URLs and cache filenames).
 
 ## Message injection & safety interlocks
 
-From v0.3 you can send a message to an **idle** session from its detail page.
-agentdeck runs `claude -p --resume <id> "<message>"` in the session's working
-directory (appending a turn to the same transcript; the live tail then shows
-the reply). Interactive streaming chat is a later iteration.
+From v0.3 you can start a persisted Codex chat from the dashboard or send
+follow-ups to a completed, non-interactive Codex `exec` session from its detail
+page. Enter submits and Shift+Enter inserts a newline. Further submissions are
+shown in a FIFO queue while Codex works. agentdeck runs `codex exec` or
+`codex exec resume <id> - --json` in the selected working directory, passes
+messages over stdin, and lets the normal transcript tail show replies.
+
+Standalone Codex TUI sessions remain read-only because Codex exposes no
+cross-process ownership registry. A safety spike confirmed that a second
+resume process can write into a rollout while its original TUI process is still
+active. They remain available for monitoring in agentdeck, without an external
+open button.
 
 Interlocks, re-checked at spawn time on every attempt:
 
-- **Never writes a live session.** If any process is currently writing that
-  session's transcript, injection is refused (two writers corrupt the JSONL) —
-  open it in claude.ai instead.
+- **Completed `exec` turns only.** The rollout's last native boundary must be
+  `task_complete`; `task_started`, aborted, TUI, and unknown session kinds fail
+  closed. This is rechecked immediately before Codex starts.
 - **cwd must exist** — a session whose worktree was deleted is refused.
-- **cwd must be trusted** — agentdeck reads `hasTrustDialogAccepted` from
-  `.claude.json` and refuses otherwise. It never *writes* that file; you trust
-  a directory by running `claude` in it once. 
+- **One owned turn per session** — agentdeck serializes its own submissions in
+  a FIFO queue; only one Codex child writes the rollout at a time. Owned process
+  groups are reaped on timeout or shutdown.
+- **Messages stay out of argv** — the prompt is delivered on stdin.
 - **Kill-switch**: `[inject] enabled = false` hides the form and 403s the route.
-  The bundled deploy ships with injection **off** — opt in when ready.
+  The bundled configuration ships with injection **off** — opt in when ready.
 
 To enable on the live deploy: set `[inject] enabled = true` in
 `~/.config/agentdeck/config.toml` and `systemctl --user restart agentdeck`.

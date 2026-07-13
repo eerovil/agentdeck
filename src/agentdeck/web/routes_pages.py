@@ -33,7 +33,22 @@ async def dashboard(request: Request) -> HTMLResponse:
     templates = get_templates(request)
     accounts = get_accounts(request)
     state = get_state(request)
+    from ..providers import PROVIDERS
     from .render import _usage_rows, session_labels
+
+    new_chat_accounts = [
+        account
+        for account in accounts
+        if PROVIDERS[account.provider_id].supports_new_session
+    ]
+    new_chat_account_keys = {account.key for account in new_chat_accounts}
+    cwd_options = sorted(
+        {
+            str(session.cwd)
+            for session in state.all_sessions()
+            if session.account_key in new_chat_account_keys and session.cwd is not None
+        }
+    )
 
     resp = templates.TemplateResponse(
         request,
@@ -42,6 +57,9 @@ async def dashboard(request: Request) -> HTMLResponse:
             "rows": _usage_rows(accounts, state),
             "sessions": state.visible_sessions(),
             "labels": session_labels(accounts),
+            "new_chat_accounts": new_chat_accounts,
+            "new_chat_enabled": request.app.state.config.inject.enabled,
+            "new_chat_cwds": cwd_options,
         },
     )
     # Live dashboard — always revalidate so a deploy's HTML (and the inline
@@ -59,7 +77,7 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
     detail = await provider.load_transcript(account, session)
     from datetime import UTC, datetime
 
-    from ..models import SessionStatus
+    from ..models import Capability, SessionStatus
     from .render import _usage_rows, activity_label, session_labels
 
     last_ev = detail.events[-1] if detail.events else None
@@ -71,6 +89,7 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
     )
     label = activity_label(live, bool(session.thinking), last_ev, age)
     account_label = session_labels(get_accounts(request)).get(session.account_key)
+    owned_session = provider.owns_session(account, session)
 
     resp = templates.TemplateResponse(
         request,
@@ -82,6 +101,18 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
             "activity_label": label,
             # which account (main/alt) this session belongs to
             "account_label": account_label,
+            "can_inject": (
+                request.app.state.config.inject.enabled
+                and (
+                    Capability.INJECT in session.capabilities
+                    or request.app.state.injector.can_queue(session.key)
+                )
+            ),
+            "inject_max_chars": request.app.state.config.inject.max_message_chars,
+            "owned_session": owned_session,
+            "can_steer": Capability.STEER in session.capabilities,
+            "can_interrupt": Capability.INTERRUPT in session.capabilities,
+            "pending_interaction": provider.pending_interaction(account, session),
             # topbar usage bars, rendered server-side so they paint immediately
             # (the per-session SSE stream then keeps them live over one socket).
             "rows": _usage_rows(get_accounts(request), get_state(request)),

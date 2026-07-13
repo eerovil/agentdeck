@@ -41,6 +41,10 @@ def get_db(request: Request):
     return request.app.state.db
 
 
+def get_injector(request: Request):
+    return request.app.state.injector
+
+
 def resolve_session(request: Request, session_key: str) -> tuple[Account, Session, SessionProvider]:
     """Look up a session by key → (account, session, provider), or 404."""
     state = get_state(request)

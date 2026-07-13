@@ -248,6 +248,86 @@ details.ev.tool > .ev-text { margin-top: 6px; max-height: 420px; overflow: auto;
   border-radius: var(--radius); padding: 10px; }
 .chat-link:active { background: var(--line); }
 
+.inject-form { position: sticky; bottom: 0; z-index: 5; margin: 12px -4px 0; padding: 12px;
+  padding-bottom: calc(12px + env(safe-area-inset-bottom, 0)); border: 1px solid var(--line);
+  border-radius: 10px; background: color-mix(in srgb, var(--panel) 94%, transparent);
+  box-shadow: 0 -8px 24px color-mix(in srgb, var(--bg) 70%, transparent);
+  backdrop-filter: blur(12px); }
+.inject-form label { display: block; margin-bottom: 7px; font-weight: 600; }
+.inject-form textarea { box-sizing: border-box; width: 100%; resize: vertical;
+  padding: 9px; border: 1px solid var(--line); border-radius: 8px;
+  color: var(--fg); background: var(--bg); font: inherit; }
+.inject-form textarea:focus { outline: none; border-color: var(--remote); }
+.inject-form button, .new-chat button { padding: 8px 16px; border: 0;
+  border-radius: 8px; color: white; background: var(--live); font-weight: 600; }
+.inject-form button:disabled, .new-chat button:disabled { opacity: .55; }
+.composer-actions { display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-top: 8px; }
+.composer-actions span { color: var(--muted); font-size: 11px; }
+.inject-result { min-height: 1.4em; margin: 8px 2px; color: var(--muted); }
+.inject-result.failed { color: var(--crit); }
+.queue-summary { font-size: 12px; font-weight: 600; }
+.message-queue { display: flex; flex-direction: column; gap: 5px; margin: 7px 0 0;
+  padding: 0; list-style: none; }
+.message-queue li { display: grid; grid-template-columns: 58px 1fr; gap: 6px;
+  padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px;
+  background: var(--panel); color: var(--muted); font-size: 12px; }
+.message-queue li.running { border-color: var(--warn); }
+.message-queue li.failed { border-color: var(--crit); }
+.queue-state { color: var(--muted); font-size: 10px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .04em; }
+.message-queue li.running .queue-state { color: var(--warn); }
+.message-queue li.complete .queue-state { color: var(--live); }
+.message-queue li.failed .queue-state, .queue-error { color: var(--crit); }
+.queue-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-error { grid-column: 2; }
+
+.new-chat { margin-bottom: 10px; border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--panel); }
+.new-chat > summary { padding: 9px 11px; cursor: pointer; color: var(--remote);
+  font-weight: 650; list-style: none; }
+.new-chat > summary::-webkit-details-marker { display: none; }
+.new-chat[open] > summary { border-bottom: 1px solid var(--line); }
+.new-chat form { display: grid; grid-template-columns: 1fr; gap: 6px; padding: 11px; }
+.new-chat label { margin-top: 3px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.new-chat input, .new-chat select, .new-chat textarea { width: 100%; padding: 9px;
+  border: 1px solid var(--line); border-radius: 8px; color: var(--fg);
+  background: var(--bg); font: inherit; }
+.new-chat textarea { resize: vertical; }
+.new-chat input:focus, .new-chat select:focus, .new-chat textarea:focus {
+  outline: none; border-color: var(--remote); }
+.new-chat .inject-result { padding: 0 11px 8px; }
+
+.pending-interaction { margin: 14px 0; padding: 14px; border: 1px solid #d79b27;
+  border-radius: 12px; background: color-mix(in srgb, #d79b27 10%, var(--panel)); }
+.pending-interaction:empty { display: none; }
+.pending-interaction h2 { margin: 0 0 8px; font-size: 1rem; color: #d79b27; }
+.pending-interaction p { margin: 7px 0; }
+.pending-interaction pre { overflow-x: auto; margin: 9px 0; padding: 9px;
+  border-radius: 7px; background: var(--panel2); white-space: pre-wrap; }
+.pending-interaction fieldset { margin: 12px 0; padding: 0; border: 0; }
+.pending-interaction legend { display: grid; gap: 3px; width: 100%; margin-bottom: 8px;
+  font-weight: 600; }
+.pending-interaction legend span { color: var(--muted); font-size: .72rem;
+  letter-spacing: .06em; text-transform: uppercase; }
+.interaction-option { display: flex; align-items: flex-start; gap: 9px; margin: 7px 0;
+  padding: 9px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
+.interaction-option input { margin-top: 3px; }
+.interaction-option span { display: grid; gap: 2px; }
+.interaction-option small, .interaction-cwd { color: var(--muted); }
+.interaction-other { box-sizing: border-box; width: 100%; margin-top: 7px; padding: 10px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--fg); }
+.interaction-actions, .owned-controls { display: flex; flex-wrap: wrap; gap: 8px;
+  align-items: center; }
+.pending-interaction button, .owned-controls button { padding: 8px 13px; border: 0;
+  border-radius: 8px; background: var(--remote); color: white; font-weight: 600; cursor: pointer; }
+.pending-interaction button.secondary { background: var(--panel2); color: var(--fg);
+  border: 1px solid var(--line); }
+.pending-interaction button.danger, .owned-controls button.danger { background: var(--crit); }
+.owned-controls { margin: -2px 2px 8px; }
+.owned-controls:has(button) { margin-top: 8px; }
+.owned-controls .inject-result { flex-basis: 100%; margin: 0; }
+
 /* Build stamp — small + muted, so you can confirm on the phone which code an
    install is actually running (git short SHA changes every deploy). */
 .build { text-align: center; color: var(--muted); font-size: 11px; opacity: .6;

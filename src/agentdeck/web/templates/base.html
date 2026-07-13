@@ -354,6 +354,22 @@
     window.addEventListener('load', function () { enhance(); });
     document.body.addEventListener('htmx:afterSwap', function (e) { enhance(e.target); });
   })();
+
+  // Chat composers: Enter submits, Shift+Enter keeps the expected multiline
+  // behavior. Successful HTMX submissions clear and re-focus only the prompt.
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
+    var input = e.target.closest('textarea.send-on-enter');
+    if (!input || !input.form) return;
+    e.preventDefault();
+    input.form.requestSubmit();
+  });
+  document.body.addEventListener('htmx:afterRequest', function (e) {
+    var form = e.detail && e.detail.elt;
+    if (!e.detail || !e.detail.successful || !form || !form.matches('form[data-clear-on-send]')) return;
+    var input = form.querySelector('textarea[name="message"]');
+    if (input) { input.value = ''; input.focus(); }
+  });
   </script>
 </body>
 </html>
