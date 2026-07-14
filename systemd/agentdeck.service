@@ -4,7 +4,8 @@ After=network-online.target tailscaled.service agentdeck-codex.service
 Wants=agentdeck-codex.service
 
 [Service]
-ExecStart=%h/.local/bin/uv run --directory %h/agentdeck agentdeck
+WorkingDirectory=%h/agentdeck
+ExecStart=%h/agentdeck/.venv/bin/agentdeck
 Restart=on-failure
 RestartSec=5
 Environment=AGENTDECK_CONFIG=%h/.config/agentdeck/config.toml

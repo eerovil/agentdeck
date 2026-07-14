@@ -3,7 +3,8 @@ Description=agentdeck persistent Codex runtime
 After=network-online.target
 
 [Service]
-ExecStart=%h/.local/bin/uv run --directory %h/agentdeck agentdeck codex-runtime
+WorkingDirectory=%h/agentdeck
+ExecStart=%h/agentdeck/.venv/bin/agentdeck codex-runtime
 Restart=on-failure
 RestartSec=5
 Environment=AGENTDECK_CONFIG=%h/.config/agentdeck/config.toml

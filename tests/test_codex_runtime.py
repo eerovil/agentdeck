@@ -139,5 +139,7 @@ def test_systemd_services_keep_web_and_codex_in_separate_control_groups():
 
     assert "Wants=agentdeck-codex.service" in web
     assert "agentdeck codex-runtime" not in web
-    assert "agentdeck codex-runtime" in runtime
+    assert ".venv/bin/agentdeck" in web
+    assert ".venv/bin/agentdeck codex-runtime" in runtime
+    assert "uv run" not in web + runtime
     assert "PartOf=agentdeck.service" not in runtime
