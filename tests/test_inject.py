@@ -167,7 +167,8 @@ class _BlockingProvider:
 
 
 async def test_injection_service_queues_one_session_fifo(tmp_path):
-    service = InjectionService(InjectConfig(enabled=True))
+    changed = []
+    service = InjectionService(InjectConfig(enabled=True), on_change=changed.append)
     provider = _BlockingProvider()
     account = Account("codex:test", "codex", "test", tmp_path)
     session = Session(
@@ -185,6 +186,7 @@ async def test_injection_service_queues_one_session_fifo(tmp_path):
     status = service.status(session.key)
     assert [item.text for item in status.items] == ["first", "second"]
     assert [item.state for item in status.items] == ["queued", "queued"]
+    assert changed == [session.key, session.key]
     provider.release.set()
     for _ in range(10):
         await asyncio.sleep(0)
@@ -196,6 +198,47 @@ async def test_injection_service_queues_one_session_fifo(tmp_path):
         "complete",
     ]
     await service.stop()
+
+
+async def test_queued_message_remains_visible_after_navigation(tmp_path, monkeypatch):
+    app = _web_app(tmp_path)
+    app.state.app_state.sessions["codex:test:sid"].show_when_idle = True
+    release = asyncio.Event()
+
+    async def fake_inject(account, session, message, *, timeout_s):
+        await release.wait()
+        return InjectResult(True)
+
+    from agentdeck.providers import PROVIDERS
+
+    monkeypatch.setattr(PROVIDERS["codex"], "inject", fake_inject)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/sessions/codex:test:sid/inject",
+            data={"message": "keep this queued"},
+            headers={"origin": "http://test"},
+        )
+        assert response.status_code == 202
+
+    # A new browser/page request sees the authoritative server-side queue on
+    # both the list card and reopened detail page.
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        dashboard = await client.get("/")
+        detail = await client.get("/sessions/codex:test:sid")
+    assert 'class="card-pending" data-pending-count="1"' in dashboard.text
+    assert "keep this queued" in dashboard.text
+    assert "keep this queued" in detail.text
+
+    release.set()
+    for _ in range(10):
+        await asyncio.sleep(0)
+        if not app.state.injector.can_queue("codex:test:sid"):
+            break
+    await app.state.injector.stop()
 
 
 async def test_start_session_passes_first_prompt_on_stdin(tmp_path):

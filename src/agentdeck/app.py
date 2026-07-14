@@ -65,7 +65,10 @@ def create_app(config: AppConfig) -> FastAPI:
     # to the old URL and falls through to the network.
     templates.env.globals["asset_ver"] = cache_stamp()
     collector = Collector(config, state)
-    injector = InjectionService(config.inject)
+    injector = InjectionService(
+        config.inject,
+        on_change=lambda _session_key: state.bus.publish("sessions"),
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

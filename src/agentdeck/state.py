@@ -58,7 +58,13 @@ class AppState:
         return (
             status_order,
             0 if s.thinking else 1,  # actively-working sessions float to the top
-            -(s.last_activity.timestamp() if s.last_activity else 0.0),
+            # Activity timestamps change on every streamed event. Sorting active
+            # chats by that timestamp made multiple workers continually trade
+            # the top spot. Tie them here: Python's stable sort preserves their
+            # insertion order until a chat enters or leaves the active tier.
+            0.0
+            if s.thinking
+            else -(s.last_activity.timestamp() if s.last_activity else 0.0),
         )
 
     def sessions_for_account(self, account_key: str) -> list[Session]:

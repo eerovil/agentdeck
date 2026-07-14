@@ -476,6 +476,47 @@ def test_working_sessions_sort_first(tmp_path):
     assert keys.index("busy") < keys.index("quiet")  # busy floats above, despite older mtime
 
 
+def test_active_sessions_keep_stable_relative_order(tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    from agentdeck.state import AppState
+
+    state = AppState()
+    now = datetime.now(UTC)
+    first = Session(
+        key="codex:test:first",
+        account_key="codex:test",
+        session_id="first",
+        status=SessionStatus.LIVE,
+        thinking=True,
+        last_activity=now,
+    )
+    second = Session(
+        key="codex:test:second",
+        account_key="codex:test",
+        session_id="second",
+        status=SessionStatus.LIVE,
+        thinking=True,
+        last_activity=now - timedelta(seconds=1),
+    )
+    state.update_session(first)
+    state.update_session(second)
+    assert [session.session_id for session in state.visible_sessions()] == [
+        "first",
+        "second",
+    ]
+
+    # A new event makes the second chat most recent, but active cards do not
+    # fight for the top spot on every transcript write.
+    state.update_session(
+        Session(**{**second.__dict__, "last_activity": now + timedelta(seconds=1)})
+    )
+    assert [session.session_id for session in state.visible_sessions()] == [
+        "first",
+        "second",
+    ]
+
+
 def test_visible_idle_sessions_are_not_penalized_in_sort(tmp_path):
     from datetime import UTC, datetime, timedelta
 

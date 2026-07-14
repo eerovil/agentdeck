@@ -34,7 +34,7 @@ async def dashboard(request: Request) -> HTMLResponse:
     accounts = get_accounts(request)
     state = get_state(request)
     from ..providers import PROVIDERS
-    from .render import _usage_rows, session_labels
+    from .render import _usage_rows, session_labels, session_queue_summaries
 
     new_chat_accounts = [
         account
@@ -57,6 +57,9 @@ async def dashboard(request: Request) -> HTMLResponse:
             "rows": _usage_rows(accounts, state),
             "sessions": state.visible_sessions(),
             "labels": session_labels(accounts),
+            "queue_summaries": session_queue_summaries(
+                state.visible_sessions(), request.app.state.injector
+            ),
             "new_chat_accounts": new_chat_accounts,
             "new_chat_enabled": request.app.state.config.inject.enabled,
             "new_chat_cwds": cwd_options,
@@ -80,7 +83,12 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
     from datetime import UTC, datetime
 
     from ..models import Capability, SessionStatus, detailed_activity_label
-    from .render import _usage_rows, activity_label, session_labels
+    from .render import (
+        _usage_rows,
+        activity_label,
+        session_labels,
+        session_queue_summaries,
+    )
 
     last_ev = detail.events[-1] if detail.events else None
     live = session.status == SessionStatus.LIVE
@@ -105,6 +113,9 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
             "sessions": state.visible_sessions(),
             "labels": labels,
             "selected_session_key": session.key,
+            "queue_summaries": session_queue_summaries(
+                state.visible_sessions(), request.app.state.injector
+            ),
             # the initial activity marker; the SSE stream refines it within ~1.5s
             "activity_label": label,
             # which account (main/alt) this session belongs to

@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 
 from fastapi.templating import Jinja2Templates
 
+from ..inject import InjectionService
 from ..models import Account
 from ..models import activity_label as activity_label  # single impl lives in models
 from ..state import AppState
@@ -145,17 +146,36 @@ def session_labels(accounts: list[Account]) -> dict[str, str]:
     return {acc.key: acc.label for acc in accounts}
 
 
+def session_queue_summaries(sessions, injector: InjectionService) -> dict[str, dict]:
+    """Pending turn summaries rendered on cards after leaving a chat page."""
+    summaries = {}
+    for session in sessions:
+        status = injector.status(session.key)
+        if status is None:
+            continue
+        pending = [item for item in status.items if item.state in ("queued", "running")]
+        if pending:
+            summaries[session.key] = {
+                "count": len(pending),
+                "text": pending[-1].text,
+            }
+    return summaries
+
+
 def render_session_list(
     templates: Jinja2Templates,
     accounts: list[Account],
     state: AppState,
     *,
     selected_session_key: str | None = None,
+    injector: InjectionService | None = None,
 ) -> str:
+    sessions = state.visible_sessions()
     return templates.get_template("partials/session_list.html").render(
-        sessions=state.visible_sessions(),
+        sessions=sessions,
         labels=session_labels(accounts),
         selected_session_key=selected_session_key,
+        queue_summaries=(session_queue_summaries(sessions, injector) if injector else {}),
     )
 
 

@@ -17,6 +17,14 @@
     <span class="q-dot"></span><span class="q-text"><bdi>{{ s.question }}</bdi></span>
   </div>
   {% endif %}
+  {% set queue = queue_summaries.get(s.key) if queue_summaries else None %}
+  {% if queue %}
+  <div class="card-pending" data-pending-count="{{ queue.count }}"
+       title="This message remains queued after you leave the page">
+    <span class="pending-badge">{{ queue.count }} pending</span>
+    <span class="pending-text">{{ queue.text }}</span>
+  </div>
+  {% endif %}
   {% if s.last_prompt or s.last_text %}
   {% set user_line %}{% if s.last_prompt %}<span class="latest-line"><span class="latest-arrow">↳</span><span class="lt-text">{{ s.last_prompt }}</span></span>{% endif %}{% endset %}
   {% set agent_line %}{% if s.last_text %}<span class="latest-line agent"><span class="latest-arrow">⟳</span><span class="lt-text">{{ s.last_text }}</span></span>{% endif %}{% endset %}

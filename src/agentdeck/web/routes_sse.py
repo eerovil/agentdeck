@@ -19,6 +19,7 @@ from fastapi.responses import StreamingResponse
 from ..models import SessionStatus, detailed_activity_label
 from .deps import (
     get_accounts,
+    get_injector,
     get_state,
     get_templates,
     require_access,
@@ -64,11 +65,15 @@ async def _stream(request: Request) -> AsyncIterator[str]:
     state = get_state(request)
     templates = get_templates(request)
     accounts = get_accounts(request)
+    injector = get_injector(request)
 
     def render(topic: str) -> str:
         if topic == "usage":
             return format_sse("usage", render_limit_bars(templates, accounts, state))
-        return format_sse("sessions", render_session_list(templates, accounts, state))
+        return format_sse(
+            "sessions",
+            render_session_list(templates, accounts, state, injector=injector),
+        )
 
     loop = asyncio.get_event_loop()
     with state.bus.subscribe("usage", "sessions") as sub:
@@ -120,6 +125,7 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
     templates = get_templates(request)
     state = get_state(request)
     accounts = get_accounts(request)
+    injector = get_injector(request)
     loop = asyncio.get_event_loop()
 
     offset, seq = await provider.transcript_cursor(account, session)
@@ -143,7 +149,11 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
         yield format_sse(
             "sessions",
             render_session_list(
-                templates, accounts, state, selected_session_key=session_key
+                templates,
+                accounts,
+                state,
+                selected_session_key=session_key,
+                injector=injector,
             ),
         )
         last_usage_sig = _usage_sig(accounts, state)
@@ -190,6 +200,7 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
                         accounts,
                         state,
                         selected_session_key=session_key,
+                        injector=injector,
                     ),
                 )
             await asyncio.sleep(TAIL_INTERVAL_S)

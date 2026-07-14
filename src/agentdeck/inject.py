@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -46,8 +47,14 @@ class DelegationStatus:
 class InjectionService:
     _MAX_STATUSES = 200
 
-    def __init__(self, config: InjectConfig):
+    def __init__(
+        self,
+        config: InjectConfig,
+        *,
+        on_change: Callable[[str], None] | None = None,
+    ):
         self.config = config
+        self._on_change = on_change or (lambda _session_key: None)
         self._tasks: dict[str, asyncio.Task] = {}
         self._status: dict[str, InjectionStatus] = {}
         self._items: dict[str, list[QueuedMessage]] = {}
@@ -101,6 +108,7 @@ class InjectionService:
             session_key,
             InjectionStatus(state, reason, tuple(items[-12:])),
         )
+        self._on_change(session_key)
 
     async def start(
         self,
