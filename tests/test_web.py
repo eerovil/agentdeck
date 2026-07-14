@@ -321,8 +321,9 @@ async def test_session_autoscroll_follows_successful_send_but_not_unrelated_swap
                 let calls = 0;
                 const realScrollTo = window.scrollTo.bind(window);
                 window.scrollTo = () => { calls += 1; };
-                const swap = target => {
+                const swap = (target, mutate) => {
                     target.dispatchEvent(new CustomEvent('htmx:beforeSwap', {bubbles: true}));
+                    if (mutate) mutate();
                     target.dispatchEvent(new CustomEvent('htmx:afterSwap', {bubbles: true}));
                 };
                 swap(document.querySelector('#tool-activity'));
@@ -341,9 +342,13 @@ async def test_session_autoscroll_follows_successful_send_but_not_unrelated_swap
                 const afterSentTranscript = calls;
                 await new Promise(resolve => setTimeout(resolve, 400));
                 const afterViewportSettle = calls;
-                swap(document.querySelector('#inject-result'));
+                const status = document.querySelector('#inject-result');
+                swap(status, () => { status.style.height = '80px'; });
                 await new Promise(requestAnimationFrame);
                 const afterSendingStatus = calls;
+                swap(status);
+                await new Promise(requestAnimationFrame);
+                const afterUnchangedStatus = calls;
                 window.scrollTo = realScrollTo;
                 return {
                     afterActivity,
@@ -352,6 +357,7 @@ async def test_session_autoscroll_follows_successful_send_but_not_unrelated_swap
                     afterSentTranscript,
                     afterViewportSettle,
                     afterSendingStatus,
+                    afterUnchangedStatus,
                 };
             }"""
         )
@@ -362,8 +368,9 @@ async def test_session_autoscroll_follows_successful_send_but_not_unrelated_swap
         "afterTranscript": 0,
         "afterSend": 1,
         "afterSentTranscript": 2,
-        "afterViewportSettle": 4,
-        "afterSendingStatus": 5,
+        "afterViewportSettle": 2,
+        "afterSendingStatus": 3,
+        "afterUnchangedStatus": 3,
     }
 
 
