@@ -118,8 +118,8 @@ Existing external `exec` rollouts retain the conservative completed-turn
 fallback described below.
 
 The bundled systemd deployment keeps Codex controls in a separate
-`agentdeck-codex.service`. The dashboard talks to it over a mode-0700 Unix
-socket under `$XDG_RUNTIME_DIR/agentdeck`; restarting `agentdeck.service` for a
+`agentdeck-codex.service`. The dashboard talks to it over a Unix socket inside
+a mode-0700 `$XDG_RUNTIME_DIR/agentdeck` directory; restarting `agentdeck.service` for a
 frontend deploy therefore does not stop active Codex turns or lose pending
 approval state. Restart the Codex service itself only after its active turns
 have drained.

@@ -149,6 +149,13 @@ class CodexRuntimeClient:
             result = self._result(response.json())
             await self.refresh()
             return result
+        except asyncio.CancelledError:
+            # A web deploy cancels InjectionService tasks that may be awaiting a
+            # queued turn for minutes. Close the local UDS client immediately;
+            # the separate runtime keeps processing the request and the Codex
+            # turn, while uvicorn can finish its web-service shutdown promptly.
+            await self._http.aclose()
+            raise
         except httpx.HTTPError as exc:
             return InjectResult(False, f"Codex runtime unavailable: {exc}")
 

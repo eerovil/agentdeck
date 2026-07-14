@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import asdict
 from pathlib import Path
 
@@ -68,6 +69,26 @@ async def test_runtime_client_reconnects_to_shared_backend_state(tmp_path):
     assert second.active_turn("thread-1") == "turn-1"
     assert second.interaction("thread-1").id == "question-1"
     await second.stop()
+
+
+async def test_cancelled_runtime_request_closes_web_side_socket(tmp_path):
+    started = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/accounts/local/queue":
+            started.set()
+            await asyncio.Future()
+        raise AssertionError(request.url.path)
+
+    client = CodexRuntimeClient(_account(tmp_path), transport=httpx.MockTransport(handler))
+    task = asyncio.create_task(client.queue_turn("thread-1", "Queued work"))
+    await started.wait()
+
+    task.cancel()
+    result = await asyncio.gather(task, return_exceptions=True)
+
+    assert isinstance(result[0], asyncio.CancelledError)
+    assert client._http.is_closed
 
 
 def test_runtime_snapshot_serializes_owned_turn_and_interaction(tmp_path):
