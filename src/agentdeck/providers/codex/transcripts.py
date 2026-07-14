@@ -110,7 +110,20 @@ def _text_content(content: object) -> str | None:
 
 
 def _is_noise_user(text: str | None) -> bool:
-    return bool(text and text.lstrip().startswith("<environment_context>"))
+    if not text:
+        return False
+    stripped = text.lstrip()
+    folded = stripped.casefold()
+    if folded.startswith((
+        "<environment_context>",
+        "# agents.md instructions for ",
+        "<instructions>",
+    )):
+        return True
+    first_line = stripped.partition("\n")[0].strip()
+    return first_line == "@.cursorrules" or (
+        first_line.startswith("@.cursor/") and first_line.endswith(".mdc")
+    )
 
 
 _INTERNAL_SYSTEM_PREFIXES = (

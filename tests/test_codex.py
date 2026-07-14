@@ -144,7 +144,7 @@ async def test_codex_session_discovery_and_metadata(tmp_path):
     assert live.last_role == "agent"
     assert live.cwd == Path("/tmp/codex-project")
     assert live.model == "gpt-5.6-sol"
-    assert live.kind == "cli"
+    assert live.kind is None
     assert live.started_at.isoformat() == "2026-07-13T10:00:00+00:00"
     assert live.context_tokens == 80
     assert live.tokens.input_tokens == 90  # 180 input includes 90 cached
@@ -266,6 +266,46 @@ def test_codex_filters_only_internal_system_preamble(tmp_path):
         ("system", "A genuine system-visible conversation message"),
         ("user", "<permissions instructions>please explain this tag"),
     ]
+
+
+def test_codex_skips_repository_instruction_preambles_for_title(tmp_path):
+    path = tmp_path / "rollout.jsonl"
+    preambles = [
+        "# AGENTS.md instructions for /tmp/worktree\n\n<INSTRUCTIONS>rules</INSTRUCTIONS>",
+        "<INSTRUCTIONS>\nrepository rules\n</INSTRUCTIONS>",
+        "@.cursorrules\n@.cursor/memory/project-notes.mdc\n\n# Codebase map",
+        "@.cursor/memory/project-notes.mdc\n\n# Project notes",
+    ]
+    messages = [*(_message("user", text) for text in preambles), _message("user", "Fix it")]
+    path.write_text("".join(json.dumps(message) + "\n" for message in messages))
+
+    meta = transcripts.transcript_meta(path)
+    visible = transcripts.read_events(path).events
+
+    assert meta.title == "Fix it"
+    assert meta.last_prompt == "Fix it"
+    assert [event.text for event in visible] == ["Fix it"]
+
+
+async def test_codex_hides_launcher_source_but_preserves_exec_kind(tmp_path):
+    vscode_sid = "019f5b2b-c830-7922-a1ce-8c9c69526c07"
+    exec_sid = "019f5b2b-c830-7922-a1ce-8c9c69526c08"
+    vscode_path = _rollout(tmp_path, vscode_sid)
+    exec_path = _rollout(tmp_path, exec_sid)
+    for path, source in ((vscode_path, "vscode"), (exec_path, "exec")):
+        lines = path.read_text().splitlines()
+        meta = json.loads(lines[0])
+        meta["payload"]["source"] = source
+        lines[0] = json.dumps(meta)
+        path.write_text("\n".join(lines) + "\n")
+
+    provider = CodexProvider()
+    sessions = await provider.scan_sessions(_account(tmp_path))
+    found = {session.session_id: session for session in sessions}
+
+    assert transcripts.transcript_meta(vscode_path).kind == "vscode"
+    assert found[vscode_sid].kind is None
+    assert found[exec_sid].kind == "exec"
 
 
 def test_codex_final_message_prefers_task_complete(tmp_path):

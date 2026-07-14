@@ -39,6 +39,11 @@ LIVE_WINDOW_S = 30.0
 log = logging.getLogger(__name__)
 
 
+def _display_kind(kind: str | None) -> str | None:
+    """Return only source kinds that add useful information to a card."""
+    return kind if kind == "exec" else None
+
+
 def _mtime(path: Path) -> datetime | None:
     try:
         return datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
@@ -240,9 +245,11 @@ class CodexProvider(SessionProvider):
                     last_text=meta.last_text,
                     last_role=meta.last_role,
                     model=meta.model,
-                    kind="appServer"
-                    if client is not None and client.owns(session_id)
-                    else meta.kind,
+                    kind=(
+                        "appServer"
+                        if client is not None and client.owns(session_id)
+                        else _display_kind(meta.kind)
+                    ),
                     worker_type="you",
                     started_at=meta.started_at,
                     last_activity=last_activity,
