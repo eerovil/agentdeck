@@ -338,8 +338,16 @@ async def test_session_autoscroll_follows_successful_send_but_not_unrelated_swap
                 swap(document.querySelector('.transcript'));
                 await new Promise(requestAnimationFrame);
                 const afterSentTranscript = calls;
+                await new Promise(resolve => setTimeout(resolve, 400));
+                const afterViewportSettle = calls;
                 window.scrollTo = realScrollTo;
-                return {afterActivity, afterTranscript, afterSend, afterSentTranscript};
+                return {
+                    afterActivity,
+                    afterTranscript,
+                    afterSend,
+                    afterSentTranscript,
+                    afterViewportSettle,
+                };
             }"""
         )
         await browser.close()
@@ -349,6 +357,7 @@ async def test_session_autoscroll_follows_successful_send_but_not_unrelated_swap
         "afterTranscript": 0,
         "afterSend": 1,
         "afterSentTranscript": 2,
+        "afterViewportSettle": 4,
     }
 
 

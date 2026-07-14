@@ -125,6 +125,17 @@
     if (root === window) window.scrollTo(0, document.documentElement.scrollHeight);
     else root.scrollTo(0, root.scrollHeight);
   }
+  function followBottom() {
+    if (followAfterSend) toBottom();
+  }
+  function settleAfterSend() {
+    // Android can resize/pan its visual viewport after HTMX has already
+    // completed. Re-anchor across that short settling window, unless the user
+    // deliberately moves away from the bottom.
+    requestAnimationFrame(followBottom);
+    setTimeout(followBottom, 120);
+    setTimeout(followBottom, 350);
+  }
   var followTranscript = false;
   var followAfterSend = false;
   var initialDone = false;
@@ -150,6 +161,12 @@
   if (document.readyState === 'complete') initialScroll();
   else window.addEventListener('load', initialScroll, { once: true });
 
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', function () {
+      if (followAfterSend) requestAnimationFrame(followBottom);
+    });
+  }
+
   document.body.addEventListener('htmx:beforeSwap', function (event) {
     if (!event.target.matches('.transcript')) return;
     followTranscript = followAfterSend ||
@@ -164,7 +181,7 @@
     var form = event.detail && event.detail.elt;
     if (!event.detail || !event.detail.successful || !form || !form.matches('.inject-form')) return;
     followAfterSend = true;
-    requestAnimationFrame(toBottom);
+    settleAfterSend();
   });
 })();
 </script>
