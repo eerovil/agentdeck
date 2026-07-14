@@ -58,12 +58,6 @@
 
 <div id="tool-activity" sse-swap="tools">{% set label = activity_label %}{% include "partials/tool_activity.html" %}</div>
 
-{% if can_inject %}
-{% set inject_status = request.app.state.injector.status(session.key) %}
-{% set session_key = session.key %}
-{% include "partials/inject_status.html" %}
-{% endif %}
-
 {% if owned_session %}
 {% set interaction = pending_interaction %}
 {% set session_key = session.key %}
@@ -93,6 +87,9 @@
     <span>Enter to send · Shift+Enter for newline</span>
     <button type="submit">Send</button>
   </div>
+  {% set inject_status = request.app.state.injector.status(session.key) %}
+  {% set session_key = session.key %}
+  {% include "partials/inject_status.html" %}
 </form>
 {% endif %}
 </section>
@@ -102,7 +99,7 @@
 (function () {
   // Open at the newest message. For later transcript appends, decide whether to
   // follow *before* HTMX changes the page height. Status/activity/usage swaps
-  // never move the viewport; send state follows only when its block grows.
+  // never move the viewport; send state is an overlay inside the composer.
   var NEAR = 80;
   function scrollRoot() {
     var detail = document.querySelector('.session-detail');
@@ -124,13 +121,8 @@
   function followBottom() {
     if (followAfterSend) toBottom();
   }
-  function scrollExtent() {
-    var root = scrollRoot();
-    return root === window ? document.documentElement.scrollHeight : root.scrollHeight;
-  }
   var followTranscript = false;
   var followAfterSend = false;
-  var injectExtentBefore = null;
   var initialDone = false;
   var userMoved = false;
 
@@ -161,21 +153,11 @@
   }
 
   document.body.addEventListener('htmx:beforeSwap', function (event) {
-    if (event.target.matches('#inject-result')) {
-      injectExtentBefore = scrollExtent();
-      return;
-    }
     if (!event.target.matches('.transcript')) return;
     followTranscript = followAfterSend ||
       (atBottom() && !document.activeElement.closest('.inject-form'));
   });
   document.body.addEventListener('htmx:afterSwap', function (event) {
-    if (event.target.matches('#inject-result')) {
-      var grew = injectExtentBefore === null || scrollExtent() > injectExtentBefore;
-      injectExtentBefore = null;
-      if (followAfterSend && grew) requestAnimationFrame(followBottom);
-      return;
-    }
     if (!event.target.matches('.transcript')) return;
     if (followTranscript) requestAnimationFrame(toBottom);
     followTranscript = false;

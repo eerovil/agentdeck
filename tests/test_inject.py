@@ -321,7 +321,7 @@ async def test_inject_route_accepts_and_reports_status(tmp_path, monkeypatch):
             headers={"origin": "http://test"},
         )
         assert response.status_code == 202
-        assert "Will send when Codex is ready" in response.text
+        assert 'aria-label="Message queued: continue safely"' in response.text
         conflict = await client.post(
             "/sessions/codex:test:sid/inject",
             data={"message": "again"},
@@ -360,8 +360,8 @@ async def test_inject_route_kill_switch_validation_and_origin(tmp_path):
         page = await client.get("/sessions/codex:test:sid")
         assert '>Message</label>' in page.text
         assert 'maxlength="50"' in page.text
-        assert page.text.index('id="inject-result"') < page.text.index(
-            'class="inject-form"'
+        assert page.text.index('class="inject-form"') < page.text.index(
+            'id="inject-result"'
         )
         cross_site = await client.post(
             "/sessions/codex:test:sid/inject",

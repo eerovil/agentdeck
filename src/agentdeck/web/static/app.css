@@ -305,21 +305,15 @@ details.ev.tool > .ev-text { margin-top: 6px; max-height: 420px; overflow: auto;
 .composer-actions span { color: var(--muted); font-size: 11px; }
 .inject-result { min-height: 1.4em; margin: 8px 2px; color: var(--muted); }
 .inject-result.failed { color: var(--crit); }
-.send-summary { font-size: 12px; font-weight: 600; }
-.pending-messages { display: flex; flex-direction: column; gap: 5px; margin: 7px 0 0;
-  padding: 0; list-style: none; }
-.pending-messages li { display: grid; grid-template-columns: 58px 1fr; gap: 6px;
-  padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px;
-  background: var(--panel); color: var(--muted); font-size: 12px; }
-.pending-messages li.running { border-color: var(--warn); }
-.pending-messages li.failed { border-color: var(--crit); }
-.queue-state { color: var(--muted); font-size: 10px; font-weight: 700;
-  text-transform: uppercase; letter-spacing: .04em; }
-.pending-messages li.running .queue-state { color: var(--warn); }
-.pending-messages li.complete .queue-state { color: var(--live); }
-.pending-messages li.failed .queue-state, .queue-error { color: var(--crit); }
-.queue-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.queue-error { grid-column: 2; }
+.inject-form > .inject-result { position: absolute; top: 12px; right: 12px;
+  width: 18px; height: 18px; min-height: 0; margin: 0; pointer-events: none; }
+.inject-form > .inject-result:empty { display: none; }
+.send-spinner { display: block; width: 18px; height: 18px; border: 2px solid var(--line);
+  border-top-color: var(--remote); border-radius: 50%; animation: send-spin .7s linear infinite; }
+.inject-form > .inject-result.failed { display: grid; place-items: center; border-radius: 50%;
+  background: var(--crit); color: white; font-size: 12px; font-weight: 800; }
+@keyframes send-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .send-spinner { animation: none; } }
 
 .new-chat { margin-bottom: 10px; border: 1px solid var(--line); border-radius: var(--radius);
   background: var(--panel); }
@@ -391,6 +385,7 @@ details.ev.tool > .ev-text { margin-top: 6px; max-height: 420px; overflow: auto;
   .inject-form { display: grid; grid-template-columns: minmax(0, 1fr) auto;
     gap: 6px 8px; margin-top: 8px; padding: 8px;
     padding-bottom: calc(8px + env(safe-area-inset-bottom, 0)); }
+  .inject-form > .inject-result { top: 8px; right: 8px; }
   .inject-form > label[for="inject-message"] { grid-column: 1 / -1; margin: 0; font-size: 12px; }
   .inject-form textarea { grid-column: 1 / -1; width: 100%; height: 58px; min-height: 58px;
     padding: 7px 8px; resize: vertical; }

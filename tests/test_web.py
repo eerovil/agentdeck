@@ -308,8 +308,8 @@ async def test_session_autoscroll_follows_successful_send_but_not_unrelated_swap
         page = await browser.new_page(viewport={"width": 800, "height": 500})
         await page.set_content(
             '<div class="transcript" style="height:2400px"></div>'
-            '<div id="tool-activity"></div><div id="inject-result"></div>'
-            '<form class="inject-form"></form>'
+            '<div id="tool-activity"></div><form class="inject-form">'
+            '<div id="inject-result"></div></form>'
         )
         await page.add_script_tag(content=script)
         # Let the page-load scroll's animation frame finish before counting
@@ -321,9 +321,8 @@ async def test_session_autoscroll_follows_successful_send_but_not_unrelated_swap
                 let calls = 0;
                 const realScrollTo = window.scrollTo.bind(window);
                 window.scrollTo = () => { calls += 1; };
-                const swap = (target, mutate) => {
+                const swap = target => {
                     target.dispatchEvent(new CustomEvent('htmx:beforeSwap', {bubbles: true}));
-                    if (mutate) mutate();
                     target.dispatchEvent(new CustomEvent('htmx:afterSwap', {bubbles: true}));
                 };
                 swap(document.querySelector('#tool-activity'));
@@ -342,13 +341,9 @@ async def test_session_autoscroll_follows_successful_send_but_not_unrelated_swap
                 const afterSentTranscript = calls;
                 await new Promise(resolve => setTimeout(resolve, 400));
                 const afterViewportSettle = calls;
-                const status = document.querySelector('#inject-result');
-                swap(status, () => { status.style.height = '80px'; });
+                swap(document.querySelector('#inject-result'));
                 await new Promise(requestAnimationFrame);
                 const afterSendingStatus = calls;
-                swap(status);
-                await new Promise(requestAnimationFrame);
-                const afterUnchangedStatus = calls;
                 window.scrollTo = realScrollTo;
                 return {
                     afterActivity,
@@ -357,7 +352,6 @@ async def test_session_autoscroll_follows_successful_send_but_not_unrelated_swap
                     afterSentTranscript,
                     afterViewportSettle,
                     afterSendingStatus,
-                    afterUnchangedStatus,
                 };
             }"""
         )
@@ -369,8 +363,7 @@ async def test_session_autoscroll_follows_successful_send_but_not_unrelated_swap
         "afterSend": 1,
         "afterSentTranscript": 2,
         "afterViewportSettle": 2,
-        "afterSendingStatus": 3,
-        "afterUnchangedStatus": 3,
+        "afterSendingStatus": 2,
     }
 
 
@@ -389,6 +382,9 @@ async def test_mobile_session_composer_is_compact():
           </label>
           <input class="image-input" type="file">
           <div class="composer-actions"><span>Enter to send</span><button>Send</button></div>
+          <div id="inject-result" class="inject-result running">
+            <span class="send-spinner"></span>
+          </div>
         </form>
       </section></main></body>
     """
@@ -402,6 +398,7 @@ async def test_mobile_session_composer_is_compact():
                 const textarea = form.querySelector('textarea');
                 const picker = form.querySelector('.image-picker');
                 const actions = form.querySelector('.composer-actions');
+                const indicator = form.querySelector('#inject-result');
                 const main = document.querySelector('main');
                 return {
                     formHeight: form.getBoundingClientRect().height,
@@ -411,6 +408,7 @@ async def test_mobile_session_composer_is_compact():
                     ) < 2,
                     hintHidden: getComputedStyle(actions.querySelector('span')).display,
                     pasteHintHidden: getComputedStyle(form.querySelector('.paste-hint')).display,
+                    indicatorPosition: getComputedStyle(indicator).position,
                     keyboardGap: main.getBoundingClientRect().bottom
                         - form.getBoundingClientRect().bottom,
                 };
@@ -423,6 +421,7 @@ async def test_mobile_session_composer_is_compact():
     assert metrics["controlsAligned"]
     assert metrics["hintHidden"] == "none"
     assert metrics["pasteHintHidden"] == "none"
+    assert metrics["indicatorPosition"] == "absolute"
     assert metrics["keyboardGap"] == 0
 
 

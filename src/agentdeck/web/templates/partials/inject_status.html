@@ -1,30 +1,17 @@
-{% if inject_status %}
+{% if inject_status and inject_status.state in ('running', 'queued') %}
+{% set last_item = inject_status.items[-1] if inject_status.items else None %}
 <div id="inject-result" class="inject-result {{ inject_status.state }}"
-     {% if inject_status.state in ('running', 'queued') %}
      hx-get="/partials/sessions/{{ session_key }}/inject-status"
      hx-trigger="load delay:2s" hx-swap="outerHTML"
-     {% endif %}>
-  {% if inject_status.state != 'complete' %}
-  <div class="send-summary">
-    {% if inject_status.state == 'running' %}Sending…
-    {% elif inject_status.state == 'queued' %}Will send when Codex is ready…
-    {% elif inject_status.state == 'failed' %}{{ inject_status.reason or 'Could not send message.' }}
-    {% endif %}
-  </div>
-  {% if inject_status.items and inject_status.state in ('running', 'queued', 'failed') %}
-  <ol class="pending-messages">
-    {% for item in inject_status.items %}
-    {% if item.state != 'complete' %}
-    <li class="{{ item.state }}">
-      <span class="queue-state">{% if item.state == 'running' %}sending{% elif item.state == 'queued' %}waiting{% else %}{{ item.state }}{% endif %}</span>
-      <span class="queue-text">{{ item.text }}</span>
-      {% if item.reason %}<span class="queue-error">{{ item.reason }}</span>{% endif %}
-    </li>
-    {% endif %}
-    {% endfor %}
-  </ol>
-  {% endif %}
-  {% endif %}
+     aria-live="polite"
+     aria-label="{% if inject_status.state == 'running' %}Sending message{% else %}Message queued{% endif %}{% if last_item %}: {{ last_item.text }}{% endif %}">
+  <span class="send-spinner" aria-hidden="true"></span>
+</div>
+{% elif inject_status and inject_status.state == 'failed' %}
+<div id="inject-result" class="inject-result failed" role="alert"
+     aria-label="{{ inject_status.reason or 'Could not send message.' }}"
+     title="{{ inject_status.reason or 'Could not send message.' }}">
+  <span class="send-error" aria-hidden="true">!</span>
 </div>
 {% else %}
 <div id="inject-result" class="inject-result"></div>
