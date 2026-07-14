@@ -143,23 +143,36 @@ async def test_host_usage_fits_collapsed_mobile_header(tmp_path):
         browser = await playwright.chromium.launch()
         page = await browser.new_page(viewport={"width": 412, "height": 800})
         await page.set_content(html)
-        metrics = await page.evaluate(
-            """() => {
-                const usage = document.querySelector('.usage-mini');
-                const host = usage.querySelector('.mini-host');
-                return {
-                    height: usage.getBoundingClientRect().height,
-                    usageRight: usage.getBoundingClientRect().right,
-                    hostRight: host.getBoundingClientRect().right,
-                    hostDisplay: getComputedStyle(host).display,
-                };
-            }"""
-        )
+        metrics = []
+        for width in (320, 360, 412):
+            await page.set_viewport_size({"width": width, "height": 800})
+            metrics.append(
+                await page.evaluate(
+                    """() => {
+                        const usage = document.querySelector('.usage-mini');
+                        const host = usage.querySelector('.mini-host');
+                        return {
+                            height: usage.getBoundingClientRect().height,
+                            usageRight: usage.getBoundingClientRect().right,
+                            hostRight: host.getBoundingClientRect().right,
+                            hostDisplay: getComputedStyle(host).display,
+                            caretDisplay: getComputedStyle(
+                              usage.querySelector('.mini-caret')
+                            ).display,
+                            clientWidth: usage.clientWidth,
+                            scrollWidth: usage.scrollWidth,
+                        };
+                    }"""
+                )
+            )
         await browser.close()
 
-    assert metrics["hostRight"] < metrics["usageRight"] - 20
-    assert metrics["height"] < 40
-    assert metrics["hostDisplay"] == "flex"
+    for size in metrics:
+        assert size["hostRight"] < size["usageRight"]
+        assert size["scrollWidth"] <= size["clientWidth"]
+        assert size["height"] < 40
+        assert size["hostDisplay"] == "flex"
+        assert size["caretDisplay"] == "none"
 
 
 def test_worker_type_classification():

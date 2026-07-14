@@ -50,6 +50,17 @@ main { padding: 12px; max-width: 760px; margin: 0 auto; }
 .mini-caret { margin-left: auto; color: var(--muted); font-size: 11px; transition: transform .15s ease; }
 body:not(.usage-open) .mini-caret { transform: rotate(-90deg); }
 
+/* Keep the collapsed summary on one phone-width line. The expanded panel
+   still carries both account windows, so only the secondary 7d annotations
+   are omitted here when horizontal space is scarce. */
+@media (max-width: 480px) {
+  .usage-mini { gap: 5px; padding-right: 2px; }
+  .mini-acct { flex: none; gap: 3px; white-space: nowrap; }
+  .mini-host { flex: none; gap: 3px; margin-left: auto; white-space: nowrap; }
+  .mini-7d { display: none; }
+  .mini-caret { display: none; }
+}
+
 /* limit bars (expanded detail — hidden until body.usage-open) */
 .limit-bars { display: none; flex-wrap: wrap; gap: 10px; margin-top: 6px; }
 body.usage-open .limit-bars { display: flex; }
