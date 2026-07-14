@@ -14,6 +14,14 @@
     {% else %}<span class="mini-7d">—</span>{% endif %}
   </span>
   {% endfor %}
+  {% if host %}
+  <span class="mini-host" aria-label="Host CPU {{ host.cpu_pct | round | int if host.cpu_pct is not none else 'unknown' }} percent, memory {{ host.memory_pct | round | int }} percent">
+    <span class="mini-label">CPU</span>
+    <b class="mini-pct {% if host.cpu_pct is not none and host.cpu_pct >= 90 %}crit{% elif host.cpu_pct is not none and host.cpu_pct >= 70 %}warn{% endif %}">{% if host.cpu_pct is not none %}{{ host.cpu_pct | round | int }}%{% else %}—{% endif %}</b>
+    <span class="mini-label">MEM</span>
+    <b class="mini-pct {% if host.memory_pct >= 90 %}crit{% elif host.memory_pct >= 70 %}warn{% endif %}">{{ host.memory_pct | round | int }}%</b>
+  </span>
+  {% endif %}
   <span class="mini-caret">▾</span>
 </button>
 <div class="limit-bars">
@@ -46,4 +54,27 @@
     {% endif %}
   </div>
   {% endfor %}
+  {% if host %}
+  <div class="acct host-acct">
+    <div class="acct-label"><span>host</span><span class="upd-tag">live</span></div>
+    {% for kind, pct in [('CPU', host.cpu_pct), ('MEM', host.memory_pct)] %}
+    <div class="bar-row">
+      <span class="bar-kind">{{ kind }}</span>
+      <div class="bar">
+        {% if pct is not none %}
+        <div class="fill {% if pct >= 90 %}crit{% elif pct >= 70 %}warn{% endif %}"
+             style="width: {{ pct if pct <= 100 else 100 }}%"></div>
+        {% endif %}
+      </div>
+      <span class="bar-pct">{% if pct is not none %}{{ pct | round | int }}%{% else %}—{% endif %}</span>
+      <span class="bar-reset">
+        {%- if kind == 'MEM' -%}
+        {{ (host.memory_used_bytes / 1073741824) | round(1) }}G /
+        {{ (host.memory_total_bytes / 1073741824) | round(1) }}G
+        {%- endif -%}
+      </span>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
 </div>

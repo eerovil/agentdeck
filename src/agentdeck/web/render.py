@@ -138,7 +138,7 @@ def _fmt_age(delta: float) -> str:
 
 def render_limit_bars(templates: Jinja2Templates, accounts: list[Account], state: AppState) -> str:
     return templates.get_template("partials/limit_bars.html").render(
-        rows=_usage_rows(accounts, state)
+        rows=_usage_rows(accounts, state), host=state.host_stats
     )
 
 

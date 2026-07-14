@@ -7,7 +7,8 @@ from playwright.async_api import async_playwright
 
 from agentdeck.app import create_app
 from agentdeck.config import AccountConfig, AppConfig, HistoryConfig
-from agentdeck.models import Capability, Session, SessionStatus, UsageSnapshot
+from agentdeck.host_stats import HostStats
+from agentdeck.models import Account, Capability, Session, SessionStatus, UsageSnapshot
 from agentdeck.providers.claude_code.provider import worker_type
 
 
@@ -73,11 +74,25 @@ async def test_healthz(tmp_path):
 
 async def test_dashboard_renders_usage_and_session(tmp_path):
     app = _app_with_state(tmp_path)
+    app.state.app_state.set_host_stats(
+        HostStats(
+            cpu_pct=23.0,
+            memory_pct=61.0,
+            memory_used_bytes=10,
+            memory_total_bytes=20,
+            sampled_at=datetime.now(UTC),
+        )
+    )
     async with _client(app) as c:
         r = await c.get("/")
     assert r.status_code == 200
     assert "Hello World Session" in r.text
     assert "42%" in r.text
+    assert "CPU" in r.text
+    assert "23%" in r.text
+    assert "MEM" in r.text
+    assert "61%" in r.text
+    assert 'class="acct host-acct"' in r.text
     # The "hide closed" filter toggle is present.
     assert 'id="hide-closed"' in r.text
 
@@ -98,6 +113,53 @@ async def test_dashboard_collapsed_usage_renders_weekly_only_plan(tmp_path):
         response = await c.get("/")
     assert '<b class="mini-pct ">12%</b>' in response.text
     assert '<span class="mini-7d">7d</span>' in response.text
+
+
+async def test_host_usage_fits_collapsed_mobile_header(tmp_path):
+    app = _app_with_state(tmp_path)
+    app.state.accounts.extend(
+        [
+            Account("claude_code:alt", "claude_code", "alt", tmp_path),
+            Account("codex:codex", "codex", "codex", tmp_path),
+        ]
+    )
+    app.state.app_state.set_host_stats(
+        HostStats(
+            cpu_pct=23.0,
+            memory_pct=61.0,
+            memory_used_bytes=20 * 1024**3,
+            memory_total_bytes=32 * 1024**3,
+            sampled_at=datetime.now(UTC),
+        )
+    )
+    async with _client(app) as client:
+        response = await client.get("/")
+
+    css = (
+        Path(__file__).parents[1] / "src/agentdeck/web/static/app.css"
+    ).read_text()
+    html = response.text.replace("</head>", f"<style>{css}</style></head>")
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        page = await browser.new_page(viewport={"width": 412, "height": 800})
+        await page.set_content(html)
+        metrics = await page.evaluate(
+            """() => {
+                const usage = document.querySelector('.usage-mini');
+                const host = usage.querySelector('.mini-host');
+                return {
+                    height: usage.getBoundingClientRect().height,
+                    usageRight: usage.getBoundingClientRect().right,
+                    hostRight: host.getBoundingClientRect().right,
+                    hostDisplay: getComputedStyle(host).display,
+                };
+            }"""
+        )
+        await browser.close()
+
+    assert metrics["hostRight"] < metrics["usageRight"] - 20
+    assert metrics["height"] < 40
+    assert metrics["hostDisplay"] == "flex"
 
 
 def test_worker_type_classification():

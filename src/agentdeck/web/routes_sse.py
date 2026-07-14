@@ -52,6 +52,8 @@ def _usage_sig(accounts, state) -> tuple:
     for a in accounts:
         snap = state.usage.get(a.key)
         out.append((a.key, snap.fetched_at if snap else None))
+    host = state.host_stats
+    out.append(("host", host.sampled_at if host else None))
     return tuple(out)
 
 

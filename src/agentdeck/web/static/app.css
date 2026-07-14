@@ -38,6 +38,9 @@ main { padding: 12px; max-width: 760px; margin: 0 auto; }
   margin-top: 4px; padding: 4px 0; background: none; border: 0; color: var(--fg);
   font: inherit; font-size: 13px; cursor: pointer; text-align: left; }
 .mini-acct { display: inline-flex; align-items: baseline; gap: 5px; }
+.mini-host { display: inline-flex; align-items: baseline; gap: 4px; }
+.mini-host .mini-label { font-size: 10px; }
+.mini-host .mini-pct { font-size: 12px; }
 .mini-acct.stale { opacity: .55; }
 .mini-label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
 .mini-pct { font-weight: 700; color: var(--live); font-variant-numeric: tabular-nums; }

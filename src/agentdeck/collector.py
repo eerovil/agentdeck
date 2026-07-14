@@ -7,6 +7,8 @@ Per account we run up to three cooperating tasks:
   — flips LIVE→IDLE fast when a pid dies, since that is not a filesystem event,
 - a **usage poller** (provider-supplied) — the OAuth limit reader.
 
+One additional host sampler publishes aggregate CPU and memory usage.
+
 v0.1 uses periodic scanning; filesystem watching (watchfiles) is a v0.2
 optimisation that slots in behind the same provider ``watch_paths`` interface.
 """
@@ -17,6 +19,7 @@ import asyncio
 import logging
 
 from .config import AppConfig
+from .host_stats import HostStatsSampler
 from .models import Account
 from .providers import PROVIDERS, SessionProvider
 from .providers.claude_code.usage import shared_cache_dir
@@ -31,6 +34,7 @@ class Collector:
         self.state = state
         self.accounts: list[Account] = config.build_accounts()
         self._tasks: list[asyncio.Task] = []
+        self._host_sampler = HostStatsSampler()
 
     def _provider(self, account: Account) -> SessionProvider:
         return PROVIDERS[account.provider_id]
@@ -77,7 +81,16 @@ class Collector:
             return None
         return asyncio.create_task(poller.run(), name=f"usage:{account.key}")
 
+    async def _host_loop(self) -> None:
+        while True:
+            try:
+                self.state.set_host_stats(self._host_sampler.sample())
+            except Exception as exc:  # noqa: BLE001 -- host stats are optional UI data
+                log.debug("host stats sample failed: %s", exc)
+            await asyncio.sleep(self.config.polling.host_interval_s)
+
     async def start(self) -> None:
+        self._tasks.append(asyncio.create_task(self._host_loop(), name="usage:host"))
         for account in self.accounts:
             try:
                 await self._provider(account).start_account(account, self.state)

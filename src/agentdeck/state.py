@@ -2,7 +2,7 @@
 
 Mutations publish coarse-grained topics to the EventBus:
 - "sessions" — the session list changed (SSE re-renders the whole list)
-- "usage"    — a usage snapshot changed (SSE re-renders the limit bars)
+- "usage"    — account limits or host resource usage changed
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from .events import EventBus
+from .host_stats import HostStats
 from .models import Session, SessionStatus, UsageSnapshot
 
 if TYPE_CHECKING:
@@ -25,6 +26,7 @@ class AppState:
         self.db = db
         self.sessions: dict[str, Session] = {}
         self.usage: dict[str, UsageSnapshot] = {}
+        self.host_stats: HostStats | None = None
         self.transcript_offsets: dict[str, tuple[int, int]] = {}  # v0.2: (byte_offset, seq)
 
     # --- sessions -----------------------------------------------------
@@ -90,6 +92,10 @@ class AppState:
         ]
 
     # --- usage --------------------------------------------------------
+
+    def set_host_stats(self, snapshot: HostStats) -> None:
+        self.host_stats = snapshot
+        self.bus.publish("usage")
 
     def set_usage(self, snapshot: UsageSnapshot) -> None:
         self.usage[snapshot.account_key] = snapshot

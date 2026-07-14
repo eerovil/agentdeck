@@ -29,6 +29,7 @@ class PollingConfig(BaseModel):
     usage_interval_s: float = 300.0
     scan_interval_s: float = 15.0
     liveness_interval_s: float = 10.0
+    host_interval_s: float = 3.0
 
 
 class UsageConfig(BaseModel):

@@ -11,8 +11,8 @@ through a provider abstraction over session sources.
 
 What works today:
 
-- **Usage limit bars** (5-hour / 7-day) per account, live over SSE, with a
-  sparkline of recent 5h usage and stale-greying on backoff.
+- **Usage bars** for per-account 5-hour / 7-day limits plus live host CPU and
+  memory, with stale-greying when account-limit polling backs off.
 - **Live/idle session list** across any number of Claude Code and Codex config
   dirs ("accounts"), with titles, last prompts, and Claude deep-links where
   available. Codex liveness is inferred from recent rollout writes because the
@@ -77,9 +77,8 @@ Config lives at `~/.config/agentdeck/config.toml` (override with the
 for the annotated reference. Highlights:
 
 - `[server]` — bind address and port (default `127.0.0.1:8756`).
-- `[polling]` — usage poll interval (default 300 s, server-side rate limited;
-  agentdeck jitters and backs off on 429), session scan and liveness sweep
-  intervals.
+- `[polling]` — account usage polling (default 300 s, server-side rate limited),
+  session scan/liveness intervals, and host CPU/memory refresh (default 3 s).
 - `[usage] shared_cache_dir` — agentdeck publishes each usage snapshot
   atomically to `$XDG_RUNTIME_DIR/agentdeck/usage-<label>.json` (fallback
   `~/.cache/agentdeck`) so other tools can read limits without their own

@@ -55,6 +55,7 @@ async def dashboard(request: Request) -> HTMLResponse:
         "dashboard.html",
         {
             "rows": _usage_rows(accounts, state),
+            "host": state.host_stats,
             "sessions": state.visible_sessions(),
             "labels": session_labels(accounts),
             "queue_summaries": session_queue_summaries(
@@ -133,6 +134,7 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
             # topbar usage bars, rendered server-side so they paint immediately
             # (the per-session SSE stream then keeps them live over one socket).
             "rows": _usage_rows(accounts, state),
+            "host": state.host_stats,
         },
     )
     resp.headers["Cache-Control"] = "no-cache"

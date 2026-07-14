@@ -15,6 +15,7 @@ port = 8756
 usage_interval_s = 300      # per-account OAuth usage poll (server-side rate limited)
 scan_interval_s = 15        # full session rescan
 liveness_interval_s = 10    # /proc pid liveness sweep
+host_interval_s = 3         # aggregate host CPU + memory refresh
 
 [usage]
 # Where usage snapshots are published for other tools to read.
