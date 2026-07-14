@@ -173,6 +173,10 @@
       (atBottom() && !document.activeElement.closest('.inject-form'));
   });
   document.body.addEventListener('htmx:afterSwap', function (event) {
+    if (event.target.matches('#inject-result')) {
+      if (followAfterSend) requestAnimationFrame(followBottom);
+      return;
+    }
     if (!event.target.matches('.transcript')) return;
     if (followTranscript) requestAnimationFrame(toBottom);
     followTranscript = false;

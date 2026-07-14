@@ -308,7 +308,8 @@ async def test_session_autoscroll_follows_successful_send_but_not_unrelated_swap
         page = await browser.new_page(viewport={"width": 800, "height": 500})
         await page.set_content(
             '<div class="transcript" style="height:2400px"></div>'
-            '<div id="tool-activity"></div><form class="inject-form"></form>'
+            '<div id="tool-activity"></div><div id="inject-result"></div>'
+            '<form class="inject-form"></form>'
         )
         await page.add_script_tag(content=script)
         # Let the page-load scroll's animation frame finish before counting
@@ -340,6 +341,9 @@ async def test_session_autoscroll_follows_successful_send_but_not_unrelated_swap
                 const afterSentTranscript = calls;
                 await new Promise(resolve => setTimeout(resolve, 400));
                 const afterViewportSettle = calls;
+                swap(document.querySelector('#inject-result'));
+                await new Promise(requestAnimationFrame);
+                const afterSendingStatus = calls;
                 window.scrollTo = realScrollTo;
                 return {
                     afterActivity,
@@ -347,6 +351,7 @@ async def test_session_autoscroll_follows_successful_send_but_not_unrelated_swap
                     afterSend,
                     afterSentTranscript,
                     afterViewportSettle,
+                    afterSendingStatus,
                 };
             }"""
         )
@@ -358,6 +363,7 @@ async def test_session_autoscroll_follows_successful_send_but_not_unrelated_swap
         "afterSend": 1,
         "afterSentTranscript": 2,
         "afterViewportSettle": 4,
+        "afterSendingStatus": 5,
     }
 
 
