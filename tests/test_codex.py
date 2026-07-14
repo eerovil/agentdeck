@@ -365,6 +365,33 @@ def test_codex_extracts_edited_file_from_apply_patch(tmp_path):
     assert event.tool_summary == "path: src/agentdeck/app.py"
 
 
+def test_codex_summarizes_wrapped_tools_and_keeps_private_reasoning_heartbeat(tmp_path):
+    path = tmp_path / "rollout.jsonl"
+    lines = [
+        _line(
+            "response_item",
+            {
+                "type": "custom_tool_call",
+                "name": "exec",
+                "input": (
+                    'const r = await tools.exec_command({cmd:"uv run pytest -q",'
+                    'workdir:"/tmp"}); text(r.output)'
+                ),
+            },
+        ),
+        _line("response_item", {"type": "reasoning", "summary": []}),
+    ]
+    path.write_text("".join(json.dumps(line) + "\n" for line in lines))
+
+    tool, heartbeat = transcripts.read_events(path).events
+    assert tool.tool_name == "exec"
+    assert tool.tool_summary == "cmd: uv run pytest -q"
+    assert heartbeat.role == "system"
+    assert heartbeat.tool_name == "reasoning"
+    assert heartbeat.tool_summary == "Thinking"
+    assert heartbeat.text is None
+
+
 def test_codex_filters_only_internal_system_preamble(tmp_path):
     path = tmp_path / "rollout.jsonl"
     messages = [

@@ -168,9 +168,22 @@ def _tool_summary(value: object) -> str | None:
     if not isinstance(value, str) or not value.strip():
         return None
     text = value.strip()
-    patch_path = re.search(r"^\*\*\* (?:Update|Add|Delete) File: (.+)$", text, re.MULTILINE)
+    # Newer Codex builds wrap tool calls in a small JavaScript orchestration
+    # snippet. Pull the useful nested shell command back out for the UI.
+    exec_match = re.search(
+        r'\bexec_command\(\s*\{\s*cmd\s*:\s*"((?:\\.|[^"\\])*)"', text
+    )
+    if exec_match:
+        try:
+            command = json.loads(f'"{exec_match.group(1)}"')
+        except ValueError:
+            command = exec_match.group(1)
+        return f"cmd: {command}"[:_MAX_TOOL_SUMMARY]
+    patch_path = re.search(
+        r"\*\*\* (?:Update|Add|Delete) File: ([^\\\r\n\"]+)", text
+    )
     if patch_path:
-        return f"path: {patch_path.group(1)[: _MAX_TOOL_SUMMARY - 6]}"
+        return f"path: {patch_path.group(1).strip()[: _MAX_TOOL_SUMMARY - 6]}"
     try:
         parsed = json.loads(text)
     except ValueError:
@@ -268,6 +281,16 @@ def _event_from_line(seq: int, data: dict) -> TranscriptEvent | None:
         text = "\n".join(parts).strip()
         if text:
             return TranscriptEvent(seq=seq, role="assistant", text=text, ts=timestamp)
+        # The raw event intentionally contains no chain-of-thought, but its
+        # arrival proves the backend is alive. Keep it as a hidden heartbeat so
+        # live activity says "Thinking" rather than looking frozen.
+        return TranscriptEvent(
+            seq=seq,
+            role="system",
+            tool_name="reasoning",
+            tool_summary="Thinking",
+            ts=timestamp,
+        )
     return None
 
 

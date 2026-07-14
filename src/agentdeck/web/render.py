@@ -95,6 +95,20 @@ def register_filters(templates: Jinja2Templates) -> None:
     templates.env.filters["reltime_ago"] = reltime_ago
     templates.env.filters["ktok"] = ktok
     templates.env.filters["ctx_level"] = ctx_level
+    templates.env.filters["tool_label"] = tool_label
+
+
+def tool_label(value: str | None) -> str:
+    """Short, readable names for provider-native tool identifiers."""
+    name = (value or "tool").rsplit("__", 1)[-1].replace("_", " ").strip()
+    return {
+        "exec": "Shell",
+        "exec command": "Shell",
+        "apply patch": "Edit files",
+        "wait": "Wait",
+        "write stdin": "Command input",
+        "view image": "View image",
+    }.get(name.casefold(), name.title())
 
 
 def _usage_rows(accounts: list[Account], state: AppState) -> list[dict]:
@@ -216,5 +230,9 @@ def render_session_status(templates: Jinja2Templates, session) -> str:
     return templates.get_template("partials/session_status.html").render(s=session)
 
 
-def render_tool_activity(templates: Jinja2Templates, label: str | None) -> str:
-    return templates.get_template("partials/tool_activity.html").render(label=label)
+def render_tool_activity(
+    templates: Jinja2Templates, label: str | None, elapsed_s: float = 0.0
+) -> str:
+    return templates.get_template("partials/tool_activity.html").render(
+        label=label, elapsed_s=max(0, int(elapsed_s))
+    )

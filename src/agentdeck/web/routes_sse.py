@@ -191,7 +191,7 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
                 yield format_sse("status", render_session_status(templates, snap))
             if label != last_label:
                 last_label = label
-                yield format_sse("tools", render_tool_activity(templates, label))
+                yield format_sse("tools", render_tool_activity(templates, label, age))
             sig = _usage_sig(accounts, state)
             # push on a new snapshot, or on the fixed cadence so "updated" keeps ticking
             if sig != last_usage_sig or (loop.time() - last_usage_push) >= USAGE_REFRESH_S:

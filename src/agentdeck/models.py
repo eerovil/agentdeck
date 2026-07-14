@@ -193,9 +193,15 @@ def detailed_activity_label(label: str | None, last_ev) -> str | None:
     if label != "Using tools" or last_ev is None or not last_ev.tool_name:
         return label
     name = last_ev.tool_name.rsplit("__", 1)[-1].replace("_", " ").strip()
+    folded_name = name.casefold()
+    if folded_name == "reasoning":
+        return "Thinking"
+    if folded_name in ("wait", "write stdin"):
+        return "Waiting for command output"
     summary = (last_ev.tool_summary or "").strip()
     if not summary:
-        return f"Using {name}" if name else label
+        display_name = {"exec": "shell", "exec command": "shell"}.get(folded_name, name)
+        return f"Using {display_name}" if display_name else label
 
     key, separator, value = summary.partition(": ")
     if separator:

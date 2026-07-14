@@ -1,10 +1,16 @@
-{# one transcript event. `e` = TranscriptEvent.
-   Past tool noise (tool results + tool-call lines) is dropped entirely; a live
-   "Using tools…" marker is shown separately (#tool-activity) only while the
-   session is actively working right now. An AskUserQuestion line is a tool_use
-   with no text, but it carries the prompt in `e.question` — keep it so the
-   choice the agent is waiting on is visible in the transcript. #}
-{%- if e.role == 'tool' or (e.tool_name and not e.text and not e.question) or (not e.text and not e.question and not e.tool_name) -%}
+{# One normalized transcript event. Tool calls stay as compact history rows;
+   large tool outputs remain hidden. Empty Codex reasoning events are private
+   liveness heartbeats and update the activity marker without rendering here. #}
+{%- if e.tool_name == 'reasoning' -%}
+{%- elif e.tool_name and not e.question -%}
+<div class="ev tool tool-call{% if e.subagent %} sub{% endif %}">
+  <div class="tool-call-head">
+    <span class="ev-role">tool</span>
+    <span class="tool-name">{{ e.tool_name | tool_label }}</span>
+  </div>
+  {% if e.tool_summary %}<div class="tool-call-summary" title="{{ e.tool_summary }}">{{ e.tool_summary }}</div>{% endif %}
+</div>
+{%- elif e.role == 'tool' or (not e.text and not e.question and not e.tool_name) -%}
 {%- else -%}
 <div class="ev {{ e.role }}{% if e.subagent %} sub{% endif %}">
   <div class="ev-head">

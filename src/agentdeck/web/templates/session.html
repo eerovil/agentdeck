@@ -58,7 +58,7 @@
     {% for item in pending_messages %}{% include "partials/pending_message.html" %}{% endfor %}
   </div>
 
-  <div id="tool-activity" sse-swap="tools">{% set label = activity_label %}{% include "partials/tool_activity.html" %}</div>
+  <div id="tool-activity" sse-swap="tools">{% set label = activity_label %}{% set elapsed_s = activity_elapsed %}{% include "partials/tool_activity.html" %}</div>
 </div>
 
 {% if owned_session %}
@@ -104,6 +104,22 @@
   // follow *before* HTMX changes the page height. Status/activity/usage swaps
   // never move the viewport; send state is an overlay inside the composer.
   var NEAR = 80;
+  function formatElapsed(seconds) {
+    if (seconds < 60) return seconds + 's';
+    var minutes = Math.floor(seconds / 60);
+    return minutes + 'm ' + (seconds % 60) + 's';
+  }
+  function updateActivityElapsed() {
+    var marker = document.querySelector('[data-activity-elapsed]');
+    if (!marker) return;
+    if (!marker._agentdeckMountedAt) marker._agentdeckMountedAt = Date.now();
+    var base = Number(marker.dataset.activityElapsed) || 0;
+    var elapsed = base + Math.floor((Date.now() - marker._agentdeckMountedAt) / 1000);
+    var output = marker.querySelector('.tool-wait-elapsed');
+    if (output) output.textContent = formatElapsed(elapsed);
+  }
+  updateActivityElapsed();
+  window.setInterval(updateActivityElapsed, 1000);
   function scrollRoot() {
     var detail = document.querySelector('.session-detail');
     if (detail && getComputedStyle(detail).overflowY === 'auto') return detail;

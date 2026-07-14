@@ -123,6 +123,7 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
             ),
             # the initial activity marker; the SSE stream refines it within ~1.5s
             "activity_label": label,
+            "activity_elapsed": age,
             # which account (main/alt) this session belongs to
             "account_label": account_label,
             "can_inject": (

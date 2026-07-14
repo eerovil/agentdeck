@@ -550,7 +550,10 @@ async def test_working_marker_is_an_overlay_that_does_not_change_page_height(tmp
                 const activity = document.querySelector('#tool-activity');
                 activity.replaceChildren();
                 const before = stage.getBoundingClientRect().height;
-                activity.innerHTML = '<div class="ev tool-wait">Working</div>';
+                activity.innerHTML = '<div class="ev tool-wait" data-activity-elapsed="3">' +
+                  '<span class="tool-wait-label">Working</span>' +
+                  '<span class="tool-wait-elapsed"></span></div>';
+                activity.firstElementChild._agentdeckMountedAt = Date.now() - 5000;
                 const after = stage.getBoundingClientRect().height;
                 return {
                     before,
@@ -563,12 +566,15 @@ async def test_working_marker_is_an_overlay_that_does_not_change_page_height(tmp
                 };
             }"""
         )
+        await page.wait_for_timeout(1100)
+        elapsed = await page.locator('.tool-wait-elapsed').text_content()
         await browser.close()
 
     assert result["before"] == result["after"]
     assert result["position"] == "absolute"
     assert result["bottomGutter"] == "40px"
     assert result["activityTop"] >= result["transcriptBottom"]
+    assert int(elapsed.removesuffix("s")) >= 8
 
 
 async def test_mobile_session_composer_is_compact():
@@ -648,7 +654,7 @@ async def test_card_shows_agent_response(tmp_path):
     assert "the answer is 42" in r.text  # agent's reply is now in the list view
 
 
-def test_tool_events_hidden_and_live_marker(tmp_path):
+def test_tool_calls_visible_outputs_hidden_and_live_marker(tmp_path):
     from agentdeck.models import TranscriptEvent
     from agentdeck.web.render import render_tool_activity, render_transcript_events
 
@@ -656,17 +662,29 @@ def test_tool_events_hidden_and_live_marker(tmp_path):
     templates = app.state.templates
     events = [
         TranscriptEvent(seq=1, role="tool", text="huge noisy tool result"),
-        TranscriptEvent(seq=2, role="assistant", tool_name="Bash", text=None),
+        TranscriptEvent(
+            seq=2,
+            role="assistant",
+            tool_name="Bash",
+            tool_summary="cmd: uv run pytest -q",
+            text=None,
+        ),
         TranscriptEvent(seq=3, role="assistant", text="here is my answer"),
         TranscriptEvent(seq=4, role="user", text="queued follow-up", queued=True),
     ]
     html = render_transcript_events(templates, events)
     assert "huge noisy tool result" not in html  # past tool result dropped
+    assert "tool-call" in html
+    assert "Bash" in html
+    assert "cmd: uv run pytest -q" in html
     assert "here is my answer" in html  # real assistant text kept
     assert "queued follow-up" in html  # queued turns look like ordinary user chat
     assert "user · queued" not in html
     # the live marker appears only while actively working
-    assert "Using tools" in render_tool_activity(templates, "Using tools")
+    activity = render_tool_activity(templates, "Using tools", 12.9)
+    assert "Using tools" in activity
+    assert 'data-activity-elapsed="12"' in activity
+    assert ">12s</span>" in activity
     assert "tool-wait" not in render_tool_activity(templates, None)
 
 
@@ -738,6 +756,10 @@ def test_activity_label_fallback():
         "Running: uv run pytest tests/test_web.py"
     )
     assert detailed_activity_label("Using tools", path) == "Accessing: /tmp/screenshot.png"
+    reasoning = TranscriptEvent(seq=4, role="system", tool_name="reasoning")
+    waiting = TranscriptEvent(seq=5, role="assistant", tool_name="wait")
+    assert detailed_activity_label("Using tools", reasoning) == "Thinking"
+    assert detailed_activity_label("Using tools", waiting) == "Waiting for command output"
     assert detailed_activity_label("Working", command) == "Working"
 
 
