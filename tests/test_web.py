@@ -352,6 +352,52 @@ async def test_session_autoscroll_follows_successful_send_but_not_unrelated_swap
     }
 
 
+async def test_mobile_session_composer_is_compact():
+    css = (
+        Path(__file__).parents[1] / "src/agentdeck/web/static/app.css"
+    ).read_text()
+    html = f"""
+      <style>{css}</style>
+      <form class="inject-form">
+        <label for="inject-message">Message</label>
+        <textarea id="inject-message" rows="3"></textarea>
+        <label class="image-picker">
+          ＋ Attach image <span class="paste-hint">or paste screenshot</span>
+        </label>
+        <input class="image-input" type="file">
+        <div class="composer-actions"><span>Enter to send</span><button>Send</button></div>
+      </form>
+    """
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        page = await browser.new_page(viewport={"width": 412, "height": 800})
+        await page.set_content(html)
+        metrics = await page.evaluate(
+            """() => {
+                const form = document.querySelector('.inject-form');
+                const textarea = form.querySelector('textarea');
+                const picker = form.querySelector('.image-picker');
+                const actions = form.querySelector('.composer-actions');
+                return {
+                    formHeight: form.getBoundingClientRect().height,
+                    textareaHeight: textarea.getBoundingClientRect().height,
+                    controlsAligned: Math.abs(
+                        picker.getBoundingClientRect().top - actions.getBoundingClientRect().top
+                    ) < 2,
+                    hintHidden: getComputedStyle(actions.querySelector('span')).display,
+                    pasteHintHidden: getComputedStyle(form.querySelector('.paste-hint')).display,
+                };
+            }"""
+        )
+        await browser.close()
+
+    assert metrics["formHeight"] < 145
+    assert metrics["textareaHeight"] == 58
+    assert metrics["controlsAligned"]
+    assert metrics["hintHidden"] == "none"
+    assert metrics["pasteHintHidden"] == "none"
+
+
 async def test_card_shows_agent_response(tmp_path):
     app = _app_with_state(tmp_path)
     app.state.app_state.update_session(

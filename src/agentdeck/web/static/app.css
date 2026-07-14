@@ -388,6 +388,24 @@ details.ev.tool > .ev-text { margin-top: 6px; max-height: 420px; overflow: auto;
 .toggle-btn.on { color: var(--live); border-color: color-mix(in srgb, var(--live) 45%, transparent);
   background: color-mix(in srgb, var(--live) 12%, transparent); }
 
+/* Keep the on-screen keyboard from leaving only the composer visible. On
+   mobile the prompt starts at two lines, and attachment + send share one row. */
+@media (max-width: 999px) {
+  .inject-form { display: grid; grid-template-columns: minmax(0, 1fr) auto;
+    gap: 6px 8px; margin-top: 8px; padding: 8px;
+    padding-bottom: calc(8px + env(safe-area-inset-bottom, 0)); }
+  .inject-form > label[for="inject-message"] { grid-column: 1 / -1; margin: 0; font-size: 12px; }
+  .inject-form textarea { grid-column: 1 / -1; width: 100%; height: 58px; min-height: 58px;
+    padding: 7px 8px; resize: vertical; }
+  .inject-form .image-picker { grid-column: 1; grid-row: 3; align-self: center;
+    max-width: 100%; margin: 0; padding: 4px 7px; overflow: hidden; white-space: nowrap; }
+  .inject-form .paste-hint { display: none; }
+  .inject-form .composer-actions { grid-column: 2; grid-row: 3; margin: 0; }
+  .inject-form .composer-actions span { display: none; }
+  .inject-form .paste-previews { grid-column: 1 / -1; grid-row: 4; margin-top: 1px; }
+  .inject-form button { padding: 7px 14px; }
+}
+
 /* A detail page becomes a two-pane workspace when both columns have enough
    room. Each pane scrolls independently, keeping the session list available
    while reading a long transcript. Mobile retains the existing single page. */
