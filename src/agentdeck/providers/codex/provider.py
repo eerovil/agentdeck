@@ -173,10 +173,16 @@ class CodexProvider(SessionProvider):
     def _transcript_path(self, account: Account, session: Session) -> Path | None:
         path = self._paths.get((account.key, session.session_id))
         if path is not None and path.is_file():
-            return path
+            meta = self._cached_meta(path)
+            if not (meta.is_approval_review or meta.is_subagent):
+                return path
         for candidate in _list_rollouts(account.root):
             meta = self._cached_meta(candidate)
-            if meta.session_id == session.session_id:
+            if (
+                meta.session_id == session.session_id
+                and not meta.is_approval_review
+                and not meta.is_subagent
+            ):
                 self._paths[(account.key, session.session_id)] = candidate
                 return candidate
         return None
@@ -222,10 +228,10 @@ class CodexProvider(SessionProvider):
         seen: set[str] = set()
         for path in _list_rollouts(account.root):
             meta = self._cached_meta(path)
-            # Managed approval reviews are internal helper rollouts. They can
-            # reuse the parent chat's session_id, so reject them before ID
-            # deduplication or they may replace the real transcript entirely.
-            if meta.is_approval_review:
+            # Internal helpers reuse the parent chat's session_id. Reject both
+            # legacy approval-review and structured sub-agent rollouts before
+            # ID deduplication or the newest helper can replace the real chat.
+            if meta.is_approval_review or meta.is_subagent:
                 continue
             session_id = meta.session_id
             if not session_id or session_id in seen:

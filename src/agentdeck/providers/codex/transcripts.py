@@ -52,6 +52,10 @@ class TranscriptMeta:
     tokens: TokenTotals | None = None
     context_tokens: int | None = None
     is_approval_review: bool = False
+    # Codex helper rollouts (spawned agents and guardian/auto-review runs) reuse
+    # the parent session_id. They are separate files and must never represent
+    # the parent conversation in AgentDeck.
+    is_subagent: bool = False
 
 
 def _parse_ts(value: object) -> datetime | None:
@@ -363,7 +367,7 @@ def transcript_meta(
     tail_objects = _objects(last, skip_first_partial=bool(last), require_final_newline=True)
 
     session_id = cwd = kind = model = None
-    is_approval_review = False
+    is_approval_review = is_subagent = False
     started_at = None
     title = last_prompt = last_text = last_role = None
     last_agent_message = None
@@ -371,7 +375,7 @@ def transcript_meta(
     context_tokens = None
 
     def scan(objects: list[dict], *, find_title: bool) -> None:
-        nonlocal session_id, cwd, kind, model, started_at, is_approval_review
+        nonlocal session_id, cwd, kind, model, started_at, is_approval_review, is_subagent
         nonlocal title, last_prompt, last_text, last_role, tokens, context_tokens
         nonlocal last_agent_message
         for obj in objects:
@@ -386,6 +390,10 @@ def transcript_meta(
                 cwd = value if isinstance(value, str) else cwd
                 value = payload.get("source")
                 kind = value if isinstance(value, str) else kind
+                is_subagent = is_subagent or (
+                    (isinstance(value, dict) and "subagent" in value)
+                    or payload.get("thread_source") == "subagent"
+                )
                 instructions = payload.get("base_instructions")
                 if isinstance(instructions, dict):
                     text = instructions.get("text")
@@ -448,6 +456,7 @@ def transcript_meta(
         tokens=tokens,
         context_tokens=context_tokens,
         is_approval_review=is_approval_review,
+        is_subagent=is_subagent,
     )
 
 

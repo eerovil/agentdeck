@@ -362,10 +362,13 @@ class CodexAppServer:
         except (OSError, ValueError, json.JSONDecodeError):
             return False
         payload = first.get("payload") if isinstance(first, dict) else None
+        source = payload.get("source") if isinstance(payload, dict) else None
         return (
             first.get("type") == "session_meta"
             and isinstance(payload, dict)
             and payload.get("originator") == "agentdeck"
+            and payload.get("thread_source") != "subagent"
+            and not (isinstance(source, dict) and "subagent" in source)
         )
 
     def _notification(self, method: str, params: dict[str, Any]) -> None:

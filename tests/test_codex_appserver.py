@@ -185,6 +185,32 @@ async def test_recover_owned_rejects_transcript_outside_account(tmp_path):
     assert not server.owns("outside")
 
 
+async def test_recover_owned_rejects_subagent_rollout(tmp_path):
+    helper = tmp_path / "sessions" / "2026" / "07" / "14" / "helper.jsonl"
+    helper.parent.mkdir(parents=True)
+    helper.write_text(
+        json.dumps(
+            {
+                "type": "session_meta",
+                "payload": {
+                    "originator": "agentdeck",
+                    "thread_source": "subagent",
+                    "source": {"subagent": {"other": "guardian"}},
+                },
+            }
+        )
+        + "\n"
+    )
+    server = _server(tmp_path)
+    server._request = AsyncMock(
+        return_value={"data": [{"id": "helper", "path": str(helper)}]}
+    )
+
+    await server._recover_owned()
+
+    assert not server.owns("helper")
+
+
 async def test_command_approval_and_permission_response(tmp_path):
     server = _server(tmp_path)
     server._owned.add("thread-1")

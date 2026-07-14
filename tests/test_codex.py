@@ -181,6 +181,41 @@ async def test_approval_review_rollout_cannot_replace_parent_session(tmp_path):
     assert session.title == "Build the parser safely"
 
 
+async def test_subagent_rollout_cannot_replace_parent_session(tmp_path):
+    parent_sid = "019f6073-17bd-7251-9db1-383bfe24c143"
+    helper_sid = "019f6089-5b05-76d2-b480-f5cb5b793bfb"
+    parent = _rollout(tmp_path, parent_sid)
+    helper = _rollout(tmp_path, helper_sid)
+
+    lines = [json.loads(line) for line in helper.read_text().splitlines()]
+    # This is the real structured shape emitted by spawned agents and the
+    # guardian/auto-review helper: a distinct file id but the parent's session.
+    lines[0]["payload"].update(
+        {
+            "session_id": parent_sid,
+            "source": {"subagent": {"other": "guardian"}},
+            "thread_source": "subagent",
+            "originator": "agentdeck",
+        }
+    )
+    lines[3] = _message("user", "Internal guardian assessment prompt")
+    helper.write_text("".join(json.dumps(item) + "\n" for item in lines))
+
+    meta = transcripts.transcript_meta(helper)
+    assert meta.session_id == parent_sid
+    assert meta.is_subagent is True
+
+    provider = CodexProvider()
+    (session,) = await provider.scan_sessions(_account(tmp_path))
+    assert session.session_id == parent_sid
+    assert session.title == "Build the parser safely"
+
+    # The fallback path lookup must apply the same filter; otherwise losing the
+    # in-memory path cache can temporarily bring the helper transcript back.
+    provider._paths.clear()
+    assert provider._transcript_path(_account(tmp_path), session) == parent
+
+
 async def test_completed_exec_session_is_injectable(tmp_path):
     sid = "019f5b5b-6281-7a00-a197-d020a1243d2d"
     directory = tmp_path / "sessions" / "2026" / "07" / "13"
