@@ -43,7 +43,16 @@ def main() -> None:
         config.server.port,
         len(config.accounts),
     )
-    uvicorn.run(app, host=config.server.bind, port=config.server.port, log_level="info")
+    # Session SSE streams are intentionally long-lived and browsers reconnect
+    # them automatically. Do not let those connections hold a frontend deploy
+    # open until systemd's stop timeout; Codex work lives in the runtime service.
+    uvicorn.run(
+        app,
+        host=config.server.bind,
+        port=config.server.port,
+        log_level="info",
+        timeout_graceful_shutdown=2,
+    )
 
 
 def _codex_runtime(argv: list[str]) -> None:
