@@ -224,10 +224,22 @@ class CodexProvider(SessionProvider):
 
     async def scan_sessions(self, account: Account) -> list[Session]:
         sessions = []
+        active_subagents: dict[str, int] = {}
         current_paths: dict[tuple[str, str], Path] = {}
         seen: set[str] = set()
         for path in _list_rollouts(account.root):
             meta = self._cached_meta(path)
+            if meta.is_spawned_subagent:
+                last_activity = _mtime(path)
+                age = (
+                    (datetime.now(UTC) - last_activity).total_seconds()
+                    if last_activity
+                    else 1e9
+                )
+                if meta.task_active and age < LIVE_WINDOW_S and meta.session_id:
+                    active_subagents[meta.session_id] = (
+                        active_subagents.get(meta.session_id, 0) + 1
+                    )
             # Internal helpers reuse the parent chat's session_id. Reject both
             # legacy approval-review and structured sub-agent rollouts before
             # ID deduplication or the newest helper can replace the real chat.
@@ -286,6 +298,8 @@ class CodexProvider(SessionProvider):
                     capabilities=self._capabilities(account, session_id, path, meta, status),
                 )
             )
+        for session in sessions:
+            session.subagent_count = active_subagents.get(session.session_id, 0)
         self._paths = {key: value for key, value in self._paths.items() if key[0] != account.key}
         self._paths.update(current_paths)
         return sessions

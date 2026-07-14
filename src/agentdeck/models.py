@@ -66,6 +66,7 @@ class Session:
     last_role: str | None = None  # "user" | "agent": who sent the most recent message
     question: str | None = None  # trailing question from the agent's latest reply (awaiting you)
     activity: str | None = None  # what it's doing now: "Using tools" / "Working"
+    subagent_count: int = 0  # currently-running Codex spawned agents owned by this chat
     model: str | None = None  # last assistant line's model (v0.2)
     kind: str | None = None  # "interactive" | "sdk-cli" | RC worker …
     worker_type: str | None = None  # "kanban" | "cloud" | "you" — drives list colour

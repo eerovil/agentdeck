@@ -140,6 +140,7 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
     last_activity_t = loop.time() - init_age
     last_status = None
     last_busy = None
+    last_subagent_count = None
     last_label = None
     # The topbar usage bars and desktop session list ride this same stream (see
     # session.html), so the page still holds one socket. Each fragment is
@@ -177,8 +178,13 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
             label = None if current.question else activity_label(live, streaming, last_ev, age)
             label = detailed_activity_label(label, last_ev)
             busy = label is not None
-            if current.status != last_status or busy != last_busy:
+            if (
+                current.status != last_status
+                or busy != last_busy
+                or current.subagent_count != last_subagent_count
+            ):
                 last_status, last_busy = current.status, busy
+                last_subagent_count = current.subagent_count
                 snap = replace(current, thinking=busy)
                 yield format_sse("status", render_session_status(templates, snap))
             if label != last_label:

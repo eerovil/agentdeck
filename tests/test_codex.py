@@ -204,6 +204,7 @@ async def test_subagent_rollout_cannot_replace_parent_session(tmp_path):
     meta = transcripts.transcript_meta(helper)
     assert meta.session_id == parent_sid
     assert meta.is_subagent is True
+    assert meta.is_spawned_subagent is False
 
     provider = CodexProvider()
     (session,) = await provider.scan_sessions(_account(tmp_path))
@@ -214,6 +215,50 @@ async def test_subagent_rollout_cannot_replace_parent_session(tmp_path):
     # in-memory path cache can temporarily bring the helper transcript back.
     provider._paths.clear()
     assert provider._transcript_path(_account(tmp_path), session) == parent
+
+
+async def test_running_spawned_agents_are_counted_on_parent_session(tmp_path):
+    parent_sid = "019f6073-17bd-7251-9db1-383bfe24c143"
+    _rollout(tmp_path, parent_sid)
+
+    def helper(sid: str, source: dict, boundaries: list[str]) -> Path:
+        path = _rollout(tmp_path, sid)
+        lines = [json.loads(line) for line in path.read_text().splitlines()]
+        lines[0]["payload"].update(
+            {
+                "session_id": parent_sid,
+                "source": {"subagent": source},
+                "thread_source": "subagent",
+            }
+        )
+        lines.extend(_line("event_msg", {"type": boundary}) for boundary in boundaries)
+        path.write_text("".join(json.dumps(item) + "\n" for item in lines))
+        return path
+
+    active = helper(
+        "019f6085-5dbc-7f41-80b1-d32de9d80c14",
+        {"thread_spawn": {"parent_thread_id": parent_sid, "depth": 1}},
+        ["task_started"],
+    )
+    completed = helper(
+        "019f6085-6cb1-7920-891f-9403d202a6f0",
+        {"thread_spawn": {"parent_thread_id": parent_sid, "depth": 1}},
+        ["task_started", "task_complete"],
+    )
+    helper(
+        "019f6089-5b05-76d2-b480-f5cb5b793bfb",
+        {"other": "guardian"},
+        ["task_started"],
+    )
+
+    assert transcripts.transcript_meta(active).is_spawned_subagent is True
+    assert transcripts.transcript_meta(active).task_active is True
+    assert transcripts.transcript_meta(completed).task_active is False
+
+    provider = CodexProvider()
+    (session,) = await provider.scan_sessions(_account(tmp_path))
+    assert session.session_id == parent_sid
+    assert session.subagent_count == 1
 
 
 async def test_completed_exec_session_is_injectable(tmp_path):

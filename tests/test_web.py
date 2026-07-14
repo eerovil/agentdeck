@@ -568,6 +568,20 @@ async def test_thinking_badge_renders(tmp_path):
     assert 'data-working="1"' in r.text
 
 
+async def test_subagent_count_renders_on_card_and_detail_header(tmp_path):
+    app = _app_with_state(tmp_path)
+    session = app.state.app_state.sessions["claude_code:test:sid1"]
+    session.subagent_count = 2
+
+    async with _client(app) as client:
+        dashboard = await client.get("/")
+        detail = await client.get("/sessions/claude_code:test:sid1")
+
+    assert "2 sub-agents" in dashboard.text
+    assert 'title="This chat is running spawned agents"' in dashboard.text
+    assert "2 sub-agents" in detail.text
+
+
 async def test_dashboard_marks_chats_that_recently_stopped_working(tmp_path):
     app = _app_with_state(tmp_path)
     app.state.app_state.update_session(

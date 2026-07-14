@@ -56,6 +56,8 @@ class TranscriptMeta:
     # the parent session_id. They are separate files and must never represent
     # the parent conversation in AgentDeck.
     is_subagent: bool = False
+    is_spawned_subagent: bool = False
+    task_active: bool = False
 
 
 def _parse_ts(value: object) -> datetime | None:
@@ -367,7 +369,7 @@ def transcript_meta(
     tail_objects = _objects(last, skip_first_partial=bool(last), require_final_newline=True)
 
     session_id = cwd = kind = model = None
-    is_approval_review = is_subagent = False
+    is_approval_review = is_subagent = is_spawned_subagent = task_active = False
     started_at = None
     title = last_prompt = last_text = last_role = None
     last_agent_message = None
@@ -375,7 +377,8 @@ def transcript_meta(
     context_tokens = None
 
     def scan(objects: list[dict], *, find_title: bool) -> None:
-        nonlocal session_id, cwd, kind, model, started_at, is_approval_review, is_subagent
+        nonlocal session_id, cwd, kind, model, started_at, is_approval_review
+        nonlocal is_subagent, is_spawned_subagent, task_active
         nonlocal title, last_prompt, last_text, last_role, tokens, context_tokens
         nonlocal last_agent_message
         for obj in objects:
@@ -383,6 +386,12 @@ def transcript_meta(
             if not isinstance(payload, dict):
                 continue
             outer_type = obj.get("type")
+            if outer_type == "event_msg":
+                boundary = payload.get("type")
+                if boundary == "task_started":
+                    task_active = True
+                elif boundary in ("task_complete", "turn_aborted"):
+                    task_active = False
             if outer_type == "session_meta":
                 sid = payload.get("session_id", payload.get("id"))
                 session_id = sid if isinstance(sid, str) else session_id
@@ -393,6 +402,11 @@ def transcript_meta(
                 is_subagent = is_subagent or (
                     (isinstance(value, dict) and "subagent" in value)
                     or payload.get("thread_source") == "subagent"
+                )
+                subagent = value.get("subagent") if isinstance(value, dict) else None
+                is_spawned_subagent = is_spawned_subagent or (
+                    isinstance(subagent, dict)
+                    and isinstance(subagent.get("thread_spawn"), dict)
                 )
                 instructions = payload.get("base_instructions")
                 if isinstance(instructions, dict):
@@ -457,6 +471,8 @@ def transcript_meta(
         context_tokens=context_tokens,
         is_approval_review=is_approval_review,
         is_subagent=is_subagent,
+        is_spawned_subagent=is_spawned_subagent,
+        task_active=task_active,
     )
 
 

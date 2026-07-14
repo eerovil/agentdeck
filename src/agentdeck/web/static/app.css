@@ -99,6 +99,10 @@ body.usage-open .limit-bars { display: flex; }
   animation: think-dots 1.4s steps(1, end) infinite; }
 .recently-stopped-badge { color: var(--warn); font-size: 11px; font-weight: 600;
   letter-spacing: .02em; white-space: nowrap; }
+.subagent-badge { flex: none; color: var(--wt-cloud); font-size: 10px; font-weight: 700;
+  line-height: 1; white-space: nowrap; padding: 3px 7px; border: 1px solid currentColor;
+  border-radius: 999px; text-transform: uppercase; letter-spacing: .03em;
+  background: color-mix(in srgb, var(--wt-cloud) 10%, transparent); }
 @keyframes think-dots { 0% { content: ''; } 25% { content: '.'; } 50% { content: '..'; } 75%, 100% { content: '...'; } }
 .status-tag.thinking { color: var(--live); }
 @media (prefers-reduced-motion: reduce) {
