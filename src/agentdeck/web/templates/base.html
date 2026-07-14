@@ -369,6 +369,8 @@
     if (!e.detail || !e.detail.successful || !form || !form.matches('form[data-clear-on-send]')) return;
     var input = form.querySelector('textarea[name="message"]');
     if (input) { input.value = ''; input.focus(); }
+    var images = form.querySelector('input[type="file"][name="images"]');
+    if (images) images.value = '';
   });
   </script>
 </body>

@@ -345,10 +345,11 @@ class CodexProvider(SessionProvider):
         message: str,
         *,
         timeout_s: float,
+        images: list[Path] | None = None,
     ) -> InjectResult:
         client = self._clients.get(account.key)
         if client is not None and client.owns(session.session_id):
-            return await client.queue_turn(session.session_id, message)
+            return await client.queue_turn(session.session_id, message, images=images)
         path = self._transcript_path(account, session)
         if path is None:
             return InjectResult(False, "session rollout no longer exists")
@@ -358,6 +359,7 @@ class CodexProvider(SessionProvider):
             path,
             message,
             timeout_s=timeout_s,
+            images=images,
         )
 
     async def start_session(
@@ -367,6 +369,7 @@ class CodexProvider(SessionProvider):
         message: str,
         *,
         timeout_s: float,
+        images: list[Path] | None = None,
         sandbox: str | None = None,
         model: str | None = None,
         approval_policy: str | None = None,
@@ -376,6 +379,7 @@ class CodexProvider(SessionProvider):
             result = await client.start_thread(
                 cwd,
                 message,
+                images=images,
                 sandbox=sandbox,
                 model=model,
                 approval_policy=approval_policy,
@@ -411,6 +415,7 @@ class CodexProvider(SessionProvider):
             cwd,
             message,
             timeout_s=timeout_s,
+            images=images,
         )
 
     async def wait_for_session(
@@ -457,11 +462,18 @@ class CodexProvider(SessionProvider):
         client = self._clients.get(account.key)
         return bool(client and client.owns(session.session_id))
 
-    async def steer(self, account: Account, session: Session, message: str) -> InjectResult:
+    async def steer(
+        self,
+        account: Account,
+        session: Session,
+        message: str,
+        *,
+        images: list[Path] | None = None,
+    ) -> InjectResult:
         client = self._clients.get(account.key)
         if client is None:
             return InjectResult(False, "Codex app-server is unavailable")
-        return await client.steer(session.session_id, message)
+        return await client.steer(session.session_id, message, images=images)
 
     async def interrupt(self, account: Account, session: Session) -> InjectResult:
         client = self._clients.get(account.key)

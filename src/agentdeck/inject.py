@@ -11,6 +11,7 @@ from pathlib import Path
 from .config import InjectConfig
 from .models import Account, Capability, InjectResult, Session
 from .providers.base import SessionProvider
+from .web.uploads import cleanup_image_files
 
 log = logging.getLogger(__name__)
 
@@ -27,6 +28,7 @@ class InjectionStatus:
 class QueuedMessage:
     id: int
     text: str
+    images: tuple[Path, ...] = ()
     state: str = "queued"
     reason: str | None = None
 
@@ -53,6 +55,7 @@ class InjectionService:
         self._new_status: dict[str, InjectionStatus] = {}
         self._delegation_tasks: dict[str, asyncio.Task] = {}
         self._delegations: dict[str, DelegationStatus] = {}
+        self._cleanup_tasks: set[asyncio.Task] = set()
         self._next_id = 1
 
     def status(self, session_key: str) -> InjectionStatus | None:
@@ -105,6 +108,7 @@ class InjectionService:
         session: Session,
         provider: SessionProvider,
         message: str,
+        images: list[Path] | None = None,
     ) -> InjectResult:
         if not self.config.enabled:
             return InjectResult(False, "message injection is disabled")
@@ -115,7 +119,7 @@ class InjectionService:
             return InjectResult(False, "message is empty")
         if len(message) > self.config.max_message_chars:
             return InjectResult(False, "message is too long")
-        item = QueuedMessage(self._next_id, message)
+        item = QueuedMessage(self._next_id, message, tuple(images or []))
         self._next_id += 1
         self._items.setdefault(session.key, []).append(item)
         self._snapshot(session.key, "queued")
@@ -142,12 +146,17 @@ class InjectionService:
                     break
                 item.state = "running"
                 self._snapshot(session.key)
-                result = await provider.inject(
-                    account,
-                    session,
-                    item.text,
-                    timeout_s=self.config.timeout_s,
-                )
+                try:
+                    kwargs = {"images": list(item.images)} if item.images else {}
+                    result = await provider.inject(
+                        account,
+                        session,
+                        item.text,
+                        timeout_s=self.config.timeout_s,
+                        **kwargs,
+                    )
+                finally:
+                    cleanup_image_files(item.images)
                 item.state = "complete" if result.accepted else "failed"
                 item.reason = result.reason
                 if not result.accepted:
@@ -155,6 +164,7 @@ class InjectionService:
                         if pending.state == "queued":
                             pending.state = "failed"
                             pending.reason = "not sent because the previous turn failed"
+                            cleanup_image_files(pending.images)
                     self._snapshot(session.key)
                     break
                 self._snapshot(session.key)
@@ -163,6 +173,7 @@ class InjectionService:
                 if item.state in ("queued", "running"):
                     item.state = "failed"
                     item.reason = "injection cancelled"
+                    cleanup_image_files(item.images)
             self._snapshot(session.key, "failed")
             raise
         except Exception as exc:  # noqa: BLE001 -- background actions must report failure
@@ -171,6 +182,7 @@ class InjectionService:
                 if item.state in ("queued", "running"):
                     item.state = "failed"
                     item.reason = str(exc)
+                    cleanup_image_files(item.images)
             self._snapshot(session.key, "failed")
         finally:
             self._tasks.pop(session.key, None)
@@ -181,6 +193,7 @@ class InjectionService:
         provider: SessionProvider,
         cwd: Path,
         message: str,
+        images: list[Path] | None = None,
     ) -> InjectResult:
         if not self.config.enabled:
             return InjectResult(False, "message injection is disabled")
@@ -198,7 +211,7 @@ class InjectionService:
             return InjectResult(False, "a new session is already starting for this account")
         self._new_status[account.key] = InjectionStatus("running")
         self._new_tasks[account.key] = asyncio.create_task(
-            self._run_new(account, provider, cwd, message),
+            self._run_new(account, provider, cwd, message, images or []),
             name=f"new-session:{account.key}",
         )
         return InjectResult(True)
@@ -209,14 +222,21 @@ class InjectionService:
         provider: SessionProvider,
         cwd: Path,
         message: str,
+        images: list[Path],
     ) -> None:
+        cleanup_now = True
         try:
+            kwargs = {"images": images} if images else {}
             result = await provider.start_session(
                 account,
                 cwd,
                 message,
                 timeout_s=self.config.timeout_s,
+                **kwargs,
             )
+            if images and result.accepted and result.session_id:
+                self.defer_cleanup(account, provider, result.session_id, images)
+                cleanup_now = False
             self._new_status[account.key] = InjectionStatus(
                 "complete" if result.accepted else "failed",
                 result.reason,
@@ -231,7 +251,44 @@ class InjectionService:
             log.exception("new session failed for %s", account.key)
             self._new_status[account.key] = InjectionStatus("failed", str(exc))
         finally:
+            if cleanup_now:
+                cleanup_image_files(images)
             self._new_tasks.pop(account.key, None)
+
+    def defer_cleanup(
+        self,
+        account: Account,
+        provider: SessionProvider,
+        session_id: str,
+        images: list[Path],
+    ) -> None:
+        """Remove steer uploads after the active turn finishes."""
+        task = asyncio.create_task(
+            self._wait_and_cleanup(account, provider, session_id, images),
+            name=f"image-cleanup:{session_id}",
+        )
+        self._cleanup_tasks.add(task)
+        task.add_done_callback(self._cleanup_tasks.discard)
+
+    async def _wait_and_cleanup(
+        self,
+        account: Account,
+        provider: SessionProvider,
+        session_id: str,
+        images: list[Path],
+    ) -> None:
+        try:
+            await provider.wait_for_session(
+                account,
+                session_id,
+                timeout_s=self.config.timeout_s,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 -- cleanup must outlive turn failures
+            log.debug("image cleanup wait failed for %s: %s", session_id, exc)
+        finally:
+            cleanup_image_files(images)
 
     async def start_delegation(
         self,
@@ -386,6 +443,7 @@ class InjectionService:
             *self._tasks.values(),
             *self._new_tasks.values(),
             *self._delegation_tasks.values(),
+            *self._cleanup_tasks,
         ]
         for task in tasks:
             task.cancel()
@@ -394,3 +452,4 @@ class InjectionService:
         self._tasks.clear()
         self._new_tasks.clear()
         self._delegation_tasks.clear()
+        self._cleanup_tasks.clear()

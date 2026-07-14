@@ -64,10 +64,13 @@
 {% if can_inject %}
 <form class="inject-form" hx-post="/sessions/{{ session.key }}/inject"
       hx-target="#inject-result" hx-swap="outerHTML" hx-disabled-elt="find button"
-      data-clear-on-send>
+      hx-encoding="multipart/form-data" data-clear-on-send>
   <label for="inject-message">Message queue</label>
   <textarea id="inject-message" class="send-on-enter" name="message" rows="3" maxlength="{{ inject_max_chars }}"
             required placeholder="Send a follow-up…"></textarea>
+  <label class="image-picker" for="inject-images">Images</label>
+  <input id="inject-images" type="file" name="images"
+         accept="image/png,image/jpeg,image/webp,image/gif" multiple>
   <div class="composer-actions">
     <span>Enter queues next · Shift+Enter for newline</span>
     <button type="submit">Queue next</button>

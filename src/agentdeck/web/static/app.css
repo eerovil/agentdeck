@@ -258,6 +258,9 @@ details.ev.tool > .ev-text { margin-top: 6px; max-height: 420px; overflow: auto;
   padding: 9px; border: 1px solid var(--line); border-radius: 8px;
   color: var(--fg); background: var(--bg); font: inherit; }
 .inject-form textarea:focus { outline: none; border-color: var(--remote); }
+.inject-form .image-picker { margin-top: 8px; color: var(--muted); font-size: 12px; }
+.inject-form input[type="file"] { box-sizing: border-box; width: 100%; color: var(--muted);
+  font: inherit; font-size: 12px; }
 .inject-form button, .new-chat button { padding: 8px 16px; border: 0;
   border-radius: 8px; color: white; background: var(--live); font-weight: 600; }
 .inject-form button:disabled, .new-chat button:disabled { opacity: .55; }

@@ -3,7 +3,8 @@
      hx-trigger="load delay:2s" hx-swap="outerHTML">
   {% if can_steer %}
   <button type="button" hx-post="/sessions/{{ session_key }}/steer"
-          hx-include="#inject-message" hx-target="#steer-result" hx-swap="outerHTML">
+          hx-encoding="multipart/form-data" hx-include="#inject-message,#inject-images"
+          hx-target="#steer-result" hx-swap="outerHTML">
     Send now
   </button>
   {% endif %}

@@ -44,6 +44,7 @@ async def inject_session(
     message: str,
     *,
     timeout_s: float,
+    images: list[Path] | None = None,
     process_factory=None,
 ) -> InjectResult:
     """Resume one completed ``codex exec`` session and wait for its turn."""
@@ -57,7 +58,7 @@ async def inject_session(
     env = os.environ.copy()
     env["CODEX_HOME"] = str(account.root)
     try:
-        process = await factory(
+        args = [
             "codex",
             "exec",
             "resume",
@@ -68,9 +69,16 @@ async def inject_session(
             NETWORK_ACCESS_CONFIG_OVERRIDE,
             "--config",
             WRITABLE_ROOTS_CONFIG_OVERRIDE,
+        ]
+        for image in images or []:
+            args.extend(("-i", str(image)))
+        args.extend((
             "-",
             "--json",
             "--skip-git-repo-check",
+        ))
+        process = await factory(
+            *args,
             cwd=str(session.cwd),
             env=env,
             stdin=asyncio.subprocess.PIPE,
@@ -100,6 +108,7 @@ async def start_session(
     message: str,
     *,
     timeout_s: float,
+    images: list[Path] | None = None,
     process_factory=None,
 ) -> InjectResult:
     """Start one persisted non-interactive Codex session."""
@@ -109,7 +118,7 @@ async def start_session(
     env = os.environ.copy()
     env["CODEX_HOME"] = str(account.root)
     try:
-        process = await factory(
+        args = [
             "codex",
             "exec",
             "--config",
@@ -118,9 +127,16 @@ async def start_session(
             NETWORK_ACCESS_CONFIG_OVERRIDE,
             "--config",
             WRITABLE_ROOTS_CONFIG_OVERRIDE,
+        ]
+        for image in images or []:
+            args.extend(("-i", str(image)))
+        args.extend((
             "--json",
             "--skip-git-repo-check",
             "-",
+        ))
+        process = await factory(
+            *args,
             cwd=str(cwd),
             env=env,
             stdin=asyncio.subprocess.PIPE,

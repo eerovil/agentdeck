@@ -63,6 +63,13 @@ def _safe_http_url(value: object) -> str | None:
     return value if parsed.scheme in ("http", "https") and parsed.netloc else None
 
 
+def _turn_input(message: str, images: list[Path] | None = None) -> list[dict[str, str]]:
+    """Build app-server user input items."""
+    items = [{"type": "text", "text": message}]
+    items.extend({"type": "localImage", "path": str(path)} for path in images or [])
+    return items
+
+
 def _questions(params: dict[str, Any]) -> tuple[InteractionQuestion, ...]:
     result = []
     raw_questions = params.get("questions")
@@ -468,6 +475,7 @@ class CodexAppServer:
         cwd: Path,
         message: str,
         *,
+        images: list[Path] | None = None,
         sandbox: str | None = None,
         model: str | None = None,
         approval_policy: str | None = None,
@@ -496,7 +504,7 @@ class CodexAppServer:
         self._loaded.add(thread_id)
         self._threads[thread_id] = thread
         self._on_change(thread_id)
-        await self.start_turn(thread_id, message, wait=False)
+        await self.start_turn(thread_id, message, images=images, wait=False)
         return InjectResult(True, session_id=thread_id)
 
     async def _ensure_loaded(self, thread_id: str) -> None:
@@ -505,7 +513,14 @@ class CodexAppServer:
         await self._request("thread/resume", {"threadId": thread_id})
         self._loaded.add(thread_id)
 
-    async def start_turn(self, thread_id: str, message: str, *, wait: bool = True) -> InjectResult:
+    async def start_turn(
+        self,
+        thread_id: str,
+        message: str,
+        *,
+        images: list[Path] | None = None,
+        wait: bool = True,
+    ) -> InjectResult:
         await self.start()
         if thread_id not in self._owned:
             return InjectResult(False, "agentdeck does not own this Codex thread")
@@ -514,7 +529,7 @@ class CodexAppServer:
             return InjectResult(False, "Codex is already working on this thread")
         result = await self._request(
             "turn/start",
-            {"threadId": thread_id, "input": [{"type": "text", "text": message}]},
+            {"threadId": thread_id, "input": _turn_input(message, images)},
         )
         turn = result.get("turn")
         if not isinstance(turn, dict) or not isinstance(turn.get("id"), str):
@@ -541,12 +556,18 @@ class CodexAppServer:
             completed = await future
         return completed
 
-    async def queue_turn(self, thread_id: str, message: str) -> InjectResult:
+    async def queue_turn(
+        self,
+        thread_id: str,
+        message: str,
+        *,
+        images: list[Path] | None = None,
+    ) -> InjectResult:
         """Wait for the active turn, then run one ordinary follow-up turn."""
         active = self.active_turn(thread_id)
         if active is not None:
             await self._wait_for_turn(active)
-        return await self.start_turn(thread_id, message)
+        return await self.start_turn(thread_id, message, images=images)
 
     async def wait_for_thread(self, thread_id: str) -> InjectResult:
         turn_id = self.active_turn(thread_id)
@@ -560,7 +581,13 @@ class CodexAppServer:
             return InjectResult(False, "turn interrupted")
         return InjectResult(False, f"Codex turn ended with status {status or 'unknown'}")
 
-    async def steer(self, thread_id: str, message: str) -> InjectResult:
+    async def steer(
+        self,
+        thread_id: str,
+        message: str,
+        *,
+        images: list[Path] | None = None,
+    ) -> InjectResult:
         await self.start()
         turn_id = self.active_turn(thread_id)
         if thread_id not in self._owned or turn_id is None:
@@ -570,7 +597,7 @@ class CodexAppServer:
             {
                 "threadId": thread_id,
                 "expectedTurnId": turn_id,
-                "input": [{"type": "text", "text": message}],
+                "input": _turn_input(message, images),
             },
         )
         return InjectResult(True)

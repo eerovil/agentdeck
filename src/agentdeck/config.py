@@ -45,6 +45,9 @@ class InjectConfig(BaseModel):
     enabled: bool = False
     timeout_s: float = 900.0
     max_message_chars: int = 16_000
+    max_image_bytes: int = 10 * 1024 * 1024
+    max_image_total_bytes: int = 20 * 1024 * 1024
+    max_images: int = 4
 
     @field_validator("timeout_s")
     @classmethod
@@ -53,11 +56,16 @@ class InjectConfig(BaseModel):
             raise ValueError("inject.timeout_s must be positive")
         return value
 
-    @field_validator("max_message_chars")
+    @field_validator(
+        "max_message_chars",
+        "max_image_bytes",
+        "max_image_total_bytes",
+        "max_images",
+    )
     @classmethod
-    def _positive_message_limit(cls, value: int) -> int:
+    def _positive_limit(cls, value: int) -> int:
         if value <= 0:
-            raise ValueError("inject.max_message_chars must be positive")
+            raise ValueError("inject limits must be positive")
         return value
 
 

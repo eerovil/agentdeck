@@ -87,6 +87,7 @@ async def test_inject_session_passes_prompt_on_stdin(tmp_path):
     )
     process = _FakeProcess()
     spawned = {}
+    images = [tmp_path / "one.png", tmp_path / "two.jpg"]
 
     async def factory(*args, **kwargs):
         spawned["args"] = args
@@ -99,6 +100,7 @@ async def test_inject_session_passes_prompt_on_stdin(tmp_path):
         path,
         "do the next thing",
         timeout_s=10,
+        images=images,
         process_factory=factory,
     )
     assert result.accepted
@@ -112,6 +114,12 @@ async def test_inject_session_passes_prompt_on_stdin(tmp_path):
         "sandbox_workspace_write.network_access=true",
         "--config",
         WRITABLE_ROOTS_CONFIG_OVERRIDE,
+    )
+    assert spawned["args"][10:14] == (
+        "-i",
+        str(images[0]),
+        "-i",
+        str(images[1]),
     )
     assert spawned["kwargs"]["env"]["CODEX_HOME"] == str(tmp_path)
     assert spawned["kwargs"]["start_new_session"] is True
@@ -194,6 +202,7 @@ async def test_start_session_passes_first_prompt_on_stdin(tmp_path):
     account = Account("codex:test", "codex", "test", tmp_path)
     process = _FakeProcess()
     spawned = {}
+    images = [tmp_path / "one.png", tmp_path / "two.webp"]
 
     async def factory(*args, **kwargs):
         spawned["args"] = args
@@ -205,6 +214,7 @@ async def test_start_session_passes_first_prompt_on_stdin(tmp_path):
         tmp_path,
         "start something",
         timeout_s=10,
+        images=images,
         process_factory=factory,
     )
     assert result.accepted
@@ -217,6 +227,10 @@ async def test_start_session_passes_first_prompt_on_stdin(tmp_path):
         "sandbox_workspace_write.network_access=true",
         "--config",
         WRITABLE_ROOTS_CONFIG_OVERRIDE,
+        "-i",
+        str(images[0]),
+        "-i",
+        str(images[1]),
         "--json",
         "--skip-git-repo-check",
         "-",
@@ -326,6 +340,107 @@ async def test_inject_route_kill_switch_validation_and_origin(tmp_path):
             headers={"origin": "http://test", "content-type": "text/plain"},
         )
         assert wrong_type.status_code == 415
+
+
+async def test_inject_route_validates_images_and_cleans_up(tmp_path, monkeypatch):
+    app = _web_app(tmp_path)
+    app.state.config.inject.max_image_bytes = 16
+    app.state.config.inject.max_image_total_bytes = 24
+    release = asyncio.Event()
+    started = asyncio.Event()
+    received = []
+
+    async def fake_inject(account, session, message, *, timeout_s, images=None):
+        received.extend(images or [])
+        started.set()
+        await release.wait()
+        return InjectResult(True)
+
+    from agentdeck.providers import PROVIDERS
+
+    monkeypatch.setattr(PROVIDERS["codex"], "inject", fake_inject)
+    png = b"\x89PNG\r\n\x1a\nsmall"
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        invalid = await client.post(
+            "/sessions/codex:test:sid/inject",
+            data={"message": "inspect"},
+            files={"images": ("fake.png", b"not an image", "image/png")},
+            headers={"origin": "http://test"},
+        )
+        assert invalid.status_code == 422
+
+        oversized = await client.post(
+            "/sessions/codex:test:sid/inject",
+            data={"message": "inspect"},
+            files={"images": ("large.png", png + b"xxxx", "image/png")},
+            headers={"origin": "http://test"},
+        )
+        assert oversized.status_code == 422
+
+        accepted = await client.post(
+            "/sessions/codex:test:sid/inject",
+            data={"message": "inspect"},
+            files={"images": ("attacker-name.png", png, "image/png")},
+            headers={"origin": "http://test"},
+        )
+        assert accepted.status_code == 202
+        await asyncio.wait_for(started.wait(), timeout=1)
+        assert len(received) == 1
+        saved = received[0]
+        assert saved.is_file()
+        assert saved.name != "attacker-name.png"
+        assert saved.suffix == ".png"
+        release.set()
+        for _ in range(20):
+            await asyncio.sleep(0)
+            if not saved.exists():
+                break
+        assert not saved.exists()
+        assert not saved.parent.exists()
+    await app.state.injector.stop()
+
+
+async def test_steer_image_cleanup_waits_for_turn(tmp_path, monkeypatch):
+    app = _web_app(tmp_path)
+    session = app.state.app_state.sessions["codex:test:sid"]
+    session.capabilities = frozenset({*session.capabilities, Capability.STEER})
+    turn_done = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    received = []
+
+    async def fake_steer(account, session, message, *, images=None):
+        received.extend(images or [])
+        return InjectResult(True)
+
+    async def fake_wait(account, session_id, *, timeout_s):
+        cleanup_started.set()
+        await turn_done.wait()
+        return InjectResult(True)
+
+    from agentdeck.providers import PROVIDERS
+
+    provider = PROVIDERS["codex"]
+    monkeypatch.setattr(provider, "steer", fake_steer)
+    monkeypatch.setattr(provider, "wait_for_session", fake_wait)
+    png = b"\x89PNG\r\n\x1a\nsmall"
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/sessions/codex:test:sid/steer",
+            data={"message": "look now"},
+            files={"images": ("screen.png", png, "image/png")},
+            headers={"origin": "http://test"},
+        )
+        assert response.status_code == 200
+        await asyncio.wait_for(cleanup_started.wait(), timeout=1)
+        saved = received[0]
+        assert saved.exists()
+        turn_done.set()
+        for _ in range(20):
+            await asyncio.sleep(0)
+            if not saved.exists():
+                break
+        assert not saved.exists()
+    await app.state.injector.stop()
 
 
 async def test_new_session_route_and_enter_to_send_ui(tmp_path, monkeypatch):

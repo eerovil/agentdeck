@@ -18,6 +18,7 @@ from .deps import (
     require_access,
     resolve_session,
 )
+from .uploads import ImageUploadError, cleanup_image_files, save_uploaded_images
 
 router = APIRouter(dependencies=[Depends(require_access)])
 
@@ -77,12 +78,26 @@ def _render_owned_controls(request: Request, session_key: str, session) -> HTMLR
     )
 
 
-@router.post("/sessions/{session_key}/inject", response_class=HTMLResponse)
-async def inject_message(request: Request, session_key: str) -> HTMLResponse:
-    _require_same_origin(request)
+async def _turn_form(request: Request) -> tuple[str, list[Path]]:
     content_type = request.headers.get("content-type", "").lower()
     if not content_type.startswith(("application/x-www-form-urlencoded", "multipart/form-data")):
         raise HTTPException(status_code=415, detail="form content type required")
+    config = get_config(request).inject
+    form = await request.form()
+    raw = form.get("message")
+    message = raw.strip() if isinstance(raw, str) else ""
+    if not message or len(message) > config.max_message_chars:
+        raise HTTPException(status_code=422, detail="invalid message")
+    try:
+        images = await save_uploaded_images(form, config)
+    except ImageUploadError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    return message, images
+
+
+@router.post("/sessions/{session_key}/inject", response_class=HTMLResponse)
+async def inject_message(request: Request, session_key: str) -> HTMLResponse:
+    _require_same_origin(request)
     account, session, provider = resolve_session(request, session_key)
     config = get_config(request).inject
     injector = get_injector(request)
@@ -90,14 +105,14 @@ async def inject_message(request: Request, session_key: str) -> HTMLResponse:
         Capability.INJECT not in session.capabilities and not injector.can_queue(session.key)
     ):
         raise HTTPException(status_code=403, detail="message injection unavailable")
-    form = await request.form()
-    raw = form.get("message")
-    message = raw.strip() if isinstance(raw, str) else ""
-    if not message or len(message) > config.max_message_chars:
-        raise HTTPException(status_code=422, detail="invalid message")
-
-    result = await injector.start(account, session, provider, message)
+    message, images = await _turn_form(request)
+    try:
+        result = await injector.start(account, session, provider, message, images)
+    except BaseException:
+        cleanup_image_files(images)
+        raise
     if not result.accepted:
+        cleanup_image_files(images)
         raise HTTPException(status_code=403, detail=result.reason)
     response = _render_status(request, session.key, injector.status(session.key))
     response.status_code = 202
@@ -115,16 +130,26 @@ async def inject_status(request: Request, session_key: str) -> HTMLResponse:
 async def steer_turn(request: Request, session_key: str) -> HTMLResponse:
     _require_same_origin(request)
     account, session, provider = resolve_session(request, session_key)
-    if Capability.STEER not in session.capabilities:
+    config = get_config(request).inject
+    if not config.enabled or Capability.STEER not in session.capabilities:
         raise HTTPException(status_code=403, detail="active-turn steering unavailable")
-    form = await request.form()
-    raw = form.get("message")
-    message = raw.strip() if isinstance(raw, str) else ""
-    if not message or len(message) > get_config(request).inject.max_message_chars:
-        raise HTTPException(status_code=422, detail="invalid message")
-    result = await provider.steer(account, session, message)
+    message, images = await _turn_form(request)
+    try:
+        kwargs = {"images": images} if images else {}
+        result = await provider.steer(account, session, message, **kwargs)
+    except BaseException:
+        cleanup_image_files(images)
+        raise
     if not result.accepted:
+        cleanup_image_files(images)
         raise HTTPException(status_code=409, detail=result.reason)
+    if images:
+        get_injector(request).defer_cleanup(
+            account,
+            provider,
+            session.session_id,
+            images,
+        )
     return HTMLResponse(
         '<div id="steer-result" class="inject-result complete">Sent to active turn.</div>'
     )
@@ -209,22 +234,30 @@ async def answer_interaction(request: Request, session_key: str) -> HTMLResponse
 @router.post("/sessions/new", response_class=HTMLResponse)
 async def new_session(request: Request) -> HTMLResponse:
     _require_same_origin(request)
-    content_type = request.headers.get("content-type", "").lower()
-    if not content_type.startswith(("application/x-www-form-urlencoded", "multipart/form-data")):
-        raise HTTPException(status_code=415, detail="form content type required")
+    message, images = await _turn_form(request)
     form = await request.form()
     account_key = form.get("account_key")
     raw_cwd = form.get("cwd")
-    raw_message = form.get("message")
-    if not all(isinstance(value, str) for value in (account_key, raw_cwd, raw_message)):
+    if not all(isinstance(value, str) for value in (account_key, raw_cwd)):
+        cleanup_image_files(images)
         raise HTTPException(status_code=422, detail="invalid new-session request")
-    account, provider = _account_provider(request, account_key)
+    try:
+        account, provider = _account_provider(request, account_key)
+    except BaseException:
+        cleanup_image_files(images)
+        raise
     try:
         cwd = Path(raw_cwd).expanduser().resolve()
     except (OSError, RuntimeError):
+        cleanup_image_files(images)
         raise HTTPException(status_code=422, detail="invalid working directory") from None
-    result = await get_injector(request).start_new(account, provider, cwd, raw_message)
+    try:
+        result = await get_injector(request).start_new(account, provider, cwd, message, images)
+    except BaseException:
+        cleanup_image_files(images)
+        raise
     if not result.accepted:
+        cleanup_image_files(images)
         status_code = 409 if "already starting" in (result.reason or "") else 422
         raise HTTPException(status_code=status_code, detail=result.reason)
     response = _render_new_status(

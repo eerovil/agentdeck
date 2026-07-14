@@ -7,7 +7,7 @@
 <details class="new-chat">
   <summary>＋ New Codex chat</summary>
   <form hx-post="/sessions/new" hx-target="#new-session-result" hx-swap="outerHTML"
-        hx-disabled-elt="find button" data-clear-on-send>
+        hx-disabled-elt="find button" hx-encoding="multipart/form-data" data-clear-on-send>
     <label for="new-chat-account">Account</label>
     <select id="new-chat-account" name="account_key" required>
       {% for account in new_chat_accounts %}
@@ -24,6 +24,9 @@
     <label for="new-chat-message">First message</label>
     <textarea id="new-chat-message" class="send-on-enter" name="message" rows="3"
               required placeholder="What should Codex work on?"></textarea>
+    <label for="new-chat-images">Images</label>
+    <input id="new-chat-images" type="file" name="images"
+           accept="image/png,image/jpeg,image/webp,image/gif" multiple>
     <div class="composer-actions">
       <span>Enter to send · Shift+Enter for newline</span>
       <button type="submit">Start chat</button>

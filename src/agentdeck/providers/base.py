@@ -90,6 +90,7 @@ class SessionProvider(ABC):
         message: str,
         *,
         timeout_s: float,
+        images: list[Path] | None = None,
     ) -> InjectResult:
         """Append one turn to a safely injectable session."""
         return InjectResult(False, "this provider does not support injection")
@@ -101,6 +102,7 @@ class SessionProvider(ABC):
         message: str,
         *,
         timeout_s: float,
+        images: list[Path] | None = None,
         sandbox: str | None = None,
         model: str | None = None,
         approval_policy: str | None = None,
@@ -130,7 +132,14 @@ class SessionProvider(ABC):
     ) -> PendingInteraction | None:
         return None
 
-    async def steer(self, account: Account, session: Session, message: str) -> InjectResult:
+    async def steer(
+        self,
+        account: Account,
+        session: Session,
+        message: str,
+        *,
+        images: list[Path] | None = None,
+    ) -> InjectResult:
         return InjectResult(False, "this provider cannot steer active turns")
 
     async def interrupt(self, account: Account, session: Session) -> InjectResult:

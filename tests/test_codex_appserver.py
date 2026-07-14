@@ -6,11 +6,20 @@ from unittest.mock import AsyncMock
 
 from agentdeck.models import Account
 from agentdeck.providers.codex import WRITABLE_ROOTS_CONFIG_OVERRIDE
-from agentdeck.providers.codex.appserver import CodexAppServer
+from agentdeck.providers.codex.appserver import CodexAppServer, _turn_input
 
 
 def _server(tmp_path: Path) -> CodexAppServer:
     return CodexAppServer(Account("codex:test", "codex", "test", tmp_path))
+
+
+def test_turn_input_builds_text_and_local_images(tmp_path):
+    images = [tmp_path / "one.png", tmp_path / "two.webp"]
+    assert _turn_input("Inspect these", images) == [
+        {"type": "text", "text": "Inspect these"},
+        {"type": "localImage", "path": str(images[0])},
+        {"type": "localImage", "path": str(images[1])},
+    ]
 
 
 async def test_app_server_enables_live_web_search(tmp_path):
@@ -189,9 +198,11 @@ async def test_owned_thread_start_steer_and_interrupt(tmp_path):
         return {}
 
     server._request = request
+    image = tmp_path / "screen.png"
     result = await server.start_thread(
         tmp_path,
         "Build it",
+        images=[image],
         sandbox="workspace-write",
         model="gpt-test",
         approval_policy="on-request",
@@ -210,15 +221,28 @@ async def test_owned_thread_start_steer_and_interrupt(tmp_path):
         },
     )
     assert server.active_turn("thread-1") == "turn-1"
+    assert calls[1] == (
+        "turn/start",
+        {
+            "threadId": "thread-1",
+            "input": [
+                {"type": "text", "text": "Build it"},
+                {"type": "localImage", "path": str(image)},
+            ],
+        },
+    )
 
-    result = await server.steer("thread-1", "Use SQLite instead")
+    result = await server.steer("thread-1", "Use SQLite instead", images=[image])
     assert result.accepted
     assert calls[-1] == (
         "turn/steer",
         {
             "threadId": "thread-1",
             "expectedTurnId": "turn-1",
-            "input": [{"type": "text", "text": "Use SQLite instead"}],
+            "input": [
+                {"type": "text", "text": "Use SQLite instead"},
+                {"type": "localImage", "path": str(image)},
+            ],
         },
     )
 
