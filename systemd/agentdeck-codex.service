@@ -1,0 +1,15 @@
+[Unit]
+Description=agentdeck persistent Codex runtime
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/uv run --directory %h/agentdeck agentdeck codex-runtime
+Restart=on-failure
+RestartSec=5
+Environment=AGENTDECK_CONFIG=%h/.config/agentdeck/config.toml
+RuntimeDirectory=agentdeck
+RuntimeDirectoryMode=0700
+KillMode=control-group
+
+[Install]
+WantedBy=default.target

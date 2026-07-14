@@ -483,6 +483,10 @@ class CodexAppServer:
     def owns(self, thread_id: str) -> bool:
         return thread_id in self._owned
 
+    def owned_threads(self) -> frozenset[str]:
+        """Return a stable snapshot for the external runtime API."""
+        return frozenset(self._owned)
+
     def active_turn(self, thread_id: str) -> str | None:
         return self._active_turn.get(thread_id)
 

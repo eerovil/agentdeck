@@ -1,13 +1,15 @@
 [Unit]
 Description=agentdeck dashboard
-After=network-online.target tailscaled.service
+After=network-online.target tailscaled.service agentdeck-codex.service
+Wants=agentdeck-codex.service
 
 [Service]
 ExecStart=%h/.local/bin/uv run --directory %h/agentdeck agentdeck
 Restart=on-failure
 RestartSec=5
 Environment=AGENTDECK_CONFIG=%h/.config/agentdeck/config.toml
-# hygiene: keep child claude processes in our cgroup so stop kills chat children
+# The web service no longer owns Codex chat processes. Its control-group can be
+# restarted for UI deploys without signaling agentdeck-codex.service.
 KillMode=control-group
 
 [Install]

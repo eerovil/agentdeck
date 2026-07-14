@@ -63,9 +63,10 @@ Run as a systemd user service (survives logout with lingering enabled):
 
 ```sh
 mkdir -p ~/.config/systemd/user
-ln -s ~/agentdeck/systemd/agentdeck.service ~/.config/systemd/user/
+ln -s ~/agentdeck/systemd/agentdeck.service ~/agentdeck/systemd/agentdeck-codex.service \
+  ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now agentdeck
+systemctl --user enable --now agentdeck-codex agentdeck
 loginctl enable-linger "$USER"   # keep it running when logged out
 ```
 
@@ -115,6 +116,13 @@ account, enabling active-turn steering, Stop, structured questions, approvals,
 and a FIFO follow-up queue. Enter submits and Shift+Enter inserts a newline.
 Existing external `exec` rollouts retain the conservative completed-turn
 fallback described below.
+
+The bundled systemd deployment keeps Codex controls in a separate
+`agentdeck-codex.service`. The dashboard talks to it over a mode-0700 Unix
+socket under `$XDG_RUNTIME_DIR/agentdeck`; restarting `agentdeck.service` for a
+frontend deploy therefore does not stop active Codex turns or lose pending
+approval state. Restart the Codex service itself only after its active turns
+have drained.
 
 Local tools can delegate work through the same owned runtime. The prompt is
 read from stdin and only the final Codex message is written to stdout:

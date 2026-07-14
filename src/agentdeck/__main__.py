@@ -16,11 +16,15 @@ import uvicorn
 
 from .app import create_app
 from .config import config_path, load_config
+from .providers.codex.runtime_client import runtime_socket_path
 
 
 def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "delegate":
         _delegate(sys.argv[2:])
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "codex-runtime":
+        _codex_runtime(sys.argv[2:])
         return
 
     logging.basicConfig(
@@ -40,6 +44,28 @@ def main() -> None:
         len(config.accounts),
     )
     uvicorn.run(app, host=config.server.bind, port=config.server.port, log_level="info")
+
+
+def _codex_runtime(argv: list[str]) -> None:
+    parser = argparse.ArgumentParser(
+        prog="agentdeck codex-runtime",
+        description="Run the persistent local Codex control service.",
+    )
+    parser.parse_args(argv)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    _install_redaction_filter()
+    from .runtime import create_runtime_app
+
+    socket = runtime_socket_path()
+    socket.parent.mkdir(parents=True, exist_ok=True)
+    socket.unlink(missing_ok=True)
+    os.umask(0o077)
+    config = load_config(config_path())
+    logging.getLogger(__name__).info("Codex runtime listening on %s", socket)
+    uvicorn.run(create_runtime_app(config), uds=str(socket), log_level="info")
 
 
 def _delegate(argv: list[str]) -> None:

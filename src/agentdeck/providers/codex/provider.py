@@ -23,7 +23,6 @@ from ...models import (
 )
 from ..base import SessionProvider
 from . import transcripts as transcripts_mod
-from .appserver import CodexAppServer
 from .inject import (
     inject_session,
     is_injectable_rollout,
@@ -31,6 +30,7 @@ from .inject import (
 from .inject import (
     start_session as start_codex_session,
 )
+from .runtime_client import CodexRuntimeClient
 from .usage import UsagePoller, fetch_usage_once
 
 DETAIL_WINDOW = 400
@@ -81,19 +81,36 @@ class CodexProvider(SessionProvider):
         self._meta_cache: dict[str, tuple[float, transcripts_mod.TranscriptMeta]] = {}
         self._last_ev_cache: dict[str, tuple[float, TranscriptEvent | None]] = {}
         self._paths: dict[tuple[str, str], Path] = {}
-        self._clients: dict[str, CodexAppServer] = {}
+        self._clients: dict[str, CodexRuntimeClient] = {}
         self._states = {}
+        self._runtime_tasks: dict[str, asyncio.Task] = {}
 
     async def start_account(self, account: Account, state) -> None:
-        client = CodexAppServer(
+        client = CodexRuntimeClient(
             account,
             on_change=lambda thread_id: self._runtime_changed(account, state, thread_id),
         )
         self._clients[account.key] = client
         self._states[account.key] = state
         await client.start()
+        self._runtime_tasks[account.key] = asyncio.create_task(
+            self._watch_runtime(account, state, client),
+            name=f"codex-runtime:{account.key}",
+        )
+
+    async def _watch_runtime(self, account, state, client: CodexRuntimeClient) -> None:
+        while True:
+            await asyncio.sleep(1.0)
+            try:
+                await client.refresh()
+            except Exception as exc:  # noqa: BLE001 -- reconnect on the next poll
+                log.debug("Codex runtime refresh failed for %s: %s", account.key, exc)
 
     async def stop_account(self, account: Account) -> None:
+        task = self._runtime_tasks.pop(account.key, None)
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
         client = self._clients.pop(account.key, None)
         self._states.pop(account.key, None)
         if client is not None:
@@ -223,6 +240,12 @@ class CodexProvider(SessionProvider):
         return [sessions] if sessions.exists() else []
 
     async def scan_sessions(self, account: Account) -> list[Session]:
+        client = self._clients.get(account.key)
+        if client is not None:
+            try:
+                await client.refresh()
+            except Exception as exc:  # noqa: BLE001 -- transcript scan remains useful
+                log.debug("Codex runtime unavailable during scan for %s: %s", account.key, exc)
         sessions = []
         active_subagents: dict[str, int] = {}
         current_paths: dict[tuple[str, str], Path] = {}
