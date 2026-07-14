@@ -169,11 +169,10 @@ async def test_pwa_routes(tmp_path):
     # The page registers the worker and links the manifest.
     assert "/manifest.webmanifest" in dash.text
     assert "serviceWorker.register('/sw.js')" in dash.text
-    # Live-stream recovery hook + a build stamp so the phone can prove freshness.
+    # Live-stream recovery hook remains present without a footer below the composer.
     assert "visibilitychange" in dash.text
     assert "streamStale" in dash.text
-    assert 'class="build"' in dash.text
-    assert "agentdeck v" in dash.text
+    assert 'class="build"' not in dash.text
     # Dashboard HTML must not be cached, so a deploy's inline JS actually lands.
     assert dash.headers["cache-control"] == "no-cache"
 
@@ -261,7 +260,7 @@ async def test_clipboard_screenshot_attaches_to_chat_composer(tmp_path):
         )
         await page.add_script_tag(content=script)
         result = await page.evaluate(
-            """() => {
+            """async () => {
                 const transfer = new DataTransfer();
                 transfer.items.add(new File(
                     [new Uint8Array([137, 80, 78, 71])], 'screenshot.png',
@@ -293,13 +292,14 @@ async def test_clipboard_screenshot_attaches_to_chat_composer(tmp_path):
     }
 
 
-async def test_session_autoscroll_ignores_non_transcript_swaps_and_scrolled_up_reader(tmp_path):
+async def test_session_autoscroll_follows_successful_send_but_not_unrelated_swaps(tmp_path):
     app = _app_with_state(tmp_path, with_transcript=True)
     async with _client(app) as client:
         response = await client.get("/sessions/claude_code:test:sid1")
 
     marker = "// Open at the newest message."
-    start = response.text.index(marker)
+    marker_at = response.text.index(marker)
+    start = response.text.rfind("<script>", 0, marker_at) + len("<script>")
     end = response.text.index("</script>", start)
     script = response.text[start:end]
 
@@ -314,7 +314,7 @@ async def test_session_autoscroll_ignores_non_transcript_swaps_and_scrolled_up_r
         await page.wait_for_timeout(30)
         await page.evaluate("window.scrollTo(0, 0)")
         result = await page.evaluate(
-            """() => {
+            """async () => {
                 let calls = 0;
                 const realScrollTo = window.scrollTo.bind(window);
                 window.scrollTo = () => { calls += 1; };
@@ -326,13 +326,28 @@ async def test_session_autoscroll_ignores_non_transcript_swaps_and_scrolled_up_r
                 const afterActivity = calls;
                 swap(document.querySelector('.transcript'));
                 const afterTranscript = calls;
+                const form = document.querySelector('.inject-form');
+                form.dispatchEvent(new CustomEvent('htmx:afterRequest', {
+                  bubbles: true,
+                  detail: {successful: true, elt: form}
+                }));
+                await new Promise(requestAnimationFrame);
+                const afterSend = calls;
+                swap(document.querySelector('.transcript'));
+                await new Promise(requestAnimationFrame);
+                const afterSentTranscript = calls;
                 window.scrollTo = realScrollTo;
-                return {afterActivity, afterTranscript};
+                return {afterActivity, afterTranscript, afterSend, afterSentTranscript};
             }"""
         )
         await browser.close()
 
-    assert result == {"afterActivity": 0, "afterTranscript": 0}
+    assert result == {
+        "afterActivity": 0,
+        "afterTranscript": 0,
+        "afterSend": 1,
+        "afterSentTranscript": 2,
+    }
 
 
 async def test_card_shows_agent_response(tmp_path):

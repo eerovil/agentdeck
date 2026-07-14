@@ -123,15 +123,20 @@
     else root.scrollTo(0, root.scrollHeight);
   }
   var followTranscript = false;
+  var followAfterSend = false;
   var initialDone = false;
   var userMoved = false;
 
   ['wheel', 'touchstart', 'pointerdown'].forEach(function (name) {
-    window.addEventListener(name, function () { userMoved = true; }, { passive: true });
+    window.addEventListener(name, function () {
+      userMoved = true;
+      followAfterSend = false;
+    }, { passive: true });
   });
   window.addEventListener('keydown', function (event) {
     if (['PageUp', 'Home', 'ArrowUp', 'ArrowDown', 'PageDown', 'End', ' '].includes(event.key)) {
       userMoved = true;
+      followAfterSend = false;
     }
   });
   function initialScroll() {
@@ -144,12 +149,19 @@
 
   document.body.addEventListener('htmx:beforeSwap', function (event) {
     if (!event.target.matches('.transcript')) return;
-    followTranscript = atBottom() && !document.activeElement.closest('.inject-form');
+    followTranscript = followAfterSend ||
+      (atBottom() && !document.activeElement.closest('.inject-form'));
   });
   document.body.addEventListener('htmx:afterSwap', function (event) {
     if (!event.target.matches('.transcript')) return;
     if (followTranscript) requestAnimationFrame(toBottom);
     followTranscript = false;
+  });
+  document.body.addEventListener('htmx:afterRequest', function (event) {
+    var form = event.detail && event.detail.elt;
+    if (!event.detail || !event.detail.successful || !form || !form.matches('.inject-form')) return;
+    followAfterSend = true;
+    requestAnimationFrame(toBottom);
   });
 })();
 </script>
