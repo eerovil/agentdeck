@@ -48,15 +48,17 @@
 </div>
 {% endif %}
 
-<div class="transcript" sse-swap="transcript" hx-swap="beforeend">
-  {% if detail.earliest_seq > 1 %}
-  {% set before = detail.earliest_seq %}
-  {% include "partials/load_earlier.html" %}
-  {% endif %}
-  {% for e in detail.events %}{% include "partials/transcript_event.html" %}{% endfor %}
-</div>
+<div class="transcript-stage">
+  <div class="transcript" sse-swap="transcript" hx-swap="beforeend">
+    {% if detail.earliest_seq > 1 %}
+    {% set before = detail.earliest_seq %}
+    {% include "partials/load_earlier.html" %}
+    {% endif %}
+    {% for e in detail.events %}{% include "partials/transcript_event.html" %}{% endfor %}
+  </div>
 
-<div id="tool-activity" sse-swap="tools">{% set label = activity_label %}{% include "partials/tool_activity.html" %}</div>
+  <div id="tool-activity" sse-swap="tools">{% set label = activity_label %}{% include "partials/tool_activity.html" %}</div>
+</div>
 
 {% if owned_session %}
 {% set interaction = pending_interaction %}

@@ -436,6 +436,40 @@ async def test_session_autoscroll_follows_successful_send_but_not_unrelated_swap
     }
 
 
+async def test_working_marker_is_an_overlay_that_does_not_change_page_height(tmp_path):
+    app = _app_with_state(tmp_path, with_transcript=True)
+    async with _client(app) as client:
+        response = await client.get("/sessions/claude_code:test:sid1")
+
+    css = (
+        Path(__file__).parents[1] / "src/agentdeck/web/static/app.css"
+    ).read_text()
+    html = response.text.replace("</head>", f"<style>{css}</style></head>")
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        page = await browser.new_page(viewport={"width": 800, "height": 600})
+        await page.set_content(html)
+        result = await page.evaluate(
+            """() => {
+                const stage = document.querySelector('.transcript-stage');
+                const activity = document.querySelector('#tool-activity');
+                activity.replaceChildren();
+                const before = stage.getBoundingClientRect().height;
+                activity.innerHTML = '<div class="ev tool-wait">Working</div>';
+                const after = stage.getBoundingClientRect().height;
+                return {
+                    before,
+                    after,
+                    position: getComputedStyle(activity).position,
+                };
+            }"""
+        )
+        await browser.close()
+
+    assert result["before"] == result["after"]
+    assert result["position"] == "absolute"
+
+
 async def test_mobile_session_composer_is_compact():
     css = (
         Path(__file__).parents[1] / "src/agentdeck/web/static/app.css"
