@@ -34,12 +34,16 @@ def _require_same_origin(request: Request) -> None:
         raise HTTPException(status_code=403, detail="origin mismatch")
 
 
-def _render_status(request: Request, session_key: str, status) -> HTMLResponse:
+def _render_status(request: Request, session_key: str, status, queued_item=None) -> HTMLResponse:
     templates = get_templates(request)
     return templates.TemplateResponse(
         request,
         "partials/inject_status.html",
-        {"session_key": session_key, "inject_status": status},
+        {
+            "session_key": session_key,
+            "inject_status": status,
+            "queued_item": queued_item,
+        },
     )
 
 
@@ -102,7 +106,9 @@ async def inject_message(request: Request, session_key: str) -> HTMLResponse:
     if not result.accepted:
         cleanup_image_files(images)
         raise HTTPException(status_code=403, detail=result.reason)
-    response = _render_status(request, session.key, injector.status(session.key))
+    status = injector.status(session.key)
+    queued_item = status.items[-1] if status and status.items else None
+    response = _render_status(request, session.key, status, queued_item)
     response.status_code = 202
     return response
 

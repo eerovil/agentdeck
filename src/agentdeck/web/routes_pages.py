@@ -87,6 +87,7 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
     from .render import (
         _usage_rows,
         activity_label,
+        pending_injection_messages,
         session_labels,
         session_queue_summaries,
     )
@@ -116,6 +117,9 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
             "selected_session_key": session.key,
             "queue_summaries": session_queue_summaries(
                 state.visible_sessions(), request.app.state.injector
+            ),
+            "pending_messages": pending_injection_messages(
+                request.app.state.injector.status(session.key), detail.events
             ),
             # the initial activity marker; the SSE stream refines it within ~1.5s
             "activity_label": label,

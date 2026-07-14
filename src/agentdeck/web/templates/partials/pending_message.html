@@ -1,0 +1,6 @@
+{% if oob | default(false) %}<template hx-swap-oob="beforeend:.transcript">{% endif %}
+<div class="ev user pending-message" data-pending-message data-queue-id="{{ item.id }}">
+  <div class="ev-head"><span class="ev-role">user</span></div>
+  <div class="ev-text">{{ item.text }}</div>
+</div>
+{% if oob | default(false) %}</template>{% endif %}

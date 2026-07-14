@@ -369,7 +369,9 @@ async def test_session_autoscroll_follows_successful_send_but_not_unrelated_swap
         browser = await playwright.chromium.launch()
         page = await browser.new_page(viewport={"width": 800, "height": 500})
         await page.set_content(
-            '<div class="transcript" style="height:2400px"></div>'
+            '<div class="transcript" style="height:2400px">'
+            '<div class="ev user pending-message" data-pending-message>'
+            '<div class="ev-text">queued message</div></div></div>'
             '<div id="tool-activity"></div><form class="inject-form">'
             '<div id="inject-result"></div></form>'
         )
@@ -391,13 +393,19 @@ async def test_session_autoscroll_follows_successful_send_but_not_unrelated_swap
                     target.dispatchEvent(new CustomEvent(
                         'htmx:sseBeforeMessage', {bubbles: true}
                     ));
-                    target.insertAdjacentHTML('beforeend', '<div class="ev">reply</div>');
+                    target.insertAdjacentHTML(
+                      'beforeend',
+                      '<div class="ev user"><div class="ev-text">queued message</div></div>'
+                    );
                     target.dispatchEvent(new CustomEvent('htmx:sseMessage', {bubbles: true}));
                 };
                 swap(document.querySelector('#tool-activity'));
                 const afterActivity = calls;
                 sseSwap(document.querySelector('.transcript'));
                 const afterTranscript = calls;
+                const pendingAfterTranscript = document.querySelectorAll(
+                  '[data-pending-message]'
+                ).length;
                 const form = document.querySelector('.inject-form');
                 form.dispatchEvent(new CustomEvent('htmx:afterRequest', {
                   bubbles: true,
@@ -417,6 +425,7 @@ async def test_session_autoscroll_follows_successful_send_but_not_unrelated_swap
                 return {
                     afterActivity,
                     afterTranscript,
+                    pendingAfterTranscript,
                     afterSend,
                     afterSentTranscript,
                     afterViewportSettle,
@@ -429,6 +438,7 @@ async def test_session_autoscroll_follows_successful_send_but_not_unrelated_swap
     assert result == {
         "afterActivity": 0,
         "afterTranscript": 0,
+        "pendingAfterTranscript": 0,
         "afterSend": 1,
         "afterSentTranscript": 2,
         "afterViewportSettle": 2,
@@ -461,6 +471,10 @@ async def test_working_marker_is_an_overlay_that_does_not_change_page_height(tmp
                     before,
                     after,
                     position: getComputedStyle(activity).position,
+                    transcriptBottom: document.querySelector('.transcript')
+                      .getBoundingClientRect().bottom,
+                    activityTop: activity.getBoundingClientRect().top,
+                    bottomGutter: getComputedStyle(stage).paddingBottom,
                 };
             }"""
         )
@@ -468,6 +482,8 @@ async def test_working_marker_is_an_overlay_that_does_not_change_page_height(tmp
 
     assert result["before"] == result["after"]
     assert result["position"] == "absolute"
+    assert result["bottomGutter"] == "40px"
+    assert result["activityTop"] >= result["transcriptBottom"]
 
 
 async def test_mobile_session_composer_is_compact():
@@ -557,10 +573,13 @@ def test_tool_events_hidden_and_live_marker(tmp_path):
         TranscriptEvent(seq=1, role="tool", text="huge noisy tool result"),
         TranscriptEvent(seq=2, role="assistant", tool_name="Bash", text=None),
         TranscriptEvent(seq=3, role="assistant", text="here is my answer"),
+        TranscriptEvent(seq=4, role="user", text="queued follow-up", queued=True),
     ]
     html = render_transcript_events(templates, events)
     assert "huge noisy tool result" not in html  # past tool result dropped
     assert "here is my answer" in html  # real assistant text kept
+    assert "queued follow-up" in html  # queued turns look like ordinary user chat
+    assert "user · queued" not in html
     # the live marker appears only while actively working
     assert "Using tools" in render_tool_activity(templates, "Using tools")
     assert "tool-wait" not in render_tool_activity(templates, None)

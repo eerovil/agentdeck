@@ -55,6 +55,7 @@
     {% include "partials/load_earlier.html" %}
     {% endif %}
     {% for e in detail.events %}{% include "partials/transcript_event.html" %}{% endfor %}
+    {% for item in pending_messages %}{% include "partials/pending_message.html" %}{% endfor %}
   </div>
 
   <div id="tool-activity" sse-swap="tools">{% set label = activity_label %}{% include "partials/tool_activity.html" %}</div>
@@ -162,8 +163,24 @@
   }
   function afterTranscriptSwap(event) {
     if (!event.target.matches('.transcript')) return;
+    reconcilePendingMessages();
     if (followTranscript) requestAnimationFrame(toBottom);
     followTranscript = false;
+  }
+  function reconcilePendingMessages() {
+    document.querySelectorAll('.transcript [data-pending-message]').forEach(function (pending) {
+      var text = pending.querySelector('.ev-text');
+      var next = pending.nextElementSibling;
+      while (text && next) {
+        var nextText = next.matches('.ev.user:not([data-pending-message])') &&
+          next.querySelector('.ev-text');
+        if (nextText && nextText.textContent === text.textContent) {
+          pending.remove();
+          break;
+        }
+        next = next.nextElementSibling;
+      }
+    });
   }
   document.body.addEventListener('htmx:beforeSwap', beforeTranscriptSwap);
   document.body.addEventListener('htmx:afterSwap', afterTranscriptSwap);

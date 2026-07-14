@@ -6,9 +6,9 @@
    choice the agent is waiting on is visible in the transcript. #}
 {%- if e.role == 'tool' or (e.tool_name and not e.text and not e.question) or (not e.text and not e.question and not e.tool_name) -%}
 {%- else -%}
-<div class="ev {{ e.role }}{% if e.subagent %} sub{% endif %}{% if e.queued %} queued{% endif %}">
+<div class="ev {{ e.role }}{% if e.subagent %} sub{% endif %}">
   <div class="ev-head">
-    <span class="ev-role">{{ e.role }}{% if e.subagent %} · {{ e.subagent }}{% endif %}{% if e.queued %} · queued{% endif %}</span>
+    <span class="ev-role">{{ e.role }}{% if e.subagent %} · {{ e.subagent }}{% endif %}</span>
     {% if e.model %}<span class="ev-model">{{ e.model }}</span>{% endif %}
   </div>
   {% if e.text %}<div class="ev-text">{{ e.text }}</div>{% endif %}

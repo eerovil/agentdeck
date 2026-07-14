@@ -1,13 +1,14 @@
 import asyncio
 import json
 import os
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from httpx import ASGITransport, AsyncClient
 
 from agentdeck.app import create_app
 from agentdeck.config import AccountConfig, AppConfig, HistoryConfig, InjectConfig
-from agentdeck.inject import InjectionService
+from agentdeck.inject import InjectionService, InjectionStatus, QueuedMessage
 from agentdeck.models import (
     Account,
     Capability,
@@ -17,6 +18,7 @@ from agentdeck.models import (
     PendingInteraction,
     Session,
     SessionStatus,
+    TranscriptEvent,
 )
 from agentdeck.providers.codex import WRITABLE_ROOTS_CONFIG_OVERRIDE
 from agentdeck.providers.codex.inject import (
@@ -232,6 +234,10 @@ async def test_queued_message_remains_visible_after_navigation(tmp_path, monkeyp
     assert 'class="card-pending" data-pending-count="1"' in dashboard.text
     assert "keep this queued" in dashboard.text
     assert "keep this queued" in detail.text
+    assert 'class="ev user pending-message"' in detail.text
+    assert detail.text.index('class="ev user pending-message"') < detail.text.index(
+        'id="tool-activity"'
+    )
 
     release.set()
     for _ in range(10):
@@ -239,6 +245,29 @@ async def test_queued_message_remains_visible_after_navigation(tmp_path, monkeyp
         if not app.state.injector.can_queue("codex:test:sid"):
             break
     await app.state.injector.stop()
+
+
+def test_pending_message_dedup_only_matches_new_transcript_turns():
+    from agentdeck.web.render import pending_injection_messages
+
+    queued_at = datetime.now(UTC)
+    item = QueuedMessage(1, "testing", created_at=queued_at)
+    status = InjectionStatus("queued", items=(item,))
+    old_same_text = TranscriptEvent(
+        seq=1,
+        role="user",
+        text="testing",
+        ts=queued_at - timedelta(minutes=1),
+    )
+    new_same_text = TranscriptEvent(
+        seq=2,
+        role="user",
+        text="testing",
+        ts=queued_at + timedelta(seconds=1),
+    )
+
+    assert pending_injection_messages(status, [old_same_text]) == [item]
+    assert pending_injection_messages(status, [old_same_text, new_same_text]) == []
 
 
 async def test_start_session_passes_first_prompt_on_stdin(tmp_path):
@@ -322,6 +351,10 @@ async def test_inject_route_accepts_and_reports_status(tmp_path, monkeypatch):
         )
         assert response.status_code == 202
         assert 'aria-label="Message queued: continue safely"' in response.text
+        assert 'hx-swap-oob="beforeend:.transcript"' in response.text
+        assert 'class="ev user pending-message"' in response.text
+        assert '<span class="ev-role">user</span>' in response.text
+        assert "user · queued" not in response.text
         conflict = await client.post(
             "/sessions/codex:test:sid/inject",
             data={"message": "again"},

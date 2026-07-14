@@ -6,7 +6,8 @@ import asyncio
 import logging
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .config import InjectConfig
@@ -32,6 +33,7 @@ class QueuedMessage:
     images: tuple[Path, ...] = ()
     state: str = "queued"
     reason: str | None = None
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 @dataclass(frozen=True)

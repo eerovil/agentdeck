@@ -16,3 +16,8 @@
 {% else %}
 <div id="inject-result" class="inject-result"></div>
 {% endif %}
+{% if queued_item %}
+{% set item = queued_item %}
+{% set oob = true %}
+{% include "partials/pending_message.html" %}
+{% endif %}

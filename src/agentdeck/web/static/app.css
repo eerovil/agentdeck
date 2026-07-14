@@ -209,7 +209,7 @@ a.session:active { background: var(--panel2); }
 .todo-status { display: inline-block; min-width: 74px; color: var(--muted); font-size: 11px; }
 .todo.completed { color: var(--muted); text-decoration: line-through; }
 
-.transcript-stage { position: relative; min-width: 0; }
+.transcript-stage { position: relative; min-width: 0; padding-bottom: 40px; }
 .transcript { display: flex; flex-direction: column; gap: 8px; }
 #tool-activity { position: absolute; right: 8px; bottom: 8px; z-index: 4;
   max-width: calc(100% - 16px); pointer-events: none; }
@@ -217,7 +217,6 @@ a.session:active { background: var(--panel2); }
 .ev { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 10px; background: var(--panel); }
 .ev.assistant { border-left: 3px solid var(--remote); }
 .ev.user { border-left: 3px solid var(--live); }
-.ev.user.queued { border-left-style: dashed; }
 .ev.tool { border-left: 3px solid var(--warn); background: var(--panel2); }
 details.ev.tool > summary { cursor: pointer; list-style: none; display: flex; gap: 8px;
   align-items: baseline; color: var(--muted); }
