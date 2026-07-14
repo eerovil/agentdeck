@@ -74,6 +74,8 @@ async def dashboard(request: Request) -> HTMLResponse:
 async def session_detail(request: Request, session_key: str) -> HTMLResponse:
     account, session, provider = resolve_session(request, session_key)
     templates = get_templates(request)
+    accounts = get_accounts(request)
+    state = get_state(request)
     detail = await provider.load_transcript(account, session)
     from datetime import UTC, datetime
 
@@ -89,7 +91,8 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
     )
     label = activity_label(live, bool(session.thinking), last_ev, age)
     label = detailed_activity_label(label, last_ev)
-    account_label = session_labels(get_accounts(request)).get(session.account_key)
+    labels = session_labels(accounts)
+    account_label = labels.get(session.account_key)
     owned_session = provider.owns_session(account, session)
 
     resp = templates.TemplateResponse(
@@ -98,6 +101,10 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
         {
             "session": session,
             "detail": detail,
+            # Desktop keeps the live session list beside the selected chat.
+            "sessions": state.visible_sessions(),
+            "labels": labels,
+            "selected_session_key": session.key,
             # the initial activity marker; the SSE stream refines it within ~1.5s
             "activity_label": label,
             # which account (main/alt) this session belongs to
@@ -116,7 +123,7 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
             "pending_interaction": provider.pending_interaction(account, session),
             # topbar usage bars, rendered server-side so they paint immediately
             # (the per-session SSE stream then keeps them live over one socket).
-            "rows": _usage_rows(get_accounts(request), get_state(request)),
+            "rows": _usage_rows(accounts, state),
         },
     )
     resp.headers["Cache-Control"] = "no-cache"

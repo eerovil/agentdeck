@@ -135,43 +135,64 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
     last_status = None
     last_busy = None
     last_label = None
-    # The topbar usage bars ride this same stream (see session.html), so the
-    # session page holds one socket, not two. Re-push only when a snapshot
-    # actually changes (~every usage poll), not every tail.
-    yield format_sse("usage", render_limit_bars(templates, accounts, state))
-    last_usage_sig = _usage_sig(accounts, state)
-    last_usage_push = loop.time()
-    while True:
-        if await request.is_disconnected():
-            break
-        new_events, offset, seq = await provider.tail_transcript(account, session, offset, seq)
-        if new_events:
-            yield format_sse("transcript", render_transcript_events(templates, new_events))
-            last_activity_t = loop.time()
-            last_ev = new_events[-1]
-        current = state.sessions.get(session_key) or session
-        live = current.status == SessionStatus.LIVE
-        age = loop.time() - last_activity_t
-        streaming = live and age < THINKING_OFF_S
-        # "Busy" (pulsing dot + activity marker) tracks the open turn, not just
-        # recent writes — so a long tool run or slow first token stays busy.
-        label = None if current.question else activity_label(live, streaming, last_ev, age)
-        label = detailed_activity_label(label, last_ev)
-        busy = label is not None
-        if current.status != last_status or busy != last_busy:
-            last_status, last_busy = current.status, busy
-            snap = replace(current, thinking=busy)
-            yield format_sse("status", render_session_status(templates, snap))
-        if label != last_label:
-            last_label = label
-            yield format_sse("tools", render_tool_activity(templates, label))
-        sig = _usage_sig(accounts, state)
-        # push on a new snapshot, or on the fixed cadence so "updated" keeps ticking
-        if sig != last_usage_sig or (loop.time() - last_usage_push) >= USAGE_REFRESH_S:
-            last_usage_sig = sig
-            last_usage_push = loop.time()
-            yield format_sse("usage", render_limit_bars(templates, accounts, state))
-        await asyncio.sleep(TAIL_INTERVAL_S)
+    # The topbar usage bars and desktop session list ride this same stream (see
+    # session.html), so the page still holds one socket. Each fragment is
+    # re-pushed only when its underlying state changes.
+    with state.bus.subscribe("sessions") as sessions_sub:
+        yield format_sse("usage", render_limit_bars(templates, accounts, state))
+        yield format_sse(
+            "sessions",
+            render_session_list(
+                templates, accounts, state, selected_session_key=session_key
+            ),
+        )
+        last_usage_sig = _usage_sig(accounts, state)
+        last_usage_push = loop.time()
+        while True:
+            if await request.is_disconnected():
+                break
+            new_events, offset, seq = await provider.tail_transcript(
+                account, session, offset, seq
+            )
+            if new_events:
+                yield format_sse("transcript", render_transcript_events(templates, new_events))
+                last_activity_t = loop.time()
+                last_ev = new_events[-1]
+            current = state.sessions.get(session_key) or session
+            live = current.status == SessionStatus.LIVE
+            age = loop.time() - last_activity_t
+            streaming = live and age < THINKING_OFF_S
+            # "Busy" (pulsing dot + activity marker) tracks the open turn, not just
+            # recent writes — so a long tool run or slow first token stays busy.
+            label = None if current.question else activity_label(live, streaming, last_ev, age)
+            label = detailed_activity_label(label, last_ev)
+            busy = label is not None
+            if current.status != last_status or busy != last_busy:
+                last_status, last_busy = current.status, busy
+                snap = replace(current, thinking=busy)
+                yield format_sse("status", render_session_status(templates, snap))
+            if label != last_label:
+                last_label = label
+                yield format_sse("tools", render_tool_activity(templates, label))
+            sig = _usage_sig(accounts, state)
+            # push on a new snapshot, or on the fixed cadence so "updated" keeps ticking
+            if sig != last_usage_sig or (loop.time() - last_usage_push) >= USAGE_REFRESH_S:
+                last_usage_sig = sig
+                last_usage_push = loop.time()
+                yield format_sse("usage", render_limit_bars(templates, accounts, state))
+            if sessions_sub.get_nowait() is not None:
+                while sessions_sub.get_nowait() is not None:
+                    pass
+                yield format_sse(
+                    "sessions",
+                    render_session_list(
+                        templates,
+                        accounts,
+                        state,
+                        selected_session_key=session_key,
+                    ),
+                )
+            await asyncio.sleep(TAIL_INTERVAL_S)
 
 
 @router.get("/events/sessions/{session_key}")

@@ -1,5 +1,6 @@
 import asyncio
 from datetime import UTC, datetime
+from pathlib import Path
 
 from httpx import ASGITransport, AsyncClient
 from playwright.async_api import async_playwright
@@ -662,6 +663,59 @@ async def test_session_detail_renders_transcript(tmp_path):
     assert 'sse-connect="/events/sessions/claude_code:test:sid1"' in r.text
 
 
+async def test_session_detail_uses_responsive_split_view(tmp_path):
+    app = _app_with_state(tmp_path, with_transcript=True)
+    async with _client(app) as client:
+        response = await client.get("/sessions/claude_code:test:sid1")
+
+    assert 'class="session-page"' in response.text
+    assert 'class="session-layout"' in response.text
+    assert 'class="session-sidebar" aria-label="All sessions"' in response.text
+    assert 'class="session-detail" aria-label="Selected chat"' in response.text
+    assert 'aria-current="page"' in response.text
+
+    css = (
+        Path(__file__).parents[1] / "src/agentdeck/web/static/app.css"
+    ).read_text()
+    html = response.text.replace("</head>", f"<style>{css}</style></head>")
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        page = await browser.new_page(viewport={"width": 1200, "height": 800})
+        await page.set_content(html)
+        desktop = await page.evaluate(
+            """() => ({
+                sidebar: getComputedStyle(document.querySelector('.session-sidebar')).display,
+                columns: getComputedStyle(document.querySelector('.session-layout'))
+                    .gridTemplateColumns,
+                detailOverflow: getComputedStyle(document.querySelector('.session-detail'))
+                    .overflowY,
+                back: getComputedStyle(document.querySelector('.back')).display,
+            })"""
+        )
+        await page.set_viewport_size({"width": 800, "height": 800})
+        mobile = await page.evaluate(
+            """() => ({
+                sidebar: getComputedStyle(document.querySelector('.session-sidebar')).display,
+                layout: getComputedStyle(document.querySelector('.session-layout')).display,
+                detailOverflow: getComputedStyle(document.querySelector('.session-detail'))
+                    .overflowY,
+                back: getComputedStyle(document.querySelector('.back')).display,
+            })"""
+        )
+        await browser.close()
+
+    assert desktop["sidebar"] == "block"
+    assert len(desktop["columns"].split()) == 2
+    assert desktop["detailOverflow"] == "auto"
+    assert desktop["back"] == "none"
+    assert mobile == {
+        "sidebar": "none",
+        "layout": "block",
+        "detailOverflow": "visible",
+        "back": "flex",
+    }
+
+
 async def test_session_detail_renders_ask_user_question(tmp_path):
     """End-to-end: an AskUserQuestion line (a tool_use with no text block) is
     written to the transcript file and must survive the JSONL → parse → HTTP
@@ -766,3 +820,29 @@ async def test_sse_initial_events(tmp_path):
     assert "event: sessions" in both
     assert "42%" in both  # rendered usage fragment rode the stream
     assert "Hello World Session" in both
+
+
+async def test_session_sse_primes_desktop_list(tmp_path):
+    from agentdeck.web.routes_sse import _session_stream
+
+    app = _app_with_state(tmp_path)
+
+    class FakeRequest:
+        def __init__(self, application):
+            self.app = application
+
+        async def is_disconnected(self):
+            return False
+
+    key = "claude_code:test:sid1"
+    gen = _session_stream(FakeRequest(app), key)
+    try:
+        usage = await asyncio.wait_for(gen.__anext__(), timeout=5.0)
+        sessions = await asyncio.wait_for(gen.__anext__(), timeout=5.0)
+    finally:
+        await gen.aclose()
+
+    assert "event: usage" in usage
+    assert "event: sessions" in sessions
+    assert "Hello World Session" in sessions
+    assert 'aria-current="page"' in sessions

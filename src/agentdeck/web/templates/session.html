@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {# keep tab/home-screen titles short (< 15 chars): the repo name, else the brand #}
 {% block title %}{% if session.cwd and session.cwd.name %}{{ session.cwd.name[:14] }}{% else %}agentdeck{% endif %}{% endblock %}
+{% block body_class %}session-page{% endblock %}
 
 {% block topbar_nav %}<a class="back" href="/" aria-label="back to all sessions">←</a>{% endblock %}
 
@@ -10,6 +11,17 @@
 {% block limit_bars %}{% include "partials/limit_bars.html" %}{% endblock %}
 
 {% block content %}
+<div class="session-layout">
+<aside class="session-sidebar" aria-label="All sessions">
+  <div class="session-sidebar-head">
+    <a href="/">Sessions</a>
+    <span class="count">{{ sessions | length }}</span>
+  </div>
+  <div id="sessions" sse-swap="sessions">
+    {% include "partials/session_list.html" %}
+  </div>
+</aside>
+<section class="session-detail" aria-label="Selected chat">
 {% set s = session %}
 <div id="session-status" sse-swap="status">{% include "partials/session_status.html" %}</div>
 
@@ -84,6 +96,8 @@
 {% set session_key = session.key %}
 {% include "partials/inject_status.html" %}
 {% endif %}
+</section>
+</div>
 
 <script>
 (function () {
@@ -91,10 +105,23 @@
   // follow *before* HTMX changes the page height. Other SSE swaps (status,
   // activity, usage, send state) must never move the viewport.
   var NEAR = 80;
-  function atBottom() {
-    return (window.innerHeight + window.scrollY) >= (document.documentElement.scrollHeight - NEAR);
+  function scrollRoot() {
+    var detail = document.querySelector('.session-detail');
+    if (detail && getComputedStyle(detail).overflowY === 'auto') return detail;
+    return window;
   }
-  function toBottom() { window.scrollTo(0, document.documentElement.scrollHeight); }
+  function atBottom() {
+    var root = scrollRoot();
+    if (root === window) {
+      return (window.innerHeight + window.scrollY) >= (document.documentElement.scrollHeight - NEAR);
+    }
+    return (root.clientHeight + root.scrollTop) >= (root.scrollHeight - NEAR);
+  }
+  function toBottom() {
+    var root = scrollRoot();
+    if (root === window) window.scrollTo(0, document.documentElement.scrollHeight);
+    else root.scrollTo(0, root.scrollHeight);
+  }
   var followTranscript = false;
   var initialDone = false;
   var userMoved = false;

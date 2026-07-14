@@ -173,8 +173,15 @@ body.usage-open .limit-bars { display: flex; }
 .empty { color: var(--muted); font-size: 13px; padding: 6px 2px; }
 a.session { display: block; text-decoration: none; color: inherit; }
 a.session:active { background: var(--panel2); }
+.session.selected { border-top-color: var(--remote); border-right-color: var(--remote);
+  border-bottom-color: var(--remote); background: color-mix(in srgb, var(--remote) 7%, var(--panel)); }
 
 /* session detail */
+.session-sidebar { display: none; }
+.session-detail { min-width: 0; }
+.session-sidebar-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
+  padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.session-sidebar-head a { color: var(--fg); font-weight: 700; text-decoration: none; }
 .session-head { display: flex; align-items: center; gap: 8px; padding: 8px 0; font-weight: 600; }
 .session-head .session-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status-tag { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; padding: 1px 6px;
@@ -375,3 +382,23 @@ details.ev.tool > .ev-text { margin-top: 6px; max-height: 420px; overflow: auto;
   padding: 4px 11px; border-radius: 999px; -webkit-tap-highlight-color: transparent; }
 .toggle-btn.on { color: var(--live); border-color: color-mix(in srgb, var(--live) 45%, transparent);
   background: color-mix(in srgb, var(--live) 12%, transparent); }
+
+/* A detail page becomes a two-pane workspace when both columns have enough
+   room. Each pane scrolls independently, keeping the session list available
+   while reading a long transcript. Mobile retains the existing single page. */
+@media (min-width: 1000px) {
+  body.session-page { display: flex; flex-direction: column; height: 100vh; height: 100dvh;
+    overflow: hidden; }
+  body.session-page .topbar { flex: none; }
+  body.session-page main { flex: 1; min-height: 0; width: 100%; max-width: 1280px;
+    padding: 12px 16px 0; }
+  .session-layout { display: grid; grid-template-columns: minmax(300px, 380px) minmax(0, 760px);
+    justify-content: center; gap: 20px; height: 100%; }
+  .session-sidebar, .session-detail { min-height: 0; overflow-y: auto;
+    scrollbar-gutter: stable; }
+  .session-sidebar { display: block; padding-right: 16px; border-right: 1px solid var(--line); }
+  .session-detail { padding: 0 4px 20px 0; }
+  body.session-page .back, body.session-page > .build { display: none; }
+  .session-sidebar .card-latest { height: 5.65em; }
+  .session-sidebar .session.expanded .card-latest { max-height: 45vh; }
+}

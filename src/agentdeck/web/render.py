@@ -146,10 +146,16 @@ def session_labels(accounts: list[Account]) -> dict[str, str]:
 
 
 def render_session_list(
-    templates: Jinja2Templates, accounts: list[Account], state: AppState
+    templates: Jinja2Templates,
+    accounts: list[Account],
+    state: AppState,
+    *,
+    selected_session_key: str | None = None,
 ) -> str:
     return templates.get_template("partials/session_list.html").render(
-        sessions=state.visible_sessions(), labels=session_labels(accounts)
+        sessions=state.visible_sessions(),
+        labels=session_labels(accounts),
+        selected_session_key=selected_session_key,
     )
 
 
