@@ -152,16 +152,23 @@
     });
   }
 
-  document.body.addEventListener('htmx:beforeSwap', function (event) {
-    if (!event.target.matches('.transcript')) return;
+  function beforeTranscriptSwap(event) {
+    if (!event.target.matches('.transcript')) return false;
     followTranscript = followAfterSend ||
       (atBottom() && !document.activeElement.closest('.inject-form'));
-  });
-  document.body.addEventListener('htmx:afterSwap', function (event) {
+    return true;
+  }
+  function afterTranscriptSwap(event) {
     if (!event.target.matches('.transcript')) return;
     if (followTranscript) requestAnimationFrame(toBottom);
     followTranscript = false;
-  });
+  }
+  document.body.addEventListener('htmx:beforeSwap', beforeTranscriptSwap);
+  document.body.addEventListener('htmx:afterSwap', afterTranscriptSwap);
+  // The SSE extension swaps directly through htmx's internal API and exposes
+  // its own lifecycle events rather than the ordinary before/afterSwap pair.
+  document.body.addEventListener('htmx:sseBeforeMessage', beforeTranscriptSwap);
+  document.body.addEventListener('htmx:sseMessage', afterTranscriptSwap);
   document.body.addEventListener('htmx:afterRequest', function (event) {
     var form = event.detail && event.detail.elt;
     if (!event.detail || !event.detail.successful || !form || !form.matches('.inject-form')) return;

@@ -325,9 +325,16 @@ async def test_session_autoscroll_follows_successful_send_but_not_unrelated_swap
                     target.dispatchEvent(new CustomEvent('htmx:beforeSwap', {bubbles: true}));
                     target.dispatchEvent(new CustomEvent('htmx:afterSwap', {bubbles: true}));
                 };
+                const sseSwap = target => {
+                    target.dispatchEvent(new CustomEvent(
+                        'htmx:sseBeforeMessage', {bubbles: true}
+                    ));
+                    target.insertAdjacentHTML('beforeend', '<div class="ev">reply</div>');
+                    target.dispatchEvent(new CustomEvent('htmx:sseMessage', {bubbles: true}));
+                };
                 swap(document.querySelector('#tool-activity'));
                 const afterActivity = calls;
-                swap(document.querySelector('.transcript'));
+                sseSwap(document.querySelector('.transcript'));
                 const afterTranscript = calls;
                 const form = document.querySelector('.inject-form');
                 form.dispatchEvent(new CustomEvent('htmx:afterRequest', {
@@ -336,7 +343,7 @@ async def test_session_autoscroll_follows_successful_send_but_not_unrelated_swap
                 }));
                 await new Promise(requestAnimationFrame);
                 const afterSend = calls;
-                swap(document.querySelector('.transcript'));
+                sseSwap(document.querySelector('.transcript'));
                 await new Promise(requestAnimationFrame);
                 const afterSentTranscript = calls;
                 await new Promise(resolve => setTimeout(resolve, 400));
