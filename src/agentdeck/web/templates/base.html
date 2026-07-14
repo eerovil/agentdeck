@@ -27,6 +27,12 @@
     var reloading = false;
     navigator.serviceWorker.addEventListener('controllerchange', function () {
       if (reloading) return;
+      var draft = document.querySelector(
+        'form[data-clear-on-send] textarea[name="message"]'
+      );
+      // Do not disrupt someone composing a message just because a frontend
+      // deploy landed. The next navigation will naturally load the new shell.
+      if (draft && draft.value) return;
       reloading = true;
       window.location.reload();
     });
@@ -423,23 +429,75 @@
     });
   })();
 
-  // Enter submits, Shift+Enter keeps the expected multiline behavior.
-  // Successful HTMX submissions clear and re-focus only the prompt.
-  document.addEventListener('keydown', function (e) {
-    if (e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
-    var input = e.target.closest('textarea.send-on-enter');
-    if (!input || !input.form) return;
-    e.preventDefault();
-    input.form.requestSubmit();
-  });
-  document.body.addEventListener('htmx:afterRequest', function (e) {
-    var form = e.detail && e.detail.elt;
-    if (!e.detail || !e.detail.successful || !form || !form.matches('form[data-clear-on-send]')) return;
-    var input = form.querySelector('textarea[name="message"]');
-    if (input) { input.value = ''; input.focus(); }
-    var images = form.querySelector('input[type="file"][name="images"]');
-    if (images) { images.value = ''; images.dispatchEvent(new Event('change', { bubbles: true })); }
-  });
+  // Keep unsent prompts through PWA update reloads (and ordinary navigation
+  // back to the same chat). The form action includes the session key, so each
+  // chat gets an independent draft.
+  (function () {
+    var DRAFT_PREFIX = 'agentdeck:message-draft:';
+    function messageInput(form) {
+      return form && form.querySelector('textarea[name="message"]');
+    }
+    function draftKey(input) {
+      var action = input.form && input.form.getAttribute('hx-post');
+      return DRAFT_PREFIX + (action || location.pathname);
+    }
+    function persist(input) {
+      try {
+        if (input.value) sessionStorage.setItem(draftKey(input), input.value);
+        else sessionStorage.removeItem(draftKey(input));
+      } catch (_) {}
+    }
+    function restore(root) {
+      var selector = 'form[data-clear-on-send] textarea[name="message"]';
+      var inputs = root.matches && root.matches(selector) ? [root] : [];
+      if (root.querySelectorAll) inputs = inputs.concat(Array.from(root.querySelectorAll(selector)));
+      inputs.forEach(function (input) {
+        if (input.value) return;
+        try { input.value = sessionStorage.getItem(draftKey(input)) || ''; } catch (_) {}
+      });
+    }
+
+    document.addEventListener('input', function (event) {
+      if (event.target.matches('form[data-clear-on-send] textarea[name="message"]')) {
+        persist(event.target);
+      }
+    });
+    document.body.addEventListener('htmx:load', function (event) {
+      restore((event.detail && event.detail.elt) || event.target);
+    });
+    restore(document);
+
+    // Enter submits, Shift+Enter keeps the expected multiline behavior.
+    document.addEventListener('keydown', function (event) {
+      if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+      var input = event.target.closest('textarea.send-on-enter');
+      if (!input || !input.form) return;
+      event.preventDefault();
+      input.form.requestSubmit();
+    });
+    document.body.addEventListener('htmx:beforeRequest', function (event) {
+      var form = event.detail && event.detail.elt;
+      if (!form || !form.matches('form[data-clear-on-send]')) return;
+      var input = messageInput(form);
+      form._agentdeckSubmittedMessage = input ? input.value : '';
+    });
+    document.body.addEventListener('htmx:afterRequest', function (event) {
+      var form = event.detail && event.detail.elt;
+      if (!event.detail || !event.detail.successful || !form ||
+          !form.matches('form[data-clear-on-send]')) return;
+      var input = messageInput(form);
+      var submitted = form._agentdeckSubmittedMessage;
+      // Do not erase a new draft typed while the previous request was in flight.
+      if (input && (submitted === undefined || input.value === submitted)) input.value = '';
+      if (input) { persist(input); input.focus(); }
+      delete form._agentdeckSubmittedMessage;
+      var images = form.querySelector('input[type="file"][name="images"]');
+      if (images) {
+        images.value = '';
+        images.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    });
+  })();
   </script>
 </body>
 </html>

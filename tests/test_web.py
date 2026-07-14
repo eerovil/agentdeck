@@ -323,7 +323,7 @@ async def test_clipboard_screenshot_attaches_to_chat_composer(tmp_path):
 
     marker = "// Chat composers: paste clipboard screenshots"
     start = response.text.index(marker)
-    end = response.text.index("// Enter submits", start)
+    end = response.text.index("// Keep unsent prompts", start)
     script = response.text[start:end]
 
     async with async_playwright() as playwright:
@@ -457,6 +457,78 @@ async def test_session_autoscroll_follows_successful_send_but_not_unrelated_swap
         "afterViewportSettle": 2,
         "afterSendingStatus": 2,
     }
+
+
+async def test_message_draft_survives_reload_and_newer_text_is_not_cleared(tmp_path):
+    app = _app_with_state(tmp_path, with_transcript=True)
+    async with _client(app) as client:
+        response = await client.get("/sessions/claude_code:test:sid1")
+    html = response.text.replace(
+        "</main>",
+        '<form class="inject-form" data-clear-on-send '
+        'hx-post="/sessions/codex:test:draft/inject">'
+        '<textarea id="inject-message" name="message"></textarea>'
+        '<input type="file" name="images"></form></main>',
+    )
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        page = await browser.new_page(viewport={"width": 412, "height": 800})
+
+        async def serve(route):
+            if route.request.resource_type == "document":
+                await route.fulfill(status=200, content_type="text/html", body=html)
+            else:
+                await route.fulfill(status=200, body="")
+
+        await page.route("http://agentdeck.test/**", serve)
+        await page.goto("http://agentdeck.test/sessions/claude_code:test:sid1")
+        prompt = page.locator('#inject-message')
+        await prompt.fill("unfinished draft")
+        await page.reload()
+        restored = await prompt.input_value()
+
+        result = await page.evaluate(
+            """() => {
+                const form = document.querySelector('.inject-form');
+                const input = form.querySelector('textarea[name="message"]');
+                input.value = 'message being sent';
+                input.dispatchEvent(new Event('input', {bubbles: true}));
+                form.dispatchEvent(new CustomEvent('htmx:beforeRequest', {
+                  bubbles: true,
+                  detail: {elt: form}
+                }));
+                input.value = 'new draft typed while sending';
+                input.dispatchEvent(new Event('input', {bubbles: true}));
+                form.dispatchEvent(new CustomEvent('htmx:afterRequest', {
+                  bubbles: true,
+                  detail: {successful: true, elt: form}
+                }));
+                const newerDraft = input.value;
+
+                input.value = 'sent normally';
+                input.dispatchEvent(new Event('input', {bubbles: true}));
+                form.dispatchEvent(new CustomEvent('htmx:beforeRequest', {
+                  bubbles: true,
+                  detail: {elt: form}
+                }));
+                form.dispatchEvent(new CustomEvent('htmx:afterRequest', {
+                  bubbles: true,
+                  detail: {successful: true, elt: form}
+                }));
+                return {newerDraft, afterNormalSend: input.value};
+            }"""
+        )
+        await page.reload()
+        afterSentReload = await prompt.input_value()
+        await browser.close()
+
+    assert restored == "unfinished draft"
+    assert result == {
+        "newerDraft": "new draft typed while sending",
+        "afterNormalSend": "",
+    }
+    assert afterSentReload == ""
 
 
 async def test_working_marker_is_an_overlay_that_does_not_change_page_height(tmp_path):
