@@ -390,7 +390,6 @@ async def test_mobile_session_composer_is_compact():
           <input class="image-input" type="file">
           <div class="composer-actions"><span>Enter to send</span><button>Send</button></div>
         </form>
-        <div class="owned-controls"><div class="inject-result"></div></div>
       </section></main></body>
     """
     async with async_playwright() as playwright:

@@ -94,10 +94,6 @@
     <button type="submit">Send</button>
   </div>
 </form>
-{% if owned_session %}
-{% set session_key = session.key %}
-{% include "partials/owned_controls.html" %}
-{% endif %}
 {% endif %}
 </section>
 </div>

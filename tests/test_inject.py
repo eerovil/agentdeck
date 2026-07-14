@@ -630,7 +630,7 @@ async def test_machine_delegation_api_validates_requests(tmp_path):
         assert missing.status_code == 404
 
 
-async def test_owned_session_question_steer_and_stop_ui(tmp_path, monkeypatch):
+async def test_owned_session_question_hides_steer_and_stop_controls(tmp_path, monkeypatch):
     app = _web_app(tmp_path)
     session = app.state.app_state.sessions["codex:test:sid"]
     session.capabilities = frozenset(
@@ -688,9 +688,10 @@ async def test_owned_session_question_steer_and_stop_ui(tmp_path, monkeypatch):
         page = await client.get("/sessions/codex:test:sid")
         assert "Which database should we use?" in page.text
         assert "Postgres" in page.text
-        assert "Send now" in page.text
-        assert 'hx-post="/sessions/codex:test:sid/interrupt"' in page.text
-        assert "Stop" in page.text
+        assert "Send now" not in page.text
+        assert 'hx-post="/sessions/codex:test:sid/interrupt"' not in page.text
+        assert "Stop" not in page.text
+        assert "owned-controls" not in page.text
         response = await client.post(
             "/sessions/codex:test:sid/interaction",
             data={

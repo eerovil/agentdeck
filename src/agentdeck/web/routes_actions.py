@@ -66,18 +66,6 @@ def _render_interaction(request: Request, session_key: str, interaction) -> HTML
     )
 
 
-def _render_owned_controls(request: Request, session_key: str, session) -> HTMLResponse:
-    return get_templates(request).TemplateResponse(
-        request,
-        "partials/owned_controls.html",
-        {
-            "session_key": session_key,
-            "can_steer": Capability.STEER in session.capabilities,
-            "can_interrupt": Capability.INTERRUPT in session.capabilities,
-        },
-    )
-
-
 async def _turn_form(request: Request) -> tuple[str, list[Path]]:
     content_type = request.headers.get("content-type", "").lower()
     if not content_type.startswith(("application/x-www-form-urlencoded", "multipart/form-data")):
@@ -177,14 +165,6 @@ async def pending_interaction(request: Request, session_key: str) -> HTMLRespons
         session_key,
         provider.pending_interaction(account, session),
     )
-
-
-@router.get("/partials/sessions/{session_key}/controls", response_class=HTMLResponse)
-async def owned_controls(request: Request, session_key: str) -> HTMLResponse:
-    account, session, provider = resolve_session(request, session_key)
-    if not provider.owns_session(account, session):
-        return HTMLResponse('<div id="owned-controls"></div>')
-    return _render_owned_controls(request, session_key, session)
 
 
 @router.post("/sessions/{session_key}/interaction", response_class=HTMLResponse)

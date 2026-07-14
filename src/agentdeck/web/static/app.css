@@ -357,18 +357,12 @@ details.ev.tool > .ev-text { margin-top: 6px; max-height: 420px; overflow: auto;
 .interaction-option small, .interaction-cwd { color: var(--muted); }
 .interaction-other { box-sizing: border-box; width: 100%; margin-top: 7px; padding: 10px;
   border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--fg); }
-.interaction-actions, .owned-controls { display: flex; flex-wrap: wrap; gap: 8px;
-  align-items: center; }
-.pending-interaction button, .owned-controls button { padding: 8px 13px; border: 0;
+.interaction-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.pending-interaction button { padding: 8px 13px; border: 0;
   border-radius: 8px; background: var(--remote); color: white; font-weight: 600; cursor: pointer; }
 .pending-interaction button.secondary { background: var(--panel2); color: var(--fg);
   border: 1px solid var(--line); }
-.pending-interaction button.danger, .owned-controls button.danger { background: var(--crit); }
-.owned-controls { margin: -2px 2px 8px; }
-.owned-controls:has(button) { margin-top: 8px; }
-.owned-controls .inject-result { flex-basis: 100%; margin: 0; }
-.owned-controls .inject-result:empty { display: none; }
-.owned-controls:not(:has(button)):has(.inject-result:empty) { margin: 0; }
+.pending-interaction button.danger { background: var(--crit); }
 
 /* List-view filter box. Matches the card surface (panel + hairline line) so it
    reads as part of the deck, not a heavy grey slab. 16px font avoids iOS
