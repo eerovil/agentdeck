@@ -58,6 +58,12 @@
 
 <div id="tool-activity" sse-swap="tools">{% set label = activity_label %}{% include "partials/tool_activity.html" %}</div>
 
+{% if can_inject %}
+{% set inject_status = request.app.state.injector.status(session.key) %}
+{% set session_key = session.key %}
+{% include "partials/inject_status.html" %}
+{% endif %}
+
 {% if owned_session %}
 {% set interaction = pending_interaction %}
 {% set session_key = session.key %}
@@ -92,9 +98,6 @@
 {% set session_key = session.key %}
 {% include "partials/owned_controls.html" %}
 {% endif %}
-{% set inject_status = request.app.state.injector.status(session.key) %}
-{% set session_key = session.key %}
-{% include "partials/inject_status.html" %}
 {% endif %}
 </section>
 </div>

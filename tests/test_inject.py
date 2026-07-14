@@ -360,6 +360,9 @@ async def test_inject_route_kill_switch_validation_and_origin(tmp_path):
         page = await client.get("/sessions/codex:test:sid")
         assert '>Message</label>' in page.text
         assert 'maxlength="50"' in page.text
+        assert page.text.index('id="inject-result"') < page.text.index(
+            'class="inject-form"'
+        )
         cross_site = await client.post(
             "/sessions/codex:test:sid/inject",
             data={"message": "hello"},

@@ -311,7 +311,9 @@ async def test_session_autoscroll_follows_successful_send_but_not_unrelated_swap
             '<div id="tool-activity"></div><form class="inject-form"></form>'
         )
         await page.add_script_tag(content=script)
-        await page.wait_for_timeout(30)
+        # Let the page-load scroll's animation frame finish before counting
+        # scrolls caused by later HTMX events.
+        await page.evaluate("() => new Promise(requestAnimationFrame)")
         await page.evaluate("window.scrollTo(0, 0)")
         result = await page.evaluate(
             """async () => {
