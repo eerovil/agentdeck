@@ -367,6 +367,8 @@ details.ev.tool > .ev-text { margin-top: 6px; max-height: 420px; overflow: auto;
 .owned-controls { margin: -2px 2px 8px; }
 .owned-controls:has(button) { margin-top: 8px; }
 .owned-controls .inject-result { flex-basis: 100%; margin: 0; }
+.owned-controls .inject-result:empty { display: none; }
+.owned-controls:not(:has(button)):has(.inject-result:empty) { margin: 0; }
 
 /* List-view filter box. Matches the card surface (panel + hairline line) so it
    reads as part of the deck, not a heavy grey slab. 16px font avoids iOS
@@ -391,6 +393,7 @@ details.ev.tool > .ev-text { margin-top: 6px; max-height: 420px; overflow: auto;
 /* Keep the on-screen keyboard from leaving only the composer visible. On
    mobile the prompt starts at two lines, and attachment + send share one row. */
 @media (max-width: 999px) {
+  body.session-page main { padding-bottom: 0; }
   .inject-form { display: grid; grid-template-columns: minmax(0, 1fr) auto;
     gap: 6px 8px; margin-top: 8px; padding: 8px;
     padding-bottom: calc(8px + env(safe-area-inset-bottom, 0)); }

@@ -132,6 +132,34 @@ def test_runtime_snapshot_serializes_owned_turn_and_interaction(tmp_path):
     }
 
 
+async def test_runtime_keeps_upload_copy_until_accepted_turn_finishes(tmp_path):
+    runtime = CodexRuntime(AppConfig())
+    release = asyncio.Event()
+
+    class FakeClient:
+        async def wait_for_thread(self, thread_id):
+            assert thread_id == "thread-1"
+            await release.wait()
+
+    upload_root = tmp_path / "preserved-upload"
+    upload_root.mkdir()
+    (upload_root / "image.png").write_bytes(b"image")
+
+    runtime.defer_upload_cleanup(FakeClient(), "thread-1", upload_root)
+    await asyncio.sleep(0)
+    assert upload_root.exists()
+
+    release.set()
+    for _ in range(10):
+        await asyncio.sleep(0)
+        if not upload_root.exists():
+            break
+
+    assert not upload_root.exists()
+    await asyncio.sleep(0)  # let the task's discard callback run
+    assert not runtime._cleanup_tasks
+
+
 def test_systemd_services_keep_web_and_codex_in_separate_control_groups():
     root = Path(__file__).parents[1]
     web = (root / "systemd" / "agentdeck.service").read_text()

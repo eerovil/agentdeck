@@ -358,15 +358,18 @@ async def test_mobile_session_composer_is_compact():
     ).read_text()
     html = f"""
       <style>{css}</style>
-      <form class="inject-form">
-        <label for="inject-message">Message</label>
-        <textarea id="inject-message" rows="3"></textarea>
-        <label class="image-picker">
-          ＋ Attach image <span class="paste-hint">or paste screenshot</span>
-        </label>
-        <input class="image-input" type="file">
-        <div class="composer-actions"><span>Enter to send</span><button>Send</button></div>
-      </form>
+      <body class="session-page"><main><section>
+        <form class="inject-form">
+          <label for="inject-message">Message</label>
+          <textarea id="inject-message" rows="3"></textarea>
+          <label class="image-picker">
+            ＋ Attach image <span class="paste-hint">or paste screenshot</span>
+          </label>
+          <input class="image-input" type="file">
+          <div class="composer-actions"><span>Enter to send</span><button>Send</button></div>
+        </form>
+        <div class="owned-controls"><div class="inject-result"></div></div>
+      </section></main></body>
     """
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()
@@ -378,6 +381,7 @@ async def test_mobile_session_composer_is_compact():
                 const textarea = form.querySelector('textarea');
                 const picker = form.querySelector('.image-picker');
                 const actions = form.querySelector('.composer-actions');
+                const main = document.querySelector('main');
                 return {
                     formHeight: form.getBoundingClientRect().height,
                     textareaHeight: textarea.getBoundingClientRect().height,
@@ -386,6 +390,8 @@ async def test_mobile_session_composer_is_compact():
                     ) < 2,
                     hintHidden: getComputedStyle(actions.querySelector('span')).display,
                     pasteHintHidden: getComputedStyle(form.querySelector('.paste-hint')).display,
+                    keyboardGap: main.getBoundingClientRect().bottom
+                        - form.getBoundingClientRect().bottom,
                 };
             }"""
         )
@@ -396,6 +402,7 @@ async def test_mobile_session_composer_is_compact():
     assert metrics["controlsAligned"]
     assert metrics["hintHidden"] == "none"
     assert metrics["pasteHintHidden"] == "none"
+    assert metrics["keyboardGap"] == 0
 
 
 async def test_card_shows_agent_response(tmp_path):

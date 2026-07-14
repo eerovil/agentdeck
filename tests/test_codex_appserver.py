@@ -350,6 +350,38 @@ async def test_wait_for_owned_thread_completion(tmp_path):
     assert result.accepted
 
 
+async def test_queued_turn_is_acknowledged_when_followup_starts(tmp_path):
+    server = _server(tmp_path)
+    server.start = AsyncMock()
+    server._owned.add("thread-1")
+    server._loaded.add("thread-1")
+    server._active_turn["thread-1"] = "turn-old"
+
+    async def request(method, params, **kwargs):
+        assert method == "turn/start"
+        assert params["threadId"] == "thread-1"
+        return {"turn": {"id": "turn-new", "status": "inProgress"}}
+
+    server._request = request
+    queued = asyncio.create_task(server.queue_turn("thread-1", "Next message"))
+    await asyncio.sleep(0)
+    assert not queued.done()
+
+    server._notification(
+        "turn/completed",
+        {
+            "threadId": "thread-1",
+            "turn": {"id": "turn-old", "status": "completed"},
+        },
+    )
+    result = await asyncio.wait_for(queued, timeout=1)
+
+    assert result.accepted
+    assert server.active_turn("thread-1") == "turn-new"
+    # No turn/completed notification for turn-new was needed: acceptance of
+    # turn/start is the point where the message has finished sending.
+
+
 def test_unsafe_mcp_url_is_not_exposed(tmp_path):
     server = _server(tmp_path)
     server._owned.add("thread-1")

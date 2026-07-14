@@ -59,6 +59,7 @@ class CodexRuntime:
             if account.provider_id == "codex"
         }
         self.clients: dict[str, CodexAppServer] = {}
+        self._cleanup_tasks: set[asyncio.Task] = set()
 
     async def start(self) -> None:
         try:
@@ -71,11 +72,36 @@ class CodexRuntime:
             raise
 
     async def stop(self) -> None:
+        cleanup = list(self._cleanup_tasks)
+        for task in cleanup:
+            task.cancel()
+        if cleanup:
+            await asyncio.gather(*cleanup, return_exceptions=True)
+            self._cleanup_tasks.clear()
         await asyncio.gather(
             *(client.stop() for client in self.clients.values()),
             return_exceptions=True,
         )
         self.clients.clear()
+
+    def defer_upload_cleanup(
+        self, client: CodexAppServer, thread_id: str, root: Path
+    ) -> None:
+        """Keep runtime-owned image copies until the accepted turn finishes."""
+
+        async def cleanup() -> None:
+            try:
+                await client.wait_for_thread(thread_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
+            finally:
+                shutil.rmtree(root, ignore_errors=True)
+
+        task = asyncio.create_task(cleanup(), name=f"upload-cleanup:{thread_id}")
+        self._cleanup_tasks.add(task)
+        task.add_done_callback(self._cleanup_tasks.discard)
 
     def client(self, label: str) -> CodexAppServer:
         client = self.clients.get(label)
@@ -159,10 +185,15 @@ def create_runtime_app(config: AppConfig) -> FastAPI:
     async def queue(label: str, body: TurnRequest) -> dict[str, Any]:
         client = runtime.client(label)
         images, root = _preserve_images(client.account, body.images)
+        cleanup_now = True
         try:
-            return _result(await client.queue_turn(body.thread_id, body.message, images=images))
+            result = await client.queue_turn(body.thread_id, body.message, images=images)
+            if root is not None and result.accepted:
+                runtime.defer_upload_cleanup(client, body.thread_id, root)
+                cleanup_now = False
+            return _result(result)
         finally:
-            if root is not None:
+            if root is not None and cleanup_now:
                 shutil.rmtree(root, ignore_errors=True)
 
     @app.post("/accounts/{label}/wait")

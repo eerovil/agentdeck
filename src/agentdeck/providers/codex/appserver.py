@@ -594,11 +594,13 @@ class CodexAppServer:
         *,
         images: list[Path] | None = None,
     ) -> InjectResult:
-        """Wait for the active turn, then run one ordinary follow-up turn."""
+        """Wait for the active turn, then start one ordinary follow-up turn."""
         active = self.active_turn(thread_id)
         if active is not None:
             await self._wait_for_turn(active)
-        return await self.start_turn(thread_id, message, images=images)
+        # The message is sent once turn/start is accepted. Do not make the web
+        # queue say "Sending" throughout the assistant's entire response.
+        return await self.start_turn(thread_id, message, images=images, wait=False)
 
     async def wait_for_thread(self, thread_id: str) -> InjectResult:
         turn_id = self.active_turn(thread_id)
