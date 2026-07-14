@@ -667,6 +667,7 @@ def test_tool_calls_visible_outputs_hidden_and_live_marker(tmp_path):
             role="assistant",
             tool_name="Bash",
             tool_summary="cmd: uv run pytest -q",
+            tool_detail="uv run pytest -q --verbose tests/test_web.py",
             text=None,
         ),
         TranscriptEvent(seq=3, role="assistant", text="here is my answer"),
@@ -675,8 +676,10 @@ def test_tool_calls_visible_outputs_hidden_and_live_marker(tmp_path):
     html = render_transcript_events(templates, events)
     assert "huge noisy tool result" not in html  # past tool result dropped
     assert "tool-call" in html
+    assert '<details class="ev tool tool-call">' in html
     assert "Bash" in html
     assert "cmd: uv run pytest -q" in html
+    assert "uv run pytest -q --verbose tests/test_web.py" in html
     assert "here is my answer" in html  # real assistant text kept
     assert "queued follow-up" in html  # queued turns look like ordinary user chat
     assert "user · queued" not in html

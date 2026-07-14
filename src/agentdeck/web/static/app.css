@@ -242,7 +242,7 @@ details.ev.tool > summary::before { content: "▸"; color: var(--warn); font-siz
 details.ev.tool[open] > summary::before { content: "▾"; }
 details.ev.tool > summary .ev-role { color: var(--warn); }
 .tool-peek { color: var(--muted); font-size: 12px; font-family: ui-monospace, "SF Mono", monospace;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 details.ev.tool[open] > summary .tool-peek { display: none; }
 details.ev.tool > .ev-text { margin-top: 6px; max-height: 420px; overflow: auto;
   font-family: ui-monospace, "SF Mono", monospace; font-size: 12px; }

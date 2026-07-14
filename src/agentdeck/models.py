@@ -232,6 +232,7 @@ class TranscriptEvent:  # normalized transcript line (parsed from v0.2)
     ts: datetime | None = None
     subagent: str | None = None  # set when from <uuid>/subagents/
     queued: bool = False  # user message typed while the agent was busy (enqueued)
+    tool_detail: str | None = None  # expandable provider-native tool input
 
 
 @dataclass

@@ -20,6 +20,7 @@ from ...models import TokenTotals, TranscriptEvent
 log = logging.getLogger(__name__)
 
 _MAX_TOOL_OUTPUT = 4000
+_MAX_TOOL_DETAIL = 8000
 _MAX_TITLE = 200
 _MAX_TOOL_SUMMARY = 160
 _META_HEAD = 128 * 1024
@@ -164,20 +165,28 @@ def _is_internal_system(text: str | None) -> bool:
     return bool(text and text.lstrip().startswith(_INTERNAL_SYSTEM_PREFIXES))
 
 
+def _decode_js_string(value: str) -> str:
+    try:
+        return json.loads(f'"{value}"')
+    except ValueError:
+        return value
+
+
+def _wrapped_exec_command(text: str) -> str | None:
+    match = re.search(
+        r'\bexec_command\(\s*\{\s*cmd\s*:\s*"((?:\\.|[^"\\])*)"', text
+    )
+    return _decode_js_string(match.group(1)) if match else None
+
+
 def _tool_summary(value: object) -> str | None:
     if not isinstance(value, str) or not value.strip():
         return None
     text = value.strip()
     # Newer Codex builds wrap tool calls in a small JavaScript orchestration
     # snippet. Pull the useful nested shell command back out for the UI.
-    exec_match = re.search(
-        r'\bexec_command\(\s*\{\s*cmd\s*:\s*"((?:\\.|[^"\\])*)"', text
-    )
-    if exec_match:
-        try:
-            command = json.loads(f'"{exec_match.group(1)}"')
-        except ValueError:
-            command = exec_match.group(1)
+    command = _wrapped_exec_command(text)
+    if command:
         return f"cmd: {command}"[:_MAX_TOOL_SUMMARY]
     patch_path = re.search(
         r"\*\*\* (?:Update|Add|Delete) File: ([^\\\r\n\"]+)", text
@@ -205,6 +214,27 @@ def _tool_summary(value: object) -> str | None:
             return f"{key}: {item}"[:_MAX_TOOL_SUMMARY]
     keys = ", ".join(str(key) for key in parsed)
     return keys[:_MAX_TOOL_SUMMARY] or None
+
+
+def _tool_detail(value: object) -> str | None:
+    """Useful expandable input without exposing the orchestration wrapper."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    command = _wrapped_exec_command(text)
+    if command:
+        return command[:_MAX_TOOL_DETAIL]
+    patch = re.search(r'\bconst\s+patch\s*=\s*"((?:\\.|[^"\\])*)"', text)
+    if patch:
+        return _decode_js_string(patch.group(1))[:_MAX_TOOL_DETAIL]
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return text[:_MAX_TOOL_DETAIL]
+    try:
+        return json.dumps(parsed, ensure_ascii=False, indent=2)[:_MAX_TOOL_DETAIL]
+    except (TypeError, ValueError):
+        return text[:_MAX_TOOL_DETAIL]
 
 
 def _tool_output(value: object) -> str | None:
@@ -260,6 +290,7 @@ def _event_from_line(seq: int, data: dict) -> TranscriptEvent | None:
             role="assistant",
             tool_name=name if isinstance(name, str) else "tool",
             tool_summary=_tool_summary(arguments),
+            tool_detail=_tool_detail(arguments),
             ts=timestamp,
         )
     if item_type in ("custom_tool_call_output", "function_call_output"):

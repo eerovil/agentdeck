@@ -363,6 +363,7 @@ def test_codex_extracts_edited_file_from_apply_patch(tmp_path):
     (event,) = transcripts.read_events(path).events
     assert event.tool_name == "apply_patch"
     assert event.tool_summary == "path: src/agentdeck/app.py"
+    assert "*** Update File: src/agentdeck/app.py" in event.tool_detail
 
 
 def test_codex_summarizes_wrapped_tools_and_keeps_private_reasoning_heartbeat(tmp_path):
@@ -379,13 +380,27 @@ def test_codex_summarizes_wrapped_tools_and_keeps_private_reasoning_heartbeat(tm
                 ),
             },
         ),
+        _line(
+            "response_item",
+            {
+                "type": "custom_tool_call",
+                "name": "apply_patch",
+                "input": (
+                    'const patch = "*** Begin Patch\\n*** Update File: src/app.py\\n'
+                    '@@\\n-old\\n+new\\n*** End Patch"; tools.apply_patch(patch)'
+                ),
+            },
+        ),
         _line("response_item", {"type": "reasoning", "summary": []}),
     ]
     path.write_text("".join(json.dumps(line) + "\n" for line in lines))
 
-    tool, heartbeat = transcripts.read_events(path).events
+    tool, edit, heartbeat = transcripts.read_events(path).events
     assert tool.tool_name == "exec"
     assert tool.tool_summary == "cmd: uv run pytest -q"
+    assert tool.tool_detail == "uv run pytest -q"
+    assert edit.tool_summary == "path: src/app.py"
+    assert edit.tool_detail.startswith("*** Begin Patch\n*** Update File: src/app.py")
     assert heartbeat.role == "system"
     assert heartbeat.tool_name == "reasoning"
     assert heartbeat.tool_summary == "Thinking"
