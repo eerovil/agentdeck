@@ -4,23 +4,26 @@
      hx-get="/partials/sessions/{{ session_key }}/inject-status"
      hx-trigger="load delay:2s" hx-swap="outerHTML"
      {% endif %}>
-  <div class="queue-summary">
-    {% if inject_status.state == 'running' %}Codex is working…
-    {% elif inject_status.state == 'queued' %}Messages queued…
-    {% elif inject_status.state == 'complete' %}Queue completed.
-    {% elif inject_status.state == 'failed' %}{{ inject_status.reason or 'Injection failed.' }}
+  {% if inject_status.state != 'complete' %}
+  <div class="send-summary">
+    {% if inject_status.state == 'running' %}Sending…
+    {% elif inject_status.state == 'queued' %}Will send when Codex is ready…
+    {% elif inject_status.state == 'failed' %}{{ inject_status.reason or 'Could not send message.' }}
     {% endif %}
   </div>
-  {% if inject_status.items %}
-  <ol class="message-queue">
+  {% if inject_status.items and inject_status.state in ('running', 'queued', 'failed') %}
+  <ol class="pending-messages">
     {% for item in inject_status.items %}
+    {% if item.state != 'complete' %}
     <li class="{{ item.state }}">
-      <span class="queue-state">{% if item.state == 'running' %}sending{% elif item.state == 'complete' %}sent{% else %}{{ item.state }}{% endif %}</span>
+      <span class="queue-state">{% if item.state == 'running' %}sending{% elif item.state == 'queued' %}waiting{% else %}{{ item.state }}{% endif %}</span>
       <span class="queue-text">{{ item.text }}</span>
       {% if item.reason %}<span class="queue-error">{{ item.reason }}</span>{% endif %}
     </li>
+    {% endif %}
     {% endfor %}
   </ol>
+  {% endif %}
   {% endif %}
 </div>
 {% else %}

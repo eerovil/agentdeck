@@ -355,8 +355,77 @@
     document.body.addEventListener('htmx:afterSwap', function (e) { enhance(e.target); });
   })();
 
-  // Chat composers: Enter submits, Shift+Enter keeps the expected multiline
-  // behavior. Successful HTMX submissions clear and re-focus only the prompt.
+  // Chat composers: paste clipboard screenshots directly into the existing
+  // hardened image-upload field. The delegated handlers cover both the new-chat
+  // composer and session composer, including controls swapped later by HTMX.
+  (function () {
+    var imageTypes = /^(?:image\/png|image\/jpeg|image\/webp|image\/gif)$/;
+    var previewUrls = new WeakMap();
+
+    function imageInput(form) {
+      return form && form.querySelector('input[type="file"][name="images"]');
+    }
+    function setFiles(input, files) {
+      var transfer = new DataTransfer();
+      files.forEach(function (file) { transfer.items.add(file); });
+      input.files = transfer.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    function renderImages(input) {
+      var old = previewUrls.get(input) || [];
+      old.forEach(function (url) { URL.revokeObjectURL(url); });
+      var urls = [];
+      var box = input.nextElementSibling;
+      if (!box || !box.classList.contains('paste-previews')) {
+        box = document.createElement('div');
+        box.className = 'paste-previews';
+        box.setAttribute('aria-live', 'polite');
+        input.insertAdjacentElement('afterend', box);
+      }
+      box.textContent = '';
+      Array.from(input.files || []).forEach(function (file, index) {
+        var item = document.createElement('span');
+        item.className = 'paste-preview';
+        var img = document.createElement('img');
+        var url = URL.createObjectURL(file); urls.push(url);
+        img.src = url; img.alt = '';
+        var remove = document.createElement('button');
+        remove.type = 'button'; remove.className = 'paste-remove';
+        remove.textContent = '×'; remove.title = 'Remove ' + (file.name || 'pasted image');
+        remove.setAttribute('aria-label', remove.title);
+        remove.addEventListener('click', function () {
+          setFiles(input, Array.from(input.files).filter(function (_, i) { return i !== index; }));
+        });
+        item.appendChild(img); item.appendChild(remove); box.appendChild(item);
+      });
+      if (input.files && input.files.length) {
+        var count = document.createElement('span');
+        count.className = 'paste-count';
+        count.textContent = input.files.length + (input.files.length === 1 ? ' image attached' : ' images attached');
+        box.appendChild(count);
+      }
+      previewUrls.set(input, urls);
+    }
+
+    document.addEventListener('paste', function (event) {
+      var textarea = event.target.closest('textarea[name="message"]');
+      var input = textarea && imageInput(textarea.form);
+      if (!input || !event.clipboardData) return;
+      var pasted = Array.from(event.clipboardData.items || []).filter(function (item) {
+        return item.kind === 'file' && imageTypes.test(item.type);
+      }).map(function (item) { return item.getAsFile(); }).filter(Boolean);
+      if (!pasted.length) return; // ordinary text paste keeps its native behavior
+      event.preventDefault();
+      setFiles(input, Array.from(input.files || []).concat(pasted));
+      textarea.focus();
+    });
+    document.addEventListener('change', function (event) {
+      if (event.target.matches('input[type="file"][name="images"]')) renderImages(event.target);
+    });
+  })();
+
+  // Enter submits, Shift+Enter keeps the expected multiline behavior.
+  // Successful HTMX submissions clear and re-focus only the prompt.
   document.addEventListener('keydown', function (e) {
     if (e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
     var input = e.target.closest('textarea.send-on-enter');
@@ -370,7 +439,7 @@
     var input = form.querySelector('textarea[name="message"]');
     if (input) { input.value = ''; input.focus(); }
     var images = form.querySelector('input[type="file"][name="images"]');
-    if (images) images.value = '';
+    if (images) { images.value = ''; images.dispatchEvent(new Event('change', { bubbles: true })); }
   });
   </script>
 </body>

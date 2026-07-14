@@ -241,6 +241,99 @@ async def test_dashboard_has_list_search(tmp_path):
     assert "htmx:afterSwap" in r.text
 
 
+async def test_clipboard_screenshot_attaches_to_chat_composer(tmp_path):
+    app = _app_with_state(tmp_path)
+    async with _client(app) as client:
+        response = await client.get("/")
+
+    marker = "// Chat composers: paste clipboard screenshots"
+    start = response.text.index(marker)
+    end = response.text.index("// Enter submits", start)
+    script = response.text[start:end]
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(
+            '<form><textarea name="message"></textarea>'
+            '<input type="file" name="images" multiple></form>'
+        )
+        await page.add_script_tag(content=script)
+        result = await page.evaluate(
+            """() => {
+                const transfer = new DataTransfer();
+                transfer.items.add(new File(
+                    [new Uint8Array([137, 80, 78, 71])], 'screenshot.png',
+                    {type: 'image/png'}
+                ));
+                const textarea = document.querySelector('textarea');
+                const event = new ClipboardEvent('paste', {
+                    clipboardData: transfer, bubbles: true, cancelable: true
+                });
+                textarea.dispatchEvent(event);
+                const input = document.querySelector('input[name="images"]');
+                return {
+                    prevented: event.defaultPrevented,
+                    files: input.files.length,
+                    name: input.files[0].name,
+                    previews: document.querySelectorAll('.paste-preview').length,
+                    count: document.querySelector('.paste-count').textContent,
+                };
+            }"""
+        )
+        await browser.close()
+
+    assert result == {
+        "prevented": True,
+        "files": 1,
+        "name": "screenshot.png",
+        "previews": 1,
+        "count": "1 image attached",
+    }
+
+
+async def test_session_autoscroll_ignores_non_transcript_swaps_and_scrolled_up_reader(tmp_path):
+    app = _app_with_state(tmp_path, with_transcript=True)
+    async with _client(app) as client:
+        response = await client.get("/sessions/claude_code:test:sid1")
+
+    marker = "// Open at the newest message."
+    start = response.text.index(marker)
+    end = response.text.index("</script>", start)
+    script = response.text[start:end]
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        page = await browser.new_page(viewport={"width": 800, "height": 500})
+        await page.set_content(
+            '<div class="transcript" style="height:2400px"></div>'
+            '<div id="tool-activity"></div><form class="inject-form"></form>'
+        )
+        await page.add_script_tag(content=script)
+        await page.wait_for_timeout(30)
+        await page.evaluate("window.scrollTo(0, 0)")
+        result = await page.evaluate(
+            """() => {
+                let calls = 0;
+                const realScrollTo = window.scrollTo.bind(window);
+                window.scrollTo = () => { calls += 1; };
+                const swap = target => {
+                    target.dispatchEvent(new CustomEvent('htmx:beforeSwap', {bubbles: true}));
+                    target.dispatchEvent(new CustomEvent('htmx:afterSwap', {bubbles: true}));
+                };
+                swap(document.querySelector('#tool-activity'));
+                const afterActivity = calls;
+                swap(document.querySelector('.transcript'));
+                const afterTranscript = calls;
+                window.scrollTo = realScrollTo;
+                return {afterActivity, afterTranscript};
+            }"""
+        )
+        await browser.close()
+
+    assert result == {"afterActivity": 0, "afterTranscript": 0}
+
+
 async def test_card_shows_agent_response(tmp_path):
     app = _app_with_state(tmp_path)
     app.state.app_state.update_session(
@@ -303,7 +396,7 @@ def test_ask_user_question_renders_in_transcript(tmp_path):
 
 
 def test_activity_label_fallback():
-    from agentdeck.models import TranscriptEvent
+    from agentdeck.models import TranscriptEvent, detailed_activity_label
     from agentdeck.web.render import activity_label
 
     tool_call = TranscriptEvent(seq=1, role="assistant", tool_name="Bash", text=None)
@@ -330,6 +423,24 @@ def test_activity_label_fallback():
     ask = TranscriptEvent(seq=1, role="assistant", tool_name="AskUserQuestion", question="Pick?")
     assert activity_label(True, False, ask) is None
     assert activity_label(True, True, ask) is None
+
+    command = TranscriptEvent(
+        seq=2,
+        role="assistant",
+        tool_name="exec_command",
+        tool_summary="cmd: uv run pytest tests/test_web.py",
+    )
+    path = TranscriptEvent(
+        seq=3,
+        role="assistant",
+        tool_name="view_image",
+        tool_summary="path: /tmp/screenshot.png",
+    )
+    assert detailed_activity_label("Using tools", command) == (
+        "Running: uv run pytest tests/test_web.py"
+    )
+    assert detailed_activity_label("Using tools", path) == "Accessing: /tmp/screenshot.png"
+    assert detailed_activity_label("Working", command) == "Working"
 
 
 def test_working_sessions_sort_first(tmp_path):
@@ -411,6 +522,72 @@ async def test_thinking_badge_renders(tmp_path):
         r = await c.get("/partials/sessions")
     assert "thinking-badge" in r.text
     assert "dot live thinking" in r.text
+    assert 'data-session-key="claude_code:test:think1"' in r.text
+    assert 'data-working="1"' in r.text
+
+
+async def test_dashboard_marks_chats_that_recently_stopped_working(tmp_path):
+    app = _app_with_state(tmp_path)
+    app.state.app_state.update_session(
+        Session(
+            key="claude_code:test:think1",
+            account_key="claude_code:test",
+            session_id="think1",
+            status=SessionStatus.LIVE,
+            thinking=True,
+            title="Busy session",
+        )
+    )
+    async with _client(app) as client:
+        response = await client.get("/")
+
+    marker = "// Keep the tab useful as a passive monitor."
+    start = response.text.index(marker)
+    end = response.text.index("</script>", start)
+    script = response.text[start:end]
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(
+            '<title>agentdeck</title><div id="sessions"><div class="session-list">'
+            '<a class="session" data-session-key="quiet" data-working="0">'
+            '<div class="session-main">quiet</div></a>'
+            '<a class="session" data-session-key="busy" data-working="1">'
+            '<div class="session-main">busy<span class="thinking-badge">working</span></div>'
+            '<span class="dot thinking"></span></a>'
+            "</div></div>"
+        )
+        await page.add_script_tag(content=script)
+        assert await page.title() == "(1) agentdeck"
+
+        await page.locator('[data-session-key="busy"]').evaluate(
+            "card => card.setAttribute('data-working', '0')"
+        )
+        await page.evaluate("window.agentdeckRefreshWorkState()")
+        result = await page.evaluate(
+            """() => ({
+                title: document.title,
+                first: document.querySelector('.session-list').firstElementChild.dataset.sessionKey,
+                marked: document.querySelector('[data-session-key="busy"]')
+                    .classList.contains('recently-stopped'),
+                badge: document.querySelector(
+                    '[data-session-key="busy"] .recently-stopped-badge'
+                ).textContent,
+                thinkingBadge: !!document.querySelector(
+                    '[data-session-key="busy"] .thinking-badge'
+                ),
+            })"""
+        )
+        await browser.close()
+
+    assert result == {
+        "title": "★ (0) agentdeck",
+        "first": "busy",
+        "marked": True,
+        "badge": "★ just finished",
+        "thinkingBadge": False,
+    }
 
 
 def test_display_state_alive_vs_thinking():

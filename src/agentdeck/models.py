@@ -187,6 +187,31 @@ def activity_label(
     return None
 
 
+def detailed_activity_label(label: str | None, last_ev) -> str | None:
+    """Add a compact user-facing detail to a generic tool activity label."""
+    if label != "Using tools" or last_ev is None or not last_ev.tool_name:
+        return label
+    name = last_ev.tool_name.rsplit("__", 1)[-1].replace("_", " ").strip()
+    summary = (last_ev.tool_summary or "").strip()
+    if not summary:
+        return f"Using {name}" if name else label
+
+    key, separator, value = summary.partition(": ")
+    if separator:
+        action = {
+            "cmd": "Running",
+            "command": "Running",
+            "path": "Accessing",
+            "query": "Searching",
+            "url": "Opening",
+        }.get(key.casefold())
+        if action:
+            return f"{action}: {value}"
+    if last_ev.tool_name == "apply_patch" and summary.startswith("***"):
+        return "Editing files"
+    return f"{name.title()}: {summary}" if name else label
+
+
 @dataclass
 class TranscriptEvent:  # normalized transcript line (parsed from v0.2)
     seq: int  # monotonically increasing per session (line number)

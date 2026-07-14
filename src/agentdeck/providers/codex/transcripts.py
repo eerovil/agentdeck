@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -50,6 +51,7 @@ class TranscriptMeta:
     kind: str | None = None
     tokens: TokenTotals | None = None
     context_tokens: int | None = None
+    is_approval_review: bool = False
 
 
 def _parse_ts(value: object) -> datetime | None:
@@ -109,16 +111,35 @@ def _text_content(content: object) -> str | None:
     return text or None
 
 
+_INTERNAL_ASSISTANT_BLOCK = re.compile(r"\s*<oai-mem-citation>.*?</oai-mem-citation>\s*", re.DOTALL)
+
+
+def _strip_internal_assistant_metadata(text: str) -> str | None:
+    """Remove renderer metadata that is stored beside the assistant's answer.
+
+    Codex consumers use the oai-mem-citation block for provenance, but it is
+    not conversation content and AgentDeck has no reason to expose it.
+    """
+    cleaned = _INTERNAL_ASSISTANT_BLOCK.sub("\n", text).strip()
+    # Be conservative with a truncated tail: never show a half-written internal
+    # block while the rollout JSONL is still being appended.
+    if "<oai-mem-citation>" in cleaned:
+        cleaned = cleaned.partition("<oai-mem-citation>")[0].rstrip()
+    return cleaned or None
+
+
 def _is_noise_user(text: str | None) -> bool:
     if not text:
         return False
     stripped = text.lstrip()
     folded = stripped.casefold()
-    if folded.startswith((
-        "<environment_context>",
-        "# agents.md instructions for ",
-        "<instructions>",
-    )):
+    if folded.startswith(
+        (
+            "<environment_context>",
+            "# agents.md instructions for ",
+            "<instructions>",
+        )
+    ):
         return True
     first_line = stripped.partition("\n")[0].strip()
     return first_line == "@.cursorrules" or (
@@ -141,6 +162,9 @@ def _tool_summary(value: object) -> str | None:
     if not isinstance(value, str) or not value.strip():
         return None
     text = value.strip()
+    patch_path = re.search(r"^\*\*\* (?:Update|Add|Delete) File: (.+)$", text, re.MULTILINE)
+    if patch_path:
+        return f"path: {patch_path.group(1)[: _MAX_TOOL_SUMMARY - 6]}"
     try:
         parsed = json.loads(text)
     except ValueError:
@@ -200,6 +224,8 @@ def _event_from_line(seq: int, data: dict) -> TranscriptEvent | None:
         if role not in ("user", "assistant", "system"):
             return None
         text = _text_content(payload.get("content"))
+        if text is not None and role == "assistant":
+            text = _strip_internal_assistant_metadata(text)
         if (
             text is None
             or (role == "user" and _is_noise_user(text))
@@ -337,6 +363,7 @@ def transcript_meta(
     tail_objects = _objects(last, skip_first_partial=bool(last), require_final_newline=True)
 
     session_id = cwd = kind = model = None
+    is_approval_review = False
     started_at = None
     title = last_prompt = last_text = last_role = None
     last_agent_message = None
@@ -344,7 +371,7 @@ def transcript_meta(
     context_tokens = None
 
     def scan(objects: list[dict], *, find_title: bool) -> None:
-        nonlocal session_id, cwd, kind, model, started_at
+        nonlocal session_id, cwd, kind, model, started_at, is_approval_review
         nonlocal title, last_prompt, last_text, last_role, tokens, context_tokens
         nonlocal last_agent_message
         for obj in objects:
@@ -359,9 +386,18 @@ def transcript_meta(
                 cwd = value if isinstance(value, str) else cwd
                 value = payload.get("source")
                 kind = value if isinstance(value, str) else kind
-                started_at = _parse_ts(payload.get("timestamp")) or _parse_ts(
-                    obj.get("timestamp")
-                ) or started_at
+                instructions = payload.get("base_instructions")
+                if isinstance(instructions, dict):
+                    text = instructions.get("text")
+                    is_approval_review = is_approval_review or (
+                        isinstance(text, str)
+                        and "You are judging one planned coding-agent action." in text
+                    )
+                started_at = (
+                    _parse_ts(payload.get("timestamp"))
+                    or _parse_ts(obj.get("timestamp"))
+                    or started_at
+                )
             elif outer_type == "turn_context":
                 value = payload.get("model")
                 model = value if isinstance(value, str) else model
@@ -376,12 +412,14 @@ def transcript_meta(
                     last_prompt = text
                     last_role = "user"
                 elif native_role == "assistant" and text:
-                    last_text = text
-                    last_role = "agent"
+                    text = _strip_internal_assistant_metadata(text)
+                    if text:
+                        last_text = text
+                        last_role = "agent"
             elif outer_type == "event_msg" and payload.get("type") == "task_complete":
                 msg = payload.get("last_agent_message")
                 if isinstance(msg, str) and msg.strip():
-                    last_agent_message = msg.strip()
+                    last_agent_message = _strip_internal_assistant_metadata(msg)
             elif outer_type == "event_msg" and payload.get("type") == "token_count":
                 info = payload.get("info")
                 if not isinstance(info, dict):
@@ -409,6 +447,7 @@ def transcript_meta(
         kind=kind,
         tokens=tokens,
         context_tokens=context_tokens,
+        is_approval_review=is_approval_review,
     )
 
 

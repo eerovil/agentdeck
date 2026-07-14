@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
-from ..models import SessionStatus
+from ..models import SessionStatus, detailed_activity_label
 from .deps import (
     get_accounts,
     get_state,
@@ -156,6 +156,7 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
         # "Busy" (pulsing dot + activity marker) tracks the open turn, not just
         # recent writes — so a long tool run or slow first token stays busy.
         label = None if current.question else activity_label(live, streaming, last_ev, age)
+        label = detailed_activity_label(label, last_ev)
         busy = label is not None
         if current.status != last_status or busy != last_busy:
             last_status, last_busy = current.status, busy

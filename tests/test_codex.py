@@ -159,6 +159,28 @@ async def test_codex_session_discovery_and_metadata(tmp_path):
     assert found[idle_sid].show_when_idle is True
 
 
+async def test_approval_review_rollout_cannot_replace_parent_session(tmp_path):
+    parent_sid = "019f5b2b-c830-7922-a1ce-8c9c69526c06"
+    reviewer_file_sid = "019f5b2b-c830-7922-a1ce-8c9c69526c07"
+    _rollout(tmp_path, parent_sid)
+    reviewer = _rollout(tmp_path, reviewer_file_sid)
+
+    lines = [json.loads(line) for line in reviewer.read_text().splitlines()]
+    lines[0]["payload"]["session_id"] = parent_sid
+    lines[0]["payload"]["id"] = parent_sid
+    lines[0]["payload"]["base_instructions"] = {
+        "text": "You are judging one planned coding-agent action.\nAssess its risk."
+    }
+    lines[3] = _message("user", "Internal approval assessment prompt")
+    reviewer.write_text("".join(json.dumps(item) + "\n" for item in lines))
+
+    assert transcripts.transcript_meta(reviewer).is_approval_review is True
+    provider = CodexProvider()
+    (session,) = await provider.scan_sessions(_account(tmp_path))
+    assert session.session_id == parent_sid
+    assert session.title == "Build the parser safely"
+
+
 async def test_completed_exec_session_is_injectable(tmp_path):
     sid = "019f5b5b-6281-7a00-a197-d020a1243d2d"
     directory = tmp_path / "sessions" / "2026" / "07" / "13"
@@ -246,6 +268,23 @@ def test_codex_partial_and_malformed_lines_resume(tmp_path):
     assert tail.byte_offset == path.stat().st_size
 
 
+def test_codex_extracts_edited_file_from_apply_patch(tmp_path):
+    path = tmp_path / "rollout.jsonl"
+    call = _line(
+        "response_item",
+        {
+            "type": "custom_tool_call",
+            "name": "apply_patch",
+            "input": "*** Begin Patch\n*** Update File: src/agentdeck/app.py\n@@\n*** End Patch",
+        },
+    )
+    path.write_text(json.dumps(call) + "\n")
+
+    (event,) = transcripts.read_events(path).events
+    assert event.tool_name == "apply_patch"
+    assert event.tool_summary == "path: src/agentdeck/app.py"
+
+
 def test_codex_filters_only_internal_system_preamble(tmp_path):
     path = tmp_path / "rollout.jsonl"
     messages = [
@@ -266,6 +305,35 @@ def test_codex_filters_only_internal_system_preamble(tmp_path):
         ("system", "A genuine system-visible conversation message"),
         ("user", "<permissions instructions>please explain this tag"),
     ]
+
+
+def test_codex_strips_internal_memory_citations_from_assistant_text(tmp_path):
+    path = tmp_path / "rollout.jsonl"
+    answer = "Implemented and tested."
+    citation = """<oai-mem-citation>
+<citation_entries>
+MEMORY.md:40-52|note=[internal provenance]
+</citation_entries>
+<rollout_ids>
+019f5d1e-a09f-77a3-a062-c36b844c7675
+</rollout_ids>
+</oai-mem-citation>"""
+    path.write_text(json.dumps(_message("assistant", f"{answer}\n\n{citation}")) + "\n")
+
+    events = transcripts.read_events(path).events
+    meta = transcripts.transcript_meta(path)
+
+    assert [event.text for event in events] == [answer]
+    assert meta.last_text == answer
+
+
+def test_codex_drops_truncated_internal_memory_citation(tmp_path):
+    path = tmp_path / "rollout.jsonl"
+    path.write_text(
+        json.dumps(_message("assistant", "Visible answer\n<oai-mem-citation>partial")) + "\n"
+    )
+
+    assert [event.text for event in transcripts.read_events(path).events] == ["Visible answer"]
 
 
 def test_codex_skips_repository_instruction_preambles_for_title(tmp_path):

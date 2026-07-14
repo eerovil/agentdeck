@@ -334,15 +334,39 @@ class CodexAppServer:
 
     async def _recover_owned(self) -> None:
         result = await self._request(
-            "thread/list", {"sourceKinds": ["appServer"], "limit": 200}
+            # Codex currently persists threads started through app-server with
+            # source kind ``vscode``. Include both persisted kinds; the list
+            # response loses ``threadSource`` after restart, so ownership must
+            # be recovered from AgentDeck's durable transcript originator.
+            "thread/list", {"sourceKinds": ["appServer", "vscode"], "limit": 200}
         )
         for thread in result.get("data") or []:
-            if not isinstance(thread, dict) or thread.get("threadSource") != "agentdeck":
+            if not isinstance(thread, dict) or not self._was_started_by_agentdeck(thread):
                 continue
             thread_id = thread.get("id")
             if isinstance(thread_id, str):
                 self._owned.add(thread_id)
                 self._threads[thread_id] = thread
+
+    def _was_started_by_agentdeck(self, thread: dict[str, Any]) -> bool:
+        """Check the persisted session marker without trusting arbitrary paths."""
+        raw_path = thread.get("path")
+        if not isinstance(raw_path, str):
+            return False
+        try:
+            path = Path(raw_path).resolve()
+            sessions_root = (self.account.root / "sessions").resolve()
+            path.relative_to(sessions_root)
+            with path.open(encoding="utf-8") as handle:
+                first = json.loads(handle.readline())
+        except (OSError, ValueError, json.JSONDecodeError):
+            return False
+        payload = first.get("payload") if isinstance(first, dict) else None
+        return (
+            first.get("type") == "session_meta"
+            and isinstance(payload, dict)
+            and payload.get("originator") == "agentdeck"
+        )
 
     def _notification(self, method: str, params: dict[str, Any]) -> None:
         thread_id = params.get("threadId")

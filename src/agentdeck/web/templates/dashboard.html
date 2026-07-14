@@ -24,8 +24,8 @@
     <label for="new-chat-message">First message</label>
     <textarea id="new-chat-message" class="send-on-enter" name="message" rows="3"
               required placeholder="What should Codex work on?"></textarea>
-    <label for="new-chat-images">Images</label>
-    <input id="new-chat-images" type="file" name="images"
+    <label class="image-picker" for="new-chat-images">＋ Attach image <span class="paste-hint">or paste screenshot</span></label>
+    <input id="new-chat-images" class="image-input" type="file" name="images"
            accept="image/png,image/jpeg,image/webp,image/gif" multiple>
     <div class="composer-actions">
       <span>Enter to send · Shift+Enter for newline</span>
@@ -120,6 +120,110 @@
   // Re-filter after each live swap (the cards were just replaced) + on load.
   document.getElementById('sessions').addEventListener('htmx:afterSwap', apply);
   apply();
+})();
+</script>
+
+<script>
+// Keep the tab useful as a passive monitor. A sessions swap is also our exact
+// transition boundary: compare the stable session keys before/after it, then
+// retain and highlight chats that stopped working for a short acknowledgement
+// window. This also covers a chat disappearing from the visible server list in
+// the same update that its worker exits.
+(function () {
+  var RECENT_MS = 5 * 60 * 1000;
+  var baseTitle = document.title.replace(/^★\s*/, '').replace(/^\(\d+\)\s*/, '');
+  var working = new Set();
+  var recent = new Map();       // session key -> expiry timestamp
+  var snapshots = new Map();    // session key -> most recently rendered card
+  var initialized = false;
+  var expiryTimer = null;
+
+  function cards() {
+    return Array.from(document.querySelectorAll('#sessions a.session[data-session-key]'));
+  }
+  function keyOf(card) { return card.getAttribute('data-session-key'); }
+  function isWorking(card) { return card.getAttribute('data-working') === '1'; }
+
+  function makeStopped(card) {
+    card.setAttribute('data-working', '0');
+    card.classList.add('recently-stopped');
+    card.querySelectorAll('.thinking-badge').forEach(function (el) { el.remove(); });
+    var dot = card.querySelector('.dot');
+    if (dot) { dot.classList.remove('thinking'); dot.setAttribute('title', 'idle'); }
+    var main = card.querySelector('.session-main');
+    if (main && !main.querySelector('.recently-stopped-badge')) {
+      var badge = document.createElement('span');
+      badge.className = 'recently-stopped-badge';
+      badge.textContent = '★ just finished';
+      badge.title = 'This chat recently stopped working';
+      main.appendChild(badge);
+    }
+    return card;
+  }
+
+  function refresh() {
+    var now = Date.now();
+    var rendered = cards();
+    var current = new Set(rendered.filter(isWorking).map(keyOf));
+
+    if (initialized) {
+      working.forEach(function (key) {
+        if (!current.has(key)) recent.set(key, now + RECENT_MS);
+      });
+    }
+    current.forEach(function (key) { recent.delete(key); });
+    recent.forEach(function (until, key) { if (until <= now) recent.delete(key); });
+
+    var list = document.querySelector('#sessions .session-list');
+    if (list) {
+      rendered.filter(function (card) {
+        return card.getAttribute('data-recent-retained') === '1' && !recent.has(keyOf(card));
+      }).forEach(function (card) { card.remove(); });
+      rendered = rendered.filter(function (card) { return card.isConnected; });
+
+      // Recreate a just-finished card if the server hid it in the same update.
+      recent.forEach(function (_, key) {
+        if (!rendered.some(function (card) { return keyOf(card) === key; })) {
+          var old = snapshots.get(key);
+          if (old) {
+            var clone = makeStopped(old.cloneNode(true));
+            clone.setAttribute('data-recent-retained', '1');
+            list.appendChild(clone);
+            rendered.push(clone);
+          }
+        }
+      });
+
+      rendered.forEach(function (card) {
+        var key = keyOf(card);
+        card.classList.toggle('recently-stopped', recent.has(key));
+        var badge = card.querySelector('.recently-stopped-badge');
+        if (recent.has(key)) makeStopped(card); else if (badge) badge.remove();
+        snapshots.set(key, card.cloneNode(true));
+      });
+
+      // Most recently completed first, ahead of the normal server ordering.
+      Array.from(recent.entries()).sort(function (a, b) { return a[1] - b[1]; })
+        .forEach(function (entry) {
+          var card = rendered.find(function (item) { return keyOf(item) === entry[0]; });
+          if (card) list.insertBefore(card, list.firstChild);
+        });
+    }
+
+    working = current;
+    initialized = true;
+    document.title = (recent.size ? '★ ' : '') + '(' + current.size + ') ' + baseTitle;
+
+    if (expiryTimer) clearTimeout(expiryTimer);
+    if (recent.size) {
+      var next = Math.min.apply(null, Array.from(recent.values()));
+      expiryTimer = setTimeout(refresh, Math.max(0, next - Date.now()) + 20);
+    }
+  }
+
+  window.agentdeckRefreshWorkState = refresh;
+  document.getElementById('sessions').addEventListener('htmx:afterSwap', refresh);
+  refresh();
 })();
 </script>
 {% endblock %}

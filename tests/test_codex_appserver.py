@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -124,6 +125,64 @@ async def test_request_user_input_round_trip(tmp_path):
         {"id": 41, "result": {"answers": {"database": {"answers": ["Postgres"]}}}}
     ]
     assert server.interaction("thread-1") is None
+
+
+async def test_recover_owned_includes_vscode_persisted_agentdeck_threads(tmp_path):
+    ours = tmp_path / "sessions" / "2026" / "07" / "14" / "ours.jsonl"
+    theirs = tmp_path / "sessions" / "2026" / "07" / "14" / "theirs.jsonl"
+    ours.parent.mkdir(parents=True)
+    ours.write_text(
+        json.dumps(
+            {"type": "session_meta", "payload": {"originator": "agentdeck"}}
+        )
+        + "\n"
+    )
+    theirs.write_text(
+        json.dumps(
+            {"type": "session_meta", "payload": {"originator": "codex-tui"}}
+        )
+        + "\n"
+    )
+    server = _server(tmp_path)
+    server._request = AsyncMock(
+        return_value={
+            "data": [
+                {"id": "ours", "source": "vscode", "threadSource": None, "path": str(ours)},
+                {
+                    "id": "theirs",
+                    "source": "vscode",
+                    "threadSource": None,
+                    "path": str(theirs),
+                },
+            ]
+        }
+    )
+
+    await server._recover_owned()
+
+    server._request.assert_awaited_once_with(
+        "thread/list", {"sourceKinds": ["appServer", "vscode"], "limit": 200}
+    )
+    assert server.owns("ours")
+    assert not server.owns("theirs")
+
+
+async def test_recover_owned_rejects_transcript_outside_account(tmp_path):
+    outside = tmp_path.parent / "outside-agentdeck.jsonl"
+    outside.write_text(
+        json.dumps(
+            {"type": "session_meta", "payload": {"originator": "agentdeck"}}
+        )
+        + "\n"
+    )
+    server = _server(tmp_path)
+    server._request = AsyncMock(
+        return_value={"data": [{"id": "outside", "path": str(outside)}]}
+    )
+
+    await server._recover_owned()
+
+    assert not server.owns("outside")
 
 
 async def test_command_approval_and_permission_response(tmp_path):

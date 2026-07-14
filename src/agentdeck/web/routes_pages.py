@@ -77,7 +77,7 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
     detail = await provider.load_transcript(account, session)
     from datetime import UTC, datetime
 
-    from ..models import Capability, SessionStatus
+    from ..models import Capability, SessionStatus, detailed_activity_label
     from .render import _usage_rows, activity_label, session_labels
 
     last_ev = detail.events[-1] if detail.events else None
@@ -88,6 +88,7 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
         else 1e9
     )
     label = activity_label(live, bool(session.thinking), last_ev, age)
+    label = detailed_activity_label(label, last_ev)
     account_label = session_labels(get_accounts(request)).get(session.account_key)
     owned_session = provider.owns_session(account, session)
 

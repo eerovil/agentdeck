@@ -19,6 +19,7 @@ from ...models import (
     TranscriptEvent,
     UsageSnapshot,
     activity_label,
+    detailed_activity_label,
 )
 from ..base import SessionProvider
 from . import transcripts as transcripts_mod
@@ -106,9 +107,19 @@ class CodexProvider(SessionProvider):
             return
         active = client.active_turn(thread_id) is not None
         interaction = client.interaction(thread_id)
+        path = self._transcript_path(account, session)
+        last_event = self._cached_last_event(path) if path is not None else None
         session.status = SessionStatus.LIVE if active else SessionStatus.IDLE
         session.thinking = active and interaction is None
-        session.activity = "Waiting for you" if interaction else ("Working" if active else None)
+        session.activity = (
+            "Waiting for you"
+            if interaction
+            else (
+                detailed_activity_label("Using tools", last_event)
+                if active and last_event is not None and last_event.tool_name
+                else ("Working" if active else None)
+            )
+        )
         session.question = self._interaction_summary(interaction)
         session.kind = "appServer"
         session.capabilities = self._runtime_capabilities(account, thread_id)
@@ -178,11 +189,7 @@ class CodexProvider(SessionProvider):
             return self._runtime_capabilities(account, session_id)
         capabilities = {Capability.TRANSCRIPT}
         cwd_exists = bool(meta.cwd and Path(meta.cwd).is_dir())
-        if (
-            status == SessionStatus.IDLE
-            and cwd_exists
-            and is_injectable_rollout(path, meta.kind)
-        ):
+        if status == SessionStatus.IDLE and cwd_exists and is_injectable_rollout(path, meta.kind):
             capabilities.add(Capability.INJECT)
         return frozenset(capabilities)
 
@@ -195,7 +202,7 @@ class CodexProvider(SessionProvider):
         live = age < LIVE_WINDOW_S
         status = SessionStatus.LIVE if live else SessionStatus.IDLE
         last_event = self._cached_last_event(path)
-        activity = activity_label(live, live, last_event, age)
+        activity = detailed_activity_label(activity_label(live, live, last_event, age), last_event)
         return (status, activity is not None, activity)
 
     @staticmethod
@@ -215,6 +222,11 @@ class CodexProvider(SessionProvider):
         seen: set[str] = set()
         for path in _list_rollouts(account.root):
             meta = self._cached_meta(path)
+            # Managed approval reviews are internal helper rollouts. They can
+            # reuse the parent chat's session_id, so reject them before ID
+            # deduplication or they may replace the real transcript entirely.
+            if meta.is_approval_review:
+                continue
             session_id = meta.session_id
             if not session_id or session_id in seen:
                 continue
@@ -222,6 +234,7 @@ class CodexProvider(SessionProvider):
             current_paths[(account.key, session_id)] = path
             last_activity = _mtime(path)
             status, thinking, activity = self._derived_state(path, last_activity)
+            last_event = self._cached_last_event(path)
             client = self._clients.get(account.key)
             interaction = None
             if client is not None and client.owns(session_id):
@@ -229,7 +242,15 @@ class CodexProvider(SessionProvider):
                 interaction = client.interaction(session_id)
                 status = SessionStatus.LIVE if active else SessionStatus.IDLE
                 thinking = active and interaction is None
-                activity = "Waiting for you" if interaction else ("Working" if active else None)
+                activity = (
+                    "Waiting for you"
+                    if interaction
+                    else (
+                        detailed_activity_label("Using tools", last_event)
+                        if active and last_event is not None and last_event.tool_name
+                        else ("Working" if active else None)
+                    )
+                )
             sessions.append(
                 Session(
                     key=f"{account.key}:{session_id}",
@@ -259,9 +280,7 @@ class CodexProvider(SessionProvider):
                     capabilities=self._capabilities(account, session_id, path, meta, status),
                 )
             )
-        self._paths = {
-            key: value for key, value in self._paths.items() if key[0] != account.key
-        }
+        self._paths = {key: value for key, value in self._paths.items() if key[0] != account.key}
         self._paths.update(current_paths)
         return sessions
 
@@ -275,6 +294,7 @@ class CodexProvider(SessionProvider):
             last_activity = _mtime(path)
             status, thinking, activity = self._derived_state(path, last_activity)
             meta = self._cached_meta(path)
+            last_event = self._cached_last_event(path)
             client = self._clients.get(account.key)
             interaction = None
             if client is not None and client.owns(session.session_id):
@@ -282,7 +302,15 @@ class CodexProvider(SessionProvider):
                 interaction = client.interaction(session.session_id)
                 status = SessionStatus.LIVE if active else SessionStatus.IDLE
                 thinking = active and interaction is None
-                activity = "Waiting for you" if interaction else ("Working" if active else None)
+                activity = (
+                    "Waiting for you"
+                    if interaction
+                    else (
+                        detailed_activity_label("Using tools", last_event)
+                        if active and last_event is not None and last_event.tool_name
+                        else ("Working" if active else None)
+                    )
+                )
             values = (
                 status,
                 thinking,
@@ -411,9 +439,7 @@ class CodexProvider(SessionProvider):
                             started_at=datetime.now(UTC),
                             last_activity=datetime.now(UTC),
                             show_when_idle=True,
-                            capabilities=self._runtime_capabilities(
-                                account, result.session_id
-                            ),
+                            capabilities=self._runtime_capabilities(account, result.session_id),
                         )
                     )
             return result
@@ -459,9 +485,7 @@ class CodexProvider(SessionProvider):
         # fall back to the last assistant item only if no completed turn is present.
         return meta.last_agent_message or meta.last_text
 
-    def pending_interaction(
-        self, account: Account, session: Session
-    ) -> PendingInteraction | None:
+    def pending_interaction(self, account: Account, session: Session) -> PendingInteraction | None:
         client = self._clients.get(account.key)
         return client.interaction(session.session_id) if client is not None else None
 

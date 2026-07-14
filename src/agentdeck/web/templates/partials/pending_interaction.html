@@ -1,7 +1,7 @@
 <section id="pending-interaction" class="pending-interaction"
          hx-get="/partials/sessions/{{ session_key }}/interaction"
          hx-trigger="load delay:2s" hx-swap="outerHTML">
-{% if interaction %}
+{%- if interaction %}
   <h2>{{ interaction.title }}</h2>
   {% if interaction.message %}<p>{{ interaction.message }}</p>{% endif %}
   {% if interaction.command %}<pre><code>{{ interaction.command }}</code></pre>{% endif %}
@@ -46,5 +46,5 @@
     </div>
     {% endif %}
   </form>
-{% endif %}
+{% endif -%}
 </section>

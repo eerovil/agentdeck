@@ -278,7 +278,7 @@ async def test_inject_route_accepts_and_reports_status(tmp_path, monkeypatch):
             headers={"origin": "http://test"},
         )
         assert response.status_code == 202
-        assert "Messages queued" in response.text
+        assert "Will send when Codex is ready" in response.text
         conflict = await client.post(
             "/sessions/codex:test:sid/inject",
             data={"message": "again"},
@@ -293,7 +293,8 @@ async def test_inject_route_accepts_and_reports_status(tmp_path, monkeypatch):
                 break
         assert messages == ["continue safely", "again"]
         status = await client.get("/partials/sessions/codex:test:sid/inject-status")
-        assert "Queue completed" in status.text
+        assert "Queue completed" not in status.text
+        assert "continue safely" not in status.text
     await provider.stop()
 
 
@@ -314,7 +315,7 @@ async def test_inject_route_kill_switch_validation_and_origin(tmp_path):
     enabled = _web_app(tmp_path)
     async with AsyncClient(transport=ASGITransport(app=enabled), base_url="http://test") as client:
         page = await client.get("/sessions/codex:test:sid")
-        assert "Message queue" in page.text
+        assert '>Message</label>' in page.text
         assert 'maxlength="50"' in page.text
         cross_site = await client.post(
             "/sessions/codex:test:sid/inject",
@@ -461,7 +462,7 @@ async def test_new_session_route_and_enter_to_send_ui(tmp_path, monkeypatch):
         assert "New Codex chat" in dashboard.text
         assert 'class="send-on-enter"' in dashboard.text
         detail = await client.get("/sessions/codex:test:sid")
-        assert "Enter queues next" in detail.text
+        assert "Enter to send" in detail.text
         assert "requestSubmit" in detail.text
         response = await client.post(
             "/sessions/new",

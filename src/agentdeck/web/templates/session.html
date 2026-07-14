@@ -65,15 +65,15 @@
 <form class="inject-form" hx-post="/sessions/{{ session.key }}/inject"
       hx-target="#inject-result" hx-swap="outerHTML" hx-disabled-elt="find button"
       hx-encoding="multipart/form-data" data-clear-on-send>
-  <label for="inject-message">Message queue</label>
+  <label for="inject-message">Message</label>
   <textarea id="inject-message" class="send-on-enter" name="message" rows="3" maxlength="{{ inject_max_chars }}"
             required placeholder="Send a follow-up…"></textarea>
-  <label class="image-picker" for="inject-images">Images</label>
-  <input id="inject-images" type="file" name="images"
+  <label class="image-picker" for="inject-images">＋ Attach image <span class="paste-hint">or paste screenshot</span></label>
+  <input id="inject-images" class="image-input" type="file" name="images"
          accept="image/png,image/jpeg,image/webp,image/gif" multiple>
   <div class="composer-actions">
-    <span>Enter queues next · Shift+Enter for newline</span>
-    <button type="submit">Queue next</button>
+    <span>Enter to send · Shift+Enter for newline</span>
+    <button type="submit">Send</button>
   </div>
 </form>
 {% if owned_session %}
@@ -87,20 +87,43 @@
 
 <script>
 (function () {
-  // Open at the newest message; keep pinned to the bottom as the live tail
-  // appends, but stop following once the user scrolls up to read.
-  var NEAR = 220;  // generous — keep "stick to bottom" true above the composer
+  // Open at the newest message. For later transcript appends, decide whether to
+  // follow *before* HTMX changes the page height. Other SSE swaps (status,
+  // activity, usage, send state) must never move the viewport.
+  var NEAR = 80;
   function atBottom() {
     return (window.innerHeight + window.scrollY) >= (document.documentElement.scrollHeight - NEAR);
   }
   function toBottom() { window.scrollTo(0, document.documentElement.scrollHeight); }
-  var stick = true;
-  window.addEventListener('scroll', function () { stick = atBottom(); }, { passive: true });
-  // initial jump (after layout settles)
-  window.addEventListener('load', function () { requestAnimationFrame(toBottom); });
-  requestAnimationFrame(toBottom);
-  // live-tail appends (htmx SSE swap) — follow only if still at the bottom
-  document.body.addEventListener('htmx:afterSwap', function () { if (stick) toBottom(); });
+  var followTranscript = false;
+  var initialDone = false;
+  var userMoved = false;
+
+  ['wheel', 'touchstart', 'pointerdown'].forEach(function (name) {
+    window.addEventListener(name, function () { userMoved = true; }, { passive: true });
+  });
+  window.addEventListener('keydown', function (event) {
+    if (['PageUp', 'Home', 'ArrowUp', 'ArrowDown', 'PageDown', 'End', ' '].includes(event.key)) {
+      userMoved = true;
+    }
+  });
+  function initialScroll() {
+    if (initialDone) return;
+    initialDone = true;
+    requestAnimationFrame(function () { if (!userMoved) toBottom(); });
+  }
+  if (document.readyState === 'complete') initialScroll();
+  else window.addEventListener('load', initialScroll, { once: true });
+
+  document.body.addEventListener('htmx:beforeSwap', function (event) {
+    if (!event.target.matches('.transcript')) return;
+    followTranscript = atBottom() && !document.activeElement.closest('.inject-form');
+  });
+  document.body.addEventListener('htmx:afterSwap', function (event) {
+    if (!event.target.matches('.transcript')) return;
+    if (followTranscript) requestAnimationFrame(toBottom);
+    followTranscript = false;
+  });
 })();
 </script>
 {% endblock %}
