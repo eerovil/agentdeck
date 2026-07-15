@@ -29,7 +29,10 @@ _GITHUB_REPO_URL_RE = re.compile(
     re.IGNORECASE,
 )
 _REPO_REF_RE = re.compile(r"\b([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)#(\d+)\b")
-_PR_NUMBER_RE = re.compile(r"\b(?:PR|pull request)\s*#?(\d+)\b", re.IGNORECASE)
+_PR_NUMBER_RE = re.compile(
+    r"\b(?:PR|pull request)\s*(?:[*_`]+\s*)*#?(\d+)\b",
+    re.IGNORECASE,
+)
 
 _PR_FIELDS = "number,title,url,state,isDraft,mergedAt,headRefName,baseRefName"
 

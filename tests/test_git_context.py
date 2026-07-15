@@ -27,6 +27,19 @@ def test_github_repository_parses_https_and_ssh():
     assert github_repository("https://example.com/eerovil/agentdeck.git") is None
 
 
+def test_explicit_refs_recognize_markdown_formatted_pr_number(tmp_path):
+    session = _session(
+        tmp_path,
+        initial_prompt="Work on protecomp/storm#253.",
+        last_text="Deliverable: PR **#254** (`Closes #253`) is docs-only.",
+    )
+
+    assert GitContextResolver._explicit_refs(session, "protecomp/storm") == [
+        ("protecomp/storm", 253),
+        ("protecomp/storm", 254),
+    ]
+
+
 async def test_resolves_merged_pr_for_worktree_branch(tmp_path, monkeypatch):
     resolver = GitContextResolver()
     resolver._git = "git"
