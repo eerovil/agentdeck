@@ -520,7 +520,27 @@ details.ev.tool > .ev-text { margin-top: 6px; max-height: 420px; overflow: auto;
 /* Keep the on-screen keyboard from leaving only the composer visible. On
    mobile the prompt starts at two lines, and attachment + send share one row. */
 @media (max-width: 999px) {
+  /* The live session list stays mounted below the chat. Back or an edge swipe
+     only moves the chat layer, so returning to the list has no network wait and
+     preserves its exact scroll position. */
   body.session-page main { padding-bottom: 0; }
+  body.session-stack-page { display: flex; flex-direction: column; height: 100vh; height: 100dvh;
+    overflow: hidden; }
+  body.session-stack-page .topbar { flex: none; }
+  body.session-stack-page main { position: relative; flex: 1; min-height: 0; width: 100%;
+    max-width: 760px; padding: 0; overflow: hidden; }
+  .session-layout { position: relative; height: 100%; overflow: hidden; }
+  .session-sidebar, .session-detail { position: absolute; inset: 0; min-height: 0;
+    padding: 12px; overflow-y: auto; overscroll-behavior-y: contain; }
+  .session-sidebar { display: block; }
+  .session-detail { z-index: 2; background: var(--bg); touch-action: pan-y;
+    transform: translate3d(var(--mobile-chat-x, 0), 0, 0);
+    transition: transform 180ms cubic-bezier(.2, .75, .25, 1);
+    box-shadow: -12px 0 28px color-mix(in srgb, #000 34%, transparent); }
+  body.mobile-list-open .session-detail { transform: translate3d(100%, 0, 0);
+    pointer-events: none; }
+  body.mobile-list-open .back { visibility: hidden; }
+  body.mobile-stack-dragging .session-detail { transition: none; }
   .inject-form { display: grid; grid-template-columns: minmax(0, 1fr) auto;
     gap: 6px 8px; margin-top: 8px; padding: 8px;
     padding-bottom: calc(8px + env(safe-area-inset-bottom, 0)); }
@@ -535,6 +555,10 @@ details.ev.tool > .ev-text { margin-top: 6px; max-height: 420px; overflow: auto;
   .inject-form .composer-actions span { display: none; }
   .inject-form .paste-previews { grid-column: 1 / -1; grid-row: 4; margin-top: 1px; }
   .inject-form button { padding: 7px 14px; }
+}
+
+@media (max-width: 999px) and (prefers-reduced-motion: reduce) {
+  .session-detail { transition: none; }
 }
 
 /* A detail page becomes a two-pane workspace when both columns have enough

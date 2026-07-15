@@ -434,6 +434,7 @@ async def test_pwa_routes(tmp_path):
     # so any asset change busts the SW cache without a manual version bump.
     assert "__CACHE_STAMP__" not in sw.text
     assert "agentdeck-static-" in sw.text
+    assert "/static/mobile_session_stack.js" in sw.text
     # Manifest: correct content type + installability essentials.
     assert mf.status_code == 200
     assert mf.headers["content-type"].startswith("application/manifest+json")
@@ -1224,17 +1225,15 @@ async def test_opening_session_card_acknowledges_and_times_navigation(tmp_path):
         await browser.close()
 
 
-async def test_chat_back_button_acknowledges_and_times_session_list_navigation(tmp_path):
+async def test_mobile_chat_layers_over_live_list_and_back_and_swipe_are_instant(tmp_path):
     app = _app_with_state(tmp_path)
     async with _client(app) as client:
-        dashboard = await client.get("/")
         detail = await client.get("/sessions/claude_code:test:sid1")
 
     static_dir = Path(__file__).parents[1] / "src/agentdeck/web/static"
-    action_script = (static_dir / "action_timing.js").read_text()
     stylesheet = (static_dir / "app.css").read_text()
-    release = asyncio.Event()
-    requested = asyncio.Event()
+    stack_script = (static_dir / "mobile_session_stack.js").read_text()
+    list_requests = 0
 
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()
@@ -1244,17 +1243,15 @@ async def test_chat_back_button_acknowledges_and_times_session_list_navigation(t
         page = await context.new_page()
 
         async def serve(route, request):
+            nonlocal list_requests
             path = request.url.split("?", 1)[0].removeprefix("http://agentdeck.test")
             if path == "/sessions/claude_code:test:sid1":
                 await route.fulfill(status=200, content_type="text/html", body=detail.text)
             elif path == "/":
-                requested.set()
-                await release.wait()
-                await route.fulfill(status=200, content_type="text/html", body=dashboard.text)
-            elif path == "/static/action_timing.js":
-                await route.fulfill(
-                    status=200, content_type="text/javascript", body=action_script
-                )
+                list_requests += 1
+                await route.fulfill(status=500, body="list navigation should stay client-side")
+            elif path == "/static/mobile_session_stack.js":
+                await route.fulfill(status=200, content_type="text/javascript", body=stack_script)
             elif path == "/static/app.css":
                 await route.fulfill(status=200, content_type="text/css", body=stylesheet)
             else:
@@ -1262,69 +1259,111 @@ async def test_chat_back_button_acknowledges_and_times_session_list_navigation(t
 
         await page.route("http://agentdeck.test/**", serve)
         await page.goto("http://agentdeck.test/sessions/claude_code:test:sid1")
-        immediate_result = asyncio.get_running_loop().create_future()
-
-        def report_immediate(value):
-            if not immediate_result.done():
-                immediate_result.set_result(value)
-
-        await page.expose_function("reportBackOpeningState", report_immediate)
-        await page.evaluate(
-            """() => document.addEventListener('click', event => {
-              var back = event.target.closest('a.back');
-              if (!back) return;
-              window.reportBackOpeningState({
-                opening: back.classList.contains('opening'),
-                busy: back.getAttribute('aria-busy'),
-                label: getComputedStyle(back, '::after').content,
-                timing: JSON.parse(JSON.stringify(
-                  Array.from(AgentDeckActionTiming.records.values())[0]
-                )),
-                overflow: document.documentElement.scrollWidth > innerWidth,
-              });
-            }, {once: true})"""
-        )
-        click = asyncio.create_task(page.locator("a.back").click())
-        immediate = await asyncio.wait_for(immediate_result, timeout=5)
-        await requested.wait()
-        await asyncio.sleep(0.15)
-        release.set()
-        await click
-        await page.wait_for_url("http://agentdeck.test/")
         await page.wait_for_function(
-            "AgentDeckActionTiming.summary().open_session_list?.settled_ms !== null"
+            "document.body.classList.contains('mobile-session-stack-ready')"
         )
-        completed = await page.evaluate(
+
+        initial = await page.evaluate(
             """() => ({
-              record: AgentDeckActionTiming.snapshot()[0],
-              summary: AgentDeckActionTiming.summary().open_session_list,
+              path: location.pathname,
+              sidebar: getComputedStyle(document.querySelector('.session-sidebar')).display,
+              sidebarHidden: document.querySelector('.session-sidebar').getAttribute('aria-hidden'),
+              detailHidden: document.querySelector('.session-detail').getAttribute('aria-hidden'),
+              listCard: Boolean(document.querySelector('.session-sidebar a.session')),
               overflow: document.documentElement.scrollWidth > innerWidth,
             })"""
         )
-        await page.go_back()
-        restored = await page.locator("a.back").evaluate(
-            "back => ({opening: back.classList.contains('opening'), "
-            "busy: back.getAttribute('aria-busy')})"
+
+        await page.locator("a.back").click()
+        await page.wait_for_function(
+            "location.pathname === '/' && "
+            "document.body.classList.contains('mobile-list-open')"
+        )
+        after_back = await page.evaluate(
+            """() => ({
+              path: location.pathname,
+              detailInert: document.querySelector('.session-detail').inert,
+              sidebarInert: document.querySelector('.session-sidebar').inert,
+              backVisibility: getComputedStyle(document.querySelector('.back')).visibility,
+            })"""
+        )
+
+        await page.evaluate("history.forward()")
+        await page.wait_for_function(
+            "location.pathname.includes('/sessions/') && "
+            "!document.body.classList.contains('mobile-list-open')"
+        )
+        # A vertical gesture near the edge remains transcript scrolling; it must
+        # not claim the stack or leave a partial transform behind.
+        vertical = await page.evaluate(
+            """() => {
+              const detail = document.querySelector('.session-detail');
+              const fire = (type, x, y) => detail.dispatchEvent(new PointerEvent(type, {
+                bubbles: true, cancelable: true, pointerId: 6, pointerType: 'touch',
+                isPrimary: true, clientX: x, clientY: y,
+              }));
+              fire('pointerdown', 8, 200);
+              fire('pointermove', 15, 280);
+              fire('pointerup', 15, 280);
+              return {
+                path: location.pathname,
+                dragging: document.body.classList.contains('mobile-stack-dragging'),
+                inlineTransform: detail.style.getPropertyValue('--mobile-chat-x'),
+              };
+            }"""
+        )
+        await page.evaluate(
+            """() => {
+              const detail = document.querySelector('.session-detail');
+              const fire = (type, x, y) => detail.dispatchEvent(new PointerEvent(type, {
+                bubbles: true, cancelable: true, pointerId: 7, pointerType: 'touch',
+                isPrimary: true, clientX: x, clientY: y,
+              }));
+              fire('pointerdown', 8, 300);
+              fire('pointermove', 190, 304);
+              fire('pointerup', 190, 304);
+            }"""
+        )
+        await page.wait_for_function(
+            "location.pathname === '/' && "
+            "document.body.classList.contains('mobile-list-open')"
+        )
+        after_swipe = await page.evaluate(
+            """() => ({
+              path: location.pathname,
+              listOpen: document.body.classList.contains('mobile-list-open'),
+              listCard: Boolean(document.querySelector('.session-sidebar a.session')),
+              overflow: document.documentElement.scrollWidth > innerWidth,
+            })"""
         )
         await browser.close()
 
-    assert immediate["opening"] is True
-    assert immediate["busy"] == "true"
-    assert immediate["label"] == '"Opening list…"'
-    assert immediate["overflow"] is False
-    assert immediate["timing"]["action"] == "open_session_list"
-    assert (
-        immediate["timing"]["epochMarks"]["acknowledged"]
-        - immediate["timing"]["epochMarks"]["interaction"]
-        < 16
-    )
-    assert completed["record"]["path"].endswith("/")
-    assert completed["record"]["successful"] is True
-    assert completed["summary"]["samples"] == 1
-    assert completed["summary"]["http_ms"]["p50"] >= 100
-    assert completed["summary"]["settled_ms"]["p50"] >= 100
-    assert completed["overflow"] is False
-    assert restored == {"opening": False, "busy": None}
+    assert list_requests == 0
+    assert initial == {
+        "path": "/sessions/claude_code:test:sid1",
+        "sidebar": "block",
+        "sidebarHidden": "true",
+        "detailHidden": "false",
+        "listCard": True,
+        "overflow": False,
+    }
+    assert after_back == {
+        "path": "/",
+        "detailInert": True,
+        "sidebarInert": False,
+        "backVisibility": "hidden",
+    }
+    assert vertical == {
+        "path": "/sessions/claude_code:test:sid1",
+        "dragging": False,
+        "inlineTransform": "",
+    }
+    assert after_swipe == {
+        "path": "/",
+        "listOpen": True,
+        "listCard": True,
+        "overflow": False,
+    }
 
 
 async def test_subagent_count_renders_on_card_and_detail_header(tmp_path):
@@ -1520,7 +1559,7 @@ async def test_session_detail_uses_responsive_split_view(tmp_path):
     async with _client(app) as client:
         response = await client.get("/sessions/claude_code:test:sid1")
 
-    assert 'class="session-page"' in response.text
+    assert 'class="session-page session-stack-page"' in response.text
     assert 'class="session-layout"' in response.text
     assert 'class="session-sidebar" aria-label="All sessions"' in response.text
     assert 'class="session-detail" aria-label="Selected chat"' in response.text
@@ -1613,11 +1652,11 @@ async def test_session_detail_uses_responsive_split_view(tmp_path):
     assert desktop["headerPosition"] == "sticky"
     assert desktop["prLinksVisible"] is True
     assert mobile == {
-        "sidebar": "none",
+        "sidebar": "block",
         "layout": "block",
-        "detailOverflow": "visible",
+        "detailOverflow": "auto",
         "back": "flex",
-        "assistantRects": 0,
+        "assistantRects": 1,
         "headerPosition": "static",
     }
     assert narrow == {"pageOverflow": False, "timestampsVisible": True}

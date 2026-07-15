@@ -17,6 +17,7 @@ const ASSETS = [
   '/static/app.css',
   '/static/htmx.min.js',
   '/static/sse.js',
+  '/static/mobile_session_stack.js',
   '/static/favicon.svg',
   '/static/apple-touch-icon.png',
   '/static/icon-192.png',

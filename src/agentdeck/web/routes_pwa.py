@@ -26,7 +26,13 @@ _NO_CACHE = {"Cache-Control": "no-cache"}
 
 # Shell assets whose content decides the SW cache name — any change to one of
 # these busts the cache (see the __CACHE_STAMP__ note in sw.js).
-_STAMP_ASSETS = ("app.css", "sse.js", "htmx.min.js", "manifest.webmanifest")
+_STAMP_ASSETS = (
+    "app.css",
+    "sse.js",
+    "htmx.min.js",
+    "mobile_session_stack.js",
+    "manifest.webmanifest",
+)
 
 
 def cache_stamp() -> str:

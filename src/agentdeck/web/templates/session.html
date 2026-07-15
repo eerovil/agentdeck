@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {# keep tab/home-screen titles short (< 15 chars): the repo name, else the brand #}
 {% block title %}{% if session.cwd and session.cwd.name %}{{ session.cwd.name[:14] }}{% else %}agentdeck{% endif %}{% endblock %}
-{% block body_class %}session-page{% endblock %}
+{% block body_class %}session-page session-stack-page{% endblock %}
 
 {% block topbar_nav %}<a class="back" href="/" aria-label="back to all sessions"
   data-agentdeck-action="open_session_list">←</a>{% endblock %}
@@ -12,6 +12,7 @@
 {% block limit_bars %}{% include "partials/limit_bars.html" %}{% endblock %}
 
 {% block content %}
+<script src="/static/mobile_session_stack.js?v={{ asset_ver }}" defer></script>
 <div class="session-layout">
 <aside class="session-sidebar" aria-label="All sessions">
   <div class="session-sidebar-head">
