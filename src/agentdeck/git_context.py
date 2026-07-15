@@ -191,9 +191,18 @@ class GitContextResolver:
             resolved = await asyncio.gather(
                 *(self._pull_for_ref(repo, number) for repo, number in refs)
             )
-            for pull in resolved:
-                if pull is not None:
-                    pulls[(pull.repository.lower(), pull.number)] = pull
+            explicit_pulls = tuple(pull for pull in resolved if pull is not None)
+            for pull in explicit_pulls:
+                pulls[(pull.repository.lower(), pull.number)] = pull
+
+            # A shared checkout may have moved to another chat's branch. Once
+            # this chat names its own PR, expose local branch/dirty state only
+            # when that checkout still matches one of the PR head branches.
+            if explicit_pulls and branch and not any(
+                pull.head_branch == branch for pull in explicit_pulls
+            ):
+                branch = None
+                dirty = False
 
             # A PR explicitly named by the chat is the work this session owns.
             # This matters for shared checkouts: their current branch may belong

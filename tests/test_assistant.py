@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock
 
-from agentdeck.assistant import AssistantAnswer, AssistantService
+from agentdeck.assistant import AssistantAnswer, AssistantInsight, AssistantService, AssistantView
 from agentdeck.config import AccountConfig, AppConfig, AssistantConfig
 from agentdeck.git_context import GitContext, PullRequestContext
 from agentdeck.models import (
@@ -128,6 +128,18 @@ async def test_ensure_session_context_augments_cached_context_from_transcript(tm
     resolver.resolve = AsyncMock(return_value={session.key: expanded})
     assistant = AssistantService(_config(tmp_path), state, context_resolver=resolver)
     assistant.contexts[session.key] = cached
+    assistant.view = AssistantView(
+        state="ready",
+        summary="PR attribution needs attention.",
+        insights=(
+            AssistantInsight(
+                session_key=session.key,
+                kind="coordination",
+                headline="Wrong PR association",
+                detail="Stale context.",
+            ),
+        ),
+    )
 
     result = await assistant.ensure_session_context(
         session,
@@ -138,6 +150,9 @@ async def test_ensure_session_context_augments_cached_context_from_transcript(tm
     )
 
     assert result == expanded
+    assert assistant.view.insights == ()
+    assert assistant.view.summary == "Nothing needs your attention right now."
+    assert assistant._force is True
     resolved_session = resolver.resolve.await_args.args[0][0]
     assert "/pull/91" in resolved_session.last_text
     assert "/pull/92" in resolved_session.last_text

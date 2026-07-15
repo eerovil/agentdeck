@@ -208,9 +208,32 @@ class AssistantService:
         except Exception as exc:  # noqa: BLE001 -- metadata must not break chat pages
             log.debug("Deckhand context resolve failed for %s: %s", session.key, exc)
             return None
-        if context is not None:
+        if context is not None and context != existing:
             self.contexts[session.key] = context
+            self._discard_session_insights(session.key)
+            self.request_refresh()
         return context
+
+    def _discard_session_insights(self, session_key: str) -> None:
+        """Do not retain advice produced from superseded PR attribution."""
+        insights = tuple(
+            insight for insight in self.view.insights if insight.session_key != session_key
+        )
+        if insights == self.view.insights:
+            return
+        self.view = AssistantView(
+            state=self.view.state,
+            summary=(
+                self.view.summary
+                if insights
+                else "Nothing needs your attention right now."
+            ),
+            insights=insights,
+            actions=self.view.actions,
+            analyzed_at=self.view.analyzed_at,
+            error=self.view.error,
+        )
+        self.state.bus.publish("assistant")
 
     async def start(self) -> None:
         if self.config.enabled and self._task is None:

@@ -201,6 +201,8 @@ async def test_initial_prompt_pr_outranks_unrelated_shared_checkout_branch(
     context = (await resolver.resolve([session]))[session.key]
 
     assert [pull.number for pull in context.pull_requests] == [239]
+    assert context.branch is None
+    assert context.dirty is False
     assert branch_lookups == 0
 
 
