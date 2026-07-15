@@ -513,6 +513,60 @@ async def test_open_blocked_kanban_issues_surface_individually_when_model_omits_
     assert len(prompts) == 2
 
 
+async def test_idle_open_pull_request_surfaces_when_model_omits_it(tmp_path):
+    state = AppState()
+    session = replace(
+        _session(tmp_path),
+        question=None,
+        last_prompt="Keep the unmatched event diagnostic at debug level",
+        last_text="Corrected to logger.debug. Tests: 21 passed.",
+    )
+    state.update_session(session)
+    open_pull = PullRequestContext(
+        "protecomp/storm",
+        239,
+        "Custobar automated-campaign coupon activation",
+        "https://github.com/protecomp/storm/pull/239",
+        "open",
+        head_branch="claude/issue-238-custobar-coupon-activation",
+        base_branch="master",
+    )
+    assistant = AssistantService(
+        _config(tmp_path),
+        state,
+        runner=AsyncMock(return_value={"summary": "Nothing new.", "insights": []}),
+    )
+    assistant.contexts[session.key] = GitContext(
+        "protecomp/storm", open_pull.head_branch, False, (open_pull,)
+    )
+
+    await assistant.refresh(snapshot=assistant.snapshot())
+
+    assert [insight.headline for insight in assistant.view.insights] == [
+        "Storm · Custobar · PR #239 is open and awaiting review"
+    ]
+    assert "still open while its owning chat is idle" in assistant.view.insights[0].detail
+
+    assistant.contexts[session.key] = GitContext(
+        "protecomp/storm",
+        open_pull.head_branch,
+        False,
+        (replace(open_pull, status="merged"),),
+    )
+    await assistant.refresh(snapshot=assistant.snapshot())
+    assert assistant.view.insights == ()
+
+    assistant.contexts[session.key] = GitContext(
+        "protecomp/storm", open_pull.head_branch, False, (open_pull,)
+    )
+    await assistant.refresh(snapshot=assistant.snapshot())
+    assert assistant.handle(session.key)
+    await assistant.refresh(snapshot=assistant.snapshot())
+
+    assert assistant.view.insights == ()
+    assert assistant.runner.await_count == 3
+
+
 async def test_handled_insight_stays_hidden_until_chat_evidence_changes(tmp_path):
     state = AppState()
     state.update_session(_session(tmp_path))
@@ -1019,6 +1073,28 @@ def test_dirty_worktree_does_not_change_handled_evidence(tmp_path):
     dirty = assistant._snapshot_row(session)
 
     assert assistant._evidence_signature(clean) == assistant._evidence_signature(dirty)
+
+
+def test_evidence_signature_ignores_new_neutral_snapshot_metadata(tmp_path):
+    assistant = AssistantService(_config(tmp_path), AppState())
+    row = assistant._snapshot_row(_session(tmp_path))
+    legacy = {
+        key: value
+        for key, value in row.items()
+        if key
+        not in {
+            "worker_type",
+            "issue_url",
+            "issue_status",
+            "issue_status_kind",
+            "operator_action_required",
+        }
+    }
+
+    assert assistant._evidence_signature(row) == assistant._evidence_signature(legacy)
+    assert assistant._evidence_signature(
+        {**row, "issue_url": "https://github.com/example/repo/issues/1"}
+    ) != assistant._evidence_signature(row)
 
 
 def test_analysis_signature_ignores_poll_noise_but_tracks_pr_status():

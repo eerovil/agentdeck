@@ -39,6 +39,10 @@ _ISSUE_URL_RE = re.compile(
     re.IGNORECASE,
 )
 _BLOCKED_ISSUE_RE = re.compile(r"(?<![\w-])claude:blocked(?![\w-])", re.IGNORECASE)
+_VALIDATED_COMPLETION_RE = re.compile(
+    r"\b(?:\d+\s+(?:\*{0,2})?passed|tests?\s+(?:all\s+)?pass(?:ed|ing))\b",
+    re.IGNORECASE,
+)
 _UNSAFE_AUTO_ANSWER_RE = re.compile(
     r"\b(?:delete|destroy|drop|erase|overwrite|force[- ]?push|purchase|pay)\b",
     re.IGNORECASE,
@@ -545,14 +549,33 @@ class AssistantService:
         """Identity of the evidence behind advice, excluding transient liveness.
 
         Poll-only changes such as thinking/activity/subagent counts must not make
-        findings disappear or resurrect handled findings. Transcript, question,
+        findings disappear or resurrect handled findings. Use an explicit
+        material-field contract so adding presentation or prompt metadata cannot
+        invalidate every established finding. Transcript, question, issue,
         branch and PR changes are material and intentionally do.
         """
         stable = {
-            key: value
-            for key, value in row.items()
-            if key not in {"state", "activity", "subagents"}
+            key: row[key]
+            for key in (
+                "session_key",
+                "title",
+                "cwd",
+                "question",
+                "last_prompt",
+                "last_response",
+                "git",
+                "interaction",
+            )
+            if key in row
         }
+        for key in (
+            "issue_url",
+            "issue_status",
+            "issue_status_kind",
+            "operator_action_required",
+        ):
+            if row.get(key) is not None:
+                stable[key] = row[key]
         git = stable.get("git")
         if isinstance(git, dict):
             stable["git"] = {key: value for key, value in git.items() if key != "dirty"}
@@ -1063,6 +1086,60 @@ Dashboard snapshot:
         return replace(view, insights=tuple(insights))
 
     @staticmethod
+    def _surface_unreported_open_pull_requests(
+        view: AssistantView, snapshot: list[dict[str, Any]]
+    ) -> AssistantView:
+        """Keep a validated but still-open PR visible as the chat's next action."""
+        represented_sessions = {insight.session_key for insight in view.insights}
+        insights = list(view.insights)
+        for row in snapshot:
+            session_key = str(row.get("session_key") or "")
+            if (
+                not session_key
+                or session_key in represented_sessions
+                or row.get("state") != "idle"
+                or row.get("question")
+                or row.get("interaction")
+                or not _VALIDATED_COMPLETION_RE.search(str(row.get("last_response") or ""))
+            ):
+                continue
+            git = row.get("git")
+            if not isinstance(git, dict):
+                continue
+            pull = next(
+                (
+                    item
+                    for item in git.get("pull_requests") or ()
+                    if isinstance(item, dict)
+                    and item.get("status") == "open"
+                    and not item.get("draft")
+                    and isinstance(item.get("number"), int)
+                ),
+                None,
+            )
+            if pull is None:
+                continue
+            title = pull.get("title")
+            detail = (
+                f"{title} is still open while its owning chat is idle. Review or "
+                "otherwise resolve the pull request."
+                if isinstance(title, str) and title
+                else "The pull request is still open while its owning chat is idle. "
+                "Review or otherwise resolve it."
+            )
+            insights.append(
+                AssistantInsight(
+                    session_key=session_key,
+                    kind="waiting",
+                    headline=f"PR #{pull['number']} is open and awaiting review",
+                    detail=detail,
+                    confidence=1.0,
+                )
+            )
+            represented_sessions.add(session_key)
+        return replace(view, insights=tuple(insights))
+
+    @staticmethod
     def _pr_feature_word(title: str, project: str) -> str:
         for word in _PR_TITLE_WORD_RE.findall(title):
             if (
@@ -1294,9 +1371,10 @@ Dashboard snapshot:
             view = self._suppress_unattributed_pr_insights(view)
             view = self._suppress_terminal_pr_insights(view)
             view = self._suppress_non_actionable_insights(view)
+            view = self._surface_open_blocked_issues(view, snapshot)
+            view = self._surface_unreported_open_pull_requests(view, snapshot)
             view = self._enrich_pr_headlines(view)
             view = self._deduplicate_insights(view)
-            view = self._surface_open_blocked_issues(view, snapshot)
             evidence = {row["session_key"]: self._evidence_signature(row) for row in snapshot}
             view = self._stabilize_insights(view, prior, evidence)
             view = self._deduplicate_insights(view)
