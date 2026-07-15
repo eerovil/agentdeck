@@ -73,6 +73,32 @@ def test_auto_answer_gate_accepts_only_complete_explicit_question_choices():
     )
 
 
+async def test_ensure_session_context_resolves_and_caches_chat_outside_analysis(tmp_path):
+    state = AppState()
+    session = _session(tmp_path)
+    context = GitContext(
+        repository="eerovil/agentdeck",
+        branch="feature/deckhand",
+        dirty=False,
+        pull_requests=(
+            PullRequestContext(
+                repository="eerovil/agentdeck",
+                number=91,
+                title="Add PR context",
+                url="https://github.com/eerovil/agentdeck/pull/91",
+                status="merged",
+            ),
+        ),
+    )
+    resolver = AsyncMock(return_value={})
+    resolver.resolve = AsyncMock(return_value={session.key: context})
+    assistant = AssistantService(_config(tmp_path), state, context_resolver=resolver)
+
+    assert await assistant.ensure_session_context(session) == context
+    assert await assistant.ensure_session_context(session) == context
+    resolver.resolve.assert_awaited_once_with([session])
+
+
 async def test_refresh_renders_advice_and_auto_answers_safe_choice(tmp_path, monkeypatch):
     state = AppState()
     state.update_session(_session(tmp_path))

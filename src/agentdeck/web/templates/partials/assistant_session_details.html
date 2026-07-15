@@ -13,12 +13,6 @@
       {% if git_context.branch %}<code>{{ git_context.branch }}</code>{% endif %}
       {% if git_context.dirty %}<span class="assistant-dirty">uncommitted changes</span>{% endif %}
     </div>
-    {% for pull in git_context.pull_requests %}
-    <a class="assistant-pr" href="{{ pull.url }}" target="_blank" rel="noopener">
-      <span class="assistant-pr-state pr-{{ pull.status }}">{{ 'draft' if pull.draft and pull.status == 'open' else pull.status }}</span>
-      <span><strong>PR #{{ pull.number }}</strong> · {{ pull.title }}</span>
-    </a>
-    {% endfor %}
   </div>
   {% endif %}
   {% for insight in assistant_insights %}

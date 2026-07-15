@@ -40,6 +40,14 @@
   {% endif %}
   <span class="chip">{{ detail.total_events }} events</span>
   {% if session.cwd %}<span class="chip cwd">{{ session.cwd }}</span>{% endif %}
+  {% if git_context %}
+  {% for pull in git_context.pull_requests %}
+  <a class="chip pr-link pr-{{ pull.status }}" href="{{ pull.url }}" target="_blank" rel="noopener"
+     title="{{ pull.title }}">
+    PR #{{ pull.number }} · {{ 'draft' if pull.draft and pull.status == 'open' else pull.status }}
+  </a>
+  {% endfor %}
+  {% endif %}
 </div>
 
 <div id="assistant-session-details" sse-swap="assistant-session">

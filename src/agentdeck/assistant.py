@@ -188,6 +188,20 @@ class AssistantService:
         self._wake.set()
         return True
 
+    async def ensure_session_context(self, session: Session) -> GitContext | None:
+        """Resolve git/PR metadata when a chat outside the analysis window opens."""
+        existing = self.contexts.get(session.key)
+        if existing is not None:
+            return existing
+        try:
+            context = (await self.context_resolver.resolve([session])).get(session.key)
+        except Exception as exc:  # noqa: BLE001 -- metadata must not break chat pages
+            log.debug("Deckhand context resolve failed for %s: %s", session.key, exc)
+            return None
+        if context is not None:
+            self.contexts[session.key] = context
+        return context
+
     async def start(self) -> None:
         if self.config.enabled and self._task is None:
             self._task = asyncio.create_task(self._loop(), name="orchestration-assistant")

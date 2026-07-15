@@ -1142,6 +1142,14 @@ async def test_session_detail_uses_responsive_split_view(tmp_path):
                 url="https://github.com/eerovil/agentdeck/pull/91",
                 status="merged",
             ),
+            PullRequestContext(
+                repository="eerovil/agentdeck",
+                number=92,
+                title="Follow-up PR",
+                url="https://github.com/eerovil/agentdeck/pull/92",
+                status="open",
+                draft=True,
+            ),
         ),
     )
     async with _client(app) as client:
@@ -1164,8 +1172,12 @@ async def test_session_detail_uses_responsive_split_view(tmp_path):
     assert 'class="assistant-chat-detail insight-waiting"' in response.text
     assert "The agent needs the database decision before it can continue." in response.text
     assert "feature/deckhand" in response.text
-    assert 'class="assistant-pr-state pr-merged">merged</span>' in response.text
-    assert "PR #91" in response.text
+    assert 'class="chip pr-link pr-merged"' in response.text
+    assert 'href="https://github.com/eerovil/agentdeck/pull/91"' in response.text
+    assert "PR #91 · merged" in response.text
+    assert 'class="chip pr-link pr-open"' in response.text
+    assert 'href="https://github.com/eerovil/agentdeck/pull/92"' in response.text
+    assert "PR #92 · draft" in response.text
 
     css = (
         Path(__file__).parents[1] / "src/agentdeck/web/static/app.css"

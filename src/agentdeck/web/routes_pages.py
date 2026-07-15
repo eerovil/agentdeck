@@ -107,6 +107,8 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
     labels = session_labels(accounts)
     account_label = labels.get(session.account_key)
     owned_session = provider.owns_session(account, session)
+    assistant = request.app.state.assistant
+    git_context = await assistant.ensure_session_context(session)
 
     resp = templates.TemplateResponse(
         request,
@@ -139,12 +141,12 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
             "inject_max_chars": request.app.state.config.inject.max_message_chars,
             "owned_session": owned_session,
             "pending_interaction": provider.pending_interaction(account, session),
-            "assistant": request.app.state.assistant,
+            "assistant": assistant,
             "assistant_sessions": state.sessions,
             "assistant_insights": assistant_insights_for_session(
-                request.app.state.assistant, session.key
+                assistant, session.key
             ),
-            "git_context": request.app.state.assistant.contexts.get(session.key),
+            "git_context": git_context,
             # topbar usage bars, rendered server-side so they paint immediately
             # (the per-session SSE stream then keeps them live over one socket).
             "rows": _usage_rows(accounts, state),
