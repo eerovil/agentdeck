@@ -30,7 +30,8 @@
   <div class="assistant-insights">
     {% for insight in assistant.view.insights %}
     <div class="assistant-insight insight-{{ insight.kind }}">
-      <a class="assistant-insight-link" href="/sessions/{{ insight.session_key }}">
+      <a class="assistant-insight-link" href="/sessions/{{ insight.session_key }}"
+         data-agentdeck-action="open_deckhand_chat">
         <span class="assistant-kind">{{ insight.kind }}</span>
         <span class="assistant-copy">
           <strong>{{ insight.headline }}</strong>
@@ -53,7 +54,9 @@
     {% for item in assistant.handled_items %}
     <div class="assistant-handled-item">
       <span class="assistant-handled-label">Handled</span>
-      <a href="/sessions/{{ item.session_key }}" title="{{ item.headline }}">{{ item.headline }}</a>
+      <a class="assistant-handled-link" href="/sessions/{{ item.session_key }}"
+         data-agentdeck-action="open_deckhand_chat"
+         title="{{ item.headline }}">{{ item.headline }}</a>
       <form hx-post="/assistant/unhandle" hx-target="#assistant-panel" hx-swap="outerHTML">
         <input type="hidden" name="session_key" value="{{ item.session_key }}">
         <button type="submit" aria-label="Undo handling {{ item.headline }}">Undo</button>

@@ -195,7 +195,8 @@
     persistNavigation(record);
   });
 
-  window.addEventListener('pageshow', function () {
+  window.addEventListener('pageshow', function (event) {
+    if (!event.persisted) return;
     document.querySelectorAll('a[data-agentdeck-action].opening').forEach(function (link) {
       link.classList.remove('opening');
       link.removeAttribute('aria-busy');

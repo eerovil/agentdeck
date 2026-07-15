@@ -165,13 +165,38 @@ async def test_orchestration_assistant_fits_mobile_and_desktop(tmp_path):
 
     assert "This agent is waiting for an explicit architecture decision." not in response.text
     assert "Another active session is changing the same service." not in response.text
+    assert response.text.count('data-agentdeck-action="open_deckhand_chat"') == 2
 
-    css = (Path(__file__).parents[1] / "src/agentdeck/web/static/app.css").read_text()
+    static_dir = Path(__file__).parents[1] / "src/agentdeck/web/static"
+    css = (static_dir / "app.css").read_text()
+    action_script = (static_dir / "action_timing.js").read_text()
     html = response.text.replace("</head>", f"<style>{css}</style></head>")
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()
         page = await browser.new_page(viewport={"width": 320, "height": 800})
         await page.set_content(html)
+        await page.add_script_tag(content=action_script)
+        await page.evaluate(
+            """() => {
+              // set_content has an opaque about:blank origin; make this synthetic
+              // click same-origin so it exercises the production navigation gate.
+              document.querySelector('.assistant-insight-link').href = location.href;
+              document.addEventListener('click', event => {
+                if (event.target.closest('.assistant-insight-link')) event.preventDefault();
+              }, {once: true});
+            }"""
+        )
+        await page.locator(".assistant-insight-link").first.click()
+        opening = await page.locator(".assistant-insight-link").first.evaluate(
+            """link => ({
+              opening: link.classList.contains('opening'),
+              busy: link.getAttribute('aria-busy'),
+              label: getComputedStyle(link, '::after').content,
+              timing: JSON.parse(JSON.stringify(
+                Array.from(AgentDeckActionTiming.records.values())[0]
+              )),
+            })"""
+        )
         sizes = []
         for width in (320, 760):
             await page.set_viewport_size({"width": width, "height": 800})
@@ -192,6 +217,15 @@ async def test_orchestration_assistant_fits_mobile_and_desktop(tmp_path):
             )
         await browser.close()
 
+    assert opening["opening"] is True
+    assert opening["busy"] == "true"
+    assert opening["label"] == '"Opening chat…"'
+    assert opening["timing"]["action"] == "open_deckhand_chat"
+    assert (
+        opening["timing"]["epochMarks"]["acknowledged"]
+        - opening["timing"]["epochMarks"]["interaction"]
+        < 16
+    )
     for size in sizes:
         assert size["left"] >= 0
         assert size["right"] <= size["viewport"]
