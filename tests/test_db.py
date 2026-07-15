@@ -64,6 +64,25 @@ def test_assistant_handled_round_trip(tmp_path):
         db.close()
 
 
+def test_assistant_checkpoint_round_trip(tmp_path):
+    db = Db(tmp_path / "history.db")
+    try:
+        assert db.load_assistant_checkpoint() is None
+        checkpoint = {
+            "version": 1,
+            "view": {"state": "ready", "summary": "One item."},
+            "analysis_signature": "material-evidence",
+        }
+        db.record_assistant_checkpoint(checkpoint)
+        assert db.load_assistant_checkpoint() == checkpoint
+
+        replacement = {"version": 1, "view": {"state": "ready", "summary": "Clear."}}
+        db.record_assistant_checkpoint(replacement)
+        assert db.load_assistant_checkpoint() == replacement
+    finally:
+        db.close()
+
+
 def test_assistant_handled_schema_adds_restore_metadata_to_existing_db(tmp_path):
     path = tmp_path / "history.db"
     connection = sqlite3.connect(path)

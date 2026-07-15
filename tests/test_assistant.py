@@ -14,6 +14,7 @@ from agentdeck.assistant import (
     run_codex,
 )
 from agentdeck.config import AccountConfig, AppConfig, AssistantConfig
+from agentdeck.db import Db
 from agentdeck.git_context import GitContext, PullRequestContext
 from agentdeck.models import (
     InjectResult,
@@ -936,6 +937,70 @@ async def test_background_poll_skips_luna_until_material_evidence_changes(tmp_pa
         await wait_until(lambda: runner_calls == 2)
     finally:
         await assistant.stop()
+
+
+@pytest.mark.asyncio
+async def test_deckhand_checkpoint_survives_restart_without_reanalysis(tmp_path):
+    path = tmp_path / "agentdeck.db"
+    session = _session(tmp_path)
+    result = {
+        "summary": "One item needs attention.",
+        "insights": [
+            {
+                "session_key": session.key,
+                "kind": "waiting",
+                "headline": "Choose the database",
+                "detail": "The agent needs a database choice.",
+                "answers": [],
+                "safe_to_auto_answer": False,
+                "confidence": 0.9,
+            }
+        ],
+    }
+
+    first_db = Db(path)
+    first_state = AppState(db=first_db)
+    first_state.update_session(session)
+    first = AssistantService(
+        _config(tmp_path), first_state, runner=AsyncMock(return_value=result)
+    )
+    await first.refresh(snapshot=first.snapshot())
+    original_view = first.view
+    original_signature = first._last_signature
+    first_db.close()
+
+    second_db = Db(path)
+    second_state = AppState(db=second_db)
+    runner = AsyncMock(return_value=result)
+    resolver = AsyncMock()
+    resolver.resolve = AsyncMock(return_value={})
+    second = AssistantService(
+        _config(tmp_path, refresh_interval_s=0.01),
+        second_state,
+        runner=runner,
+        context_resolver=resolver,
+    )
+    try:
+        assert second.view == original_view
+        assert second._last_signature == original_signature
+        assert second._force is False
+
+        second_state.update_session(session)
+        await second.start()
+        second._wake.set()
+        for _ in range(100):
+            if resolver.resolve.await_count:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            pytest.fail("restored Deckhand did not check current evidence")
+        await asyncio.sleep(0.02)
+
+        runner.assert_not_awaited()
+        assert second.view == original_view
+    finally:
+        await second.stop()
+        second_db.close()
 
 
 def test_unhandle_does_not_restore_card_after_evidence_changed(tmp_path):

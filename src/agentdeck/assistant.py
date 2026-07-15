@@ -215,13 +215,17 @@ class AssistantService:
         )
         self._task: asyncio.Task | None = None
         self._wake = asyncio.Event()
-        self._force = False
         self._last_signature: str | None = None
         self._last_run = 0.0
         self._answered_interactions: set[str] = set()
         self._evidence_signatures: dict[str, str] = {}
         self.analysis_session_count = 0
         self.total_session_count = 0
+        checkpoint = state.db.load_assistant_checkpoint() if state.db else None
+        restored = self._restore_checkpoint(checkpoint)
+        if restored is not None:
+            self.view, self._evidence_signatures, self._last_signature = restored
+        self._force = self._last_signature is None
         handled = state.db.load_assistant_handled() if state.db else {}
         self._handled = {session_key: record[0] for session_key, record in handled.items()}
         self._handled_insights = {
@@ -234,6 +238,105 @@ class AssistantService:
             for session_key, (_, kind, headline, detail) in handled.items()
             if kind is not None and headline is not None
         }
+
+    @staticmethod
+    def _restore_checkpoint(
+        payload: dict[str, Any] | None,
+    ) -> tuple[AssistantView, dict[str, str], str | None] | None:
+        if not payload or payload.get("version") != 1:
+            return None
+        try:
+            raw_view = payload["view"]
+            insights = []
+            for item in raw_view.get("insights", []):
+                answers = tuple(
+                    AssistantAnswer(str(answer["question_id"]), tuple(answer["values"]))
+                    for answer in item.get("answers", [])
+                )
+                insights.append(
+                    AssistantInsight(
+                        session_key=str(item["session_key"]),
+                        kind=str(item["kind"]),
+                        headline=str(item["headline"]),
+                        detail=str(item["detail"]),
+                        interaction_id=item.get("interaction_id"),
+                        coordination_key=item.get("coordination_key"),
+                        answers=answers,
+                        safe_to_auto_answer=bool(item.get("safe_to_auto_answer", False)),
+                        confidence=float(item.get("confidence", 0.0)),
+                    )
+                )
+            actions = tuple(
+                AssistantAction(
+                    session_key=str(item["session_key"]),
+                    text=str(item["text"]),
+                    created_at=datetime.fromisoformat(item["created_at"]),
+                )
+                for item in raw_view.get("actions", [])
+            )
+            analyzed_at = raw_view.get("analyzed_at")
+            view = AssistantView(
+                state="ready",
+                summary=str(raw_view["summary"]),
+                insights=tuple(insights),
+                actions=actions,
+                analyzed_at=(datetime.fromisoformat(analyzed_at) if analyzed_at else None),
+            )
+            evidence = {
+                str(key): str(value)
+                for key, value in payload.get("evidence_signatures", {}).items()
+            }
+            signature = payload.get("analysis_signature")
+            return view, evidence, str(signature) if signature is not None else None
+        except (KeyError, TypeError, ValueError):
+            log.warning("Ignoring invalid Deckhand checkpoint")
+            return None
+
+    def _checkpoint_payload(self) -> dict[str, Any]:
+        return {
+            "version": 1,
+            "view": {
+                "state": "ready",
+                "summary": self.view.summary,
+                "insights": [
+                    {
+                        "session_key": insight.session_key,
+                        "kind": insight.kind,
+                        "headline": insight.headline,
+                        "detail": insight.detail,
+                        "interaction_id": insight.interaction_id,
+                        "coordination_key": insight.coordination_key,
+                        "answers": [
+                            {
+                                "question_id": answer.question_id,
+                                "values": list(answer.values),
+                            }
+                            for answer in insight.answers
+                        ],
+                        "safe_to_auto_answer": insight.safe_to_auto_answer,
+                        "confidence": insight.confidence,
+                    }
+                    for insight in self.view.insights
+                ],
+                "actions": [
+                    {
+                        "session_key": action.session_key,
+                        "text": action.text,
+                        "created_at": action.created_at.isoformat(),
+                    }
+                    for action in self.view.actions
+                ],
+                "analyzed_at": (
+                    self.view.analyzed_at.isoformat() if self.view.analyzed_at else None
+                ),
+            },
+            "evidence_signatures": self._evidence_signatures,
+            "analysis_signature": self._last_signature,
+        }
+
+    def _save_checkpoint(self) -> None:
+        if self.state.db and self.view.state == "ready":
+            self.state.db.record_assistant_checkpoint(self._checkpoint_payload())
 
     def _account(self) -> Account | None:
         codex = [account for account in self.accounts if account.provider_id == "codex"]
@@ -291,6 +394,7 @@ class AssistantService:
             analyzed_at=self.view.analyzed_at,
             error=self.view.error,
         )
+        self._save_checkpoint()
         self.state.bus.publish("assistant")
 
     async def start(self) -> None:
@@ -518,6 +622,7 @@ class AssistantService:
             summary=self._tracking_summary(len(insights)),
             insights=insights,
         )
+        self._save_checkpoint()
         self.state.bus.publish("assistant")
         return True
 
@@ -571,6 +676,7 @@ class AssistantService:
                 summary=self._tracking_summary(len(insights)),
                 insights=insights,
             )
+        self._save_checkpoint()
         self.request_refresh()
         self.state.bus.publish("assistant")
         return True
@@ -928,10 +1034,13 @@ Dashboard snapshot:
         else:
             self.analysis_session_count = len(snapshot)
             self.total_session_count = len(self.state.visible_sessions())
+        analysis_signature = self._analysis_signature(snapshot)
         if not snapshot:
             self.view = AssistantView(
                 state="ready", summary="Nothing needs your attention right now."
             )
+            self._last_signature = analysis_signature
+            self._save_checkpoint()
             self.state.bus.publish("assistant")
             return
         account = self._account()
@@ -979,6 +1088,8 @@ Dashboard snapshot:
                 analyzed_at=view.analyzed_at,
             )
             self._evidence_signatures.update(evidence)
+            self._last_signature = analysis_signature
+            self._save_checkpoint()
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 -- background failure belongs in the panel
@@ -995,7 +1106,6 @@ Dashboard snapshot:
 
     async def _loop(self) -> None:
         loop = asyncio.get_running_loop()
-        self._force = True
         while True:
             try:
                 await asyncio.wait_for(self._wake.wait(), timeout=5.0)
@@ -1018,6 +1128,5 @@ Dashboard snapshot:
                 self._last_run = loop.time()
                 continue
             self._force = False
-            self._last_signature = signature
             self._last_run = loop.time()
             await self.refresh(snapshot)

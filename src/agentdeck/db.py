@@ -1,6 +1,6 @@
-"""Optional SQLite persistence: usage history (for sparklines) + a
-sessions-seen ledger. Disabled entirely when ``[history] enabled = false`` —
-the app runs fully from memory in that case (NullDb).
+"""Optional SQLite persistence for usage history, the sessions-seen ledger,
+and Deckhand state. Disabled entirely when ``[history] enabled = false`` — the
+app runs fully from memory in that case (NullDb).
 
 Writes are small and infrequent (usage every ~5 min, sessions-seen every scan),
 so a short synchronous insert on the event loop is negligible here; we keep one
@@ -9,11 +9,13 @@ connection guarded by a lock rather than a thread pool.
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from .models import Session, UsageSnapshot
 
@@ -30,6 +32,10 @@ class NullDb:
         return []
 
     def upsert_sessions_seen(self, sessions: list[Session]) -> None: ...
+    def load_assistant_checkpoint(self) -> dict[str, Any] | None:
+        return None
+
+    def record_assistant_checkpoint(self, payload: dict[str, Any]) -> None: ...
     def load_assistant_handled(
         self,
     ) -> dict[str, tuple[str, str | None, str | None, str | None]]:
@@ -86,6 +92,11 @@ class Db:
                     headline TEXT,
                     detail TEXT,
                     handled_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS assistant_checkpoint (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                    payload TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
                 );
                 """
             )
@@ -147,6 +158,34 @@ class Db:
                     )
         except sqlite3.Error as exc:
             log.debug("upsert_sessions_seen failed: %s", exc)
+
+    def load_assistant_checkpoint(self) -> dict[str, Any] | None:
+        try:
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT payload FROM assistant_checkpoint WHERE singleton = 1"
+                ).fetchone()
+            if row is None:
+                return None
+            payload = json.loads(row[0])
+            return payload if isinstance(payload, dict) else None
+        except (sqlite3.Error, json.JSONDecodeError, TypeError) as exc:
+            log.debug("load_assistant_checkpoint failed: %s", exc)
+            return None
+
+    def record_assistant_checkpoint(self, payload: dict[str, Any]) -> None:
+        try:
+            encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            with self._lock, self._conn:
+                self._conn.execute(
+                    "INSERT INTO assistant_checkpoint(singleton, payload, updated_at)"
+                    " VALUES (1, ?, ?)"
+                    " ON CONFLICT(singleton) DO UPDATE SET"
+                    " payload=excluded.payload, updated_at=excluded.updated_at",
+                    (encoded, datetime.now(UTC).isoformat()),
+                )
+        except (sqlite3.Error, TypeError, ValueError) as exc:
+            log.debug("record_assistant_checkpoint failed: %s", exc)
 
     def load_assistant_handled(
         self,

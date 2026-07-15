@@ -23,7 +23,7 @@ host_interval_s = 3         # aggregate host CPU + memory refresh
 shared_cache_dir = ""
 
 [history]
-enabled = true              # SQLite usage/session history (used from v0.2)
+enabled = true              # SQLite usage, session ledger, and Deckhand state
 db_path = "~/.local/share/agentdeck/agentdeck.db"
 usage_retention_days = 30
 
