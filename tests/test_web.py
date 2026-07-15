@@ -25,9 +25,14 @@ def _app_with_state(tmp_path, *, with_transcript=False):
         proj = tmp_path / "projects" / "-tmp"
         proj.mkdir(parents=True)
         lines = [
-            {"type": "user", "message": {"role": "user", "content": "first question"}},
+            {
+                "type": "user",
+                "timestamp": "2026-07-15T07:41:00Z",
+                "message": {"role": "user", "content": "first question"},
+            },
             {
                 "type": "assistant",
+                "timestamp": "2026-07-15T07:42:00Z",
                 "message": {
                     "role": "assistant",
                     "model": "claude-opus-4-8",
@@ -753,6 +758,7 @@ def test_tool_calls_visible_outputs_hidden_and_live_marker(tmp_path):
 
     app = _app_with_state(tmp_path)
     templates = app.state.templates
+    timestamp = datetime(2026, 7, 15, 7, 42, tzinfo=UTC)
     events = [
         TranscriptEvent(seq=1, role="tool", text="huge noisy tool result"),
         TranscriptEvent(
@@ -762,6 +768,7 @@ def test_tool_calls_visible_outputs_hidden_and_live_marker(tmp_path):
             tool_summary="cmd: uv run pytest -q",
             tool_detail="uv run pytest -q --verbose tests/test_web.py",
             text=None,
+            ts=timestamp,
         ),
         TranscriptEvent(
             seq=3,
@@ -787,6 +794,8 @@ def test_tool_calls_visible_outputs_hidden_and_live_marker(tmp_path):
     assert "here is my answer" in html  # real assistant text kept
     assert "queued follow-up" in html  # queued turns look like ordinary user chat
     assert "user · queued" not in html
+    assert 'class="ev-time"' in html
+    assert 'datetime="2026-07-15T07:42:00+00:00"' in html
     # the live marker appears only while actively working
     activity = render_tool_activity(templates, "Using tools", 12.9)
     assert "Using tools" in activity
@@ -1138,6 +1147,9 @@ async def test_session_detail_renders_transcript(tmp_path):
     assert "an answer here" in r.text
     assert "claude-opus-4-8" in r.text
     assert "15 tok" in r.text  # 10 input + 5 output summed from usage
+    assert r.text.count('class="ev-time"') == 2
+    assert 'datetime="2026-07-15T07:41:00+00:00"' in r.text
+    assert 'datetime="2026-07-15T07:42:00+00:00"' in r.text
     # usage bars paint server-side in the topbar (no separate /events socket)
     assert "42%" in r.text
     # the page binds its single SSE connection to the per-session stream
@@ -1255,6 +1267,19 @@ async def test_session_detail_uses_responsive_split_view(tmp_path):
                     .position,
             })"""
         )
+        await page.set_viewport_size({"width": 320, "height": 800})
+        narrow = await page.evaluate(
+            """() => ({
+                pageOverflow: document.documentElement.scrollWidth >
+                    document.documentElement.clientWidth,
+                timestampsVisible: [...document.querySelectorAll('.ev-time')].every(time => {
+                    const rect = time.getBoundingClientRect();
+                    const parent = time.closest('.ev-head, summary, .tool-call-head')
+                        .getBoundingClientRect();
+                    return rect.width > 0 && rect.left >= parent.left && rect.right <= parent.right;
+                }),
+            })"""
+        )
         await browser.close()
 
     assert desktop["sidebar"] == "block"
@@ -1273,6 +1298,7 @@ async def test_session_detail_uses_responsive_split_view(tmp_path):
         "assistantRects": 0,
         "headerPosition": "static",
     }
+    assert narrow == {"pageOverflow": False, "timestampsVisible": True}
 
 
 async def test_session_detail_renders_ask_user_question(tmp_path):

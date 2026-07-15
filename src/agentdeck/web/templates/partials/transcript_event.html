@@ -9,6 +9,7 @@
     <span class="ev-role">tool</span>
     <span class="tool-name">{{ e.tool_display_name or (e.tool_name | tool_label) }}</span>
     {% if e.tool_summary %}<span class="tool-peek">{{ e.tool_summary }}</span>{% endif %}
+    {% if e.ts %}<time class="ev-time" datetime="{{ e.ts.isoformat() }}" title="{{ e.ts | chat_time_title }}">{{ e.ts | chat_time }}</time>{% endif %}
   </summary>
   <div class="ev-text">{{ e.tool_detail }}</div>
 </details>
@@ -17,6 +18,7 @@
   <div class="tool-call-head">
     <span class="ev-role">tool</span>
     <span class="tool-name">{{ e.tool_display_name or (e.tool_name | tool_label) }}</span>
+    {% if e.ts %}<time class="ev-time" datetime="{{ e.ts.isoformat() }}" title="{{ e.ts | chat_time_title }}">{{ e.ts | chat_time }}</time>{% endif %}
   </div>
   {% if e.tool_summary %}<div class="tool-call-summary" title="{{ e.tool_summary }}">{{ e.tool_summary }}</div>{% endif %}
 </div>
@@ -26,7 +28,10 @@
 <div class="ev {{ e.role }}{% if e.subagent %} sub{% endif %}">
   <div class="ev-head">
     <span class="ev-role">{{ e.role }}{% if e.subagent %} · {{ e.subagent }}{% endif %}</span>
-    {% if e.model %}<span class="ev-model">{{ e.model }}</span>{% endif %}
+    <span class="ev-head-meta">
+      {% if e.model %}<span class="ev-model">{{ e.model }}</span>{% endif %}
+      {% if e.ts %}<time class="ev-time" datetime="{{ e.ts.isoformat() }}" title="{{ e.ts | chat_time_title }}">{{ e.ts | chat_time }}</time>{% endif %}
+    </span>
   </div>
   {% if e.text %}<div class="ev-text">{{ e.text }}</div>{% endif %}
   {% if e.question %}<div class="ev-question" title="the agent asked you to choose"><span class="q-dot"></span><span class="q-text"><bdi>{{ e.question }}</bdi></span></div>{% endif %}

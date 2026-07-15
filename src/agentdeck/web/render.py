@@ -57,6 +57,30 @@ def reltime_ago(value: datetime | None) -> str:
     return f"{days}d {hours}h ago"
 
 
+def chat_time(value: datetime | None) -> str:
+    """Compact local timestamp for transcript rows."""
+    if value is None:
+        return ""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    local = value.astimezone()
+    now = _now().astimezone()
+    if local.date() == now.date():
+        return local.strftime("%H:%M")
+    if local.year == now.year:
+        return local.strftime("%b %d, %H:%M")
+    return local.strftime("%b %d, %Y %H:%M")
+
+
+def chat_time_title(value: datetime | None) -> str:
+    """Full local timestamp exposed by transcript time elements."""
+    if value is None:
+        return ""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
 def ktok(value) -> str:
     """Compact token count: 940 -> '940', 1200 -> '1.2k', 47000 -> '47k'."""
     try:
@@ -93,6 +117,8 @@ def ctx_level(value) -> str:
 def register_filters(templates: Jinja2Templates) -> None:
     templates.env.filters["reltime"] = reltime
     templates.env.filters["reltime_ago"] = reltime_ago
+    templates.env.filters["chat_time"] = chat_time
+    templates.env.filters["chat_time_title"] = chat_time_title
     templates.env.filters["ktok"] = ktok
     templates.env.filters["ctx_level"] = ctx_level
     templates.env.filters["tool_label"] = tool_label

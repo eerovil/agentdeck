@@ -354,6 +354,7 @@ async def test_inject_route_accepts_and_reports_status(tmp_path, monkeypatch):
         assert 'hx-swap-oob="beforeend:.transcript"' in response.text
         assert 'class="ev user pending-message"' in response.text
         assert '<span class="ev-role">user</span>' in response.text
+        assert 'class="ev-time"' in response.text
         assert "user · queued" not in response.text
         conflict = await client.post(
             "/sessions/codex:test:sid/inject",

@@ -1,6 +1,9 @@
 {% if oob | default(false) %}<template hx-swap-oob="beforeend:.transcript">{% endif %}
 <div class="ev user pending-message" data-pending-message data-queue-id="{{ item.id }}">
-  <div class="ev-head"><span class="ev-role">user</span></div>
+  <div class="ev-head">
+    <span class="ev-role">user</span>
+    <time class="ev-time" datetime="{{ item.created_at.isoformat() }}" title="{{ item.created_at | chat_time_title }}">{{ item.created_at | chat_time }}</time>
+  </div>
   <div class="ev-text">{{ item.text }}</div>
 </div>
 {% if oob | default(false) %}</template>{% endif %}
