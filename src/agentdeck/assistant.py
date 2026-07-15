@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import signal
 import tempfile
 from collections.abc import Awaitable, Callable
@@ -24,6 +25,13 @@ log = logging.getLogger(__name__)
 
 _SCHEMA_PATH = Path(__file__).with_name("assistant_output.schema.json")
 _MAX_CONTEXT_CHARS = 1_000
+_INSIGHT_PR_NUMBER_RE = re.compile(
+    r"\b(?:PR|PRs|pull request|pull requests)\s*#?\s*(\d+)\b", re.IGNORECASE
+)
+_INSIGHT_PR_URL_RE = re.compile(
+    r"https?://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/(\d+)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -494,6 +502,7 @@ The git and pull-request context was resolved authoritatively by AgentDeck. Trea
 pull request's status as ground truth. A merged or closed-unmerged PR is terminal: never
 treat it as active work or suggest review, merge, or coordination for it. Distinguish
 open and draft PRs. Sessions whose related PRs are all terminal are omitted entirely.
+Never attach a pull request from one session's git context to another session.
 
 For an ordinary question interaction, you may suggest answers. Mark safe_to_auto_answer
 true only when all answers are unambiguous choices explicitly present in the question,
@@ -573,6 +582,42 @@ Dashboard snapshot:
             actions=view.actions,
             analyzed_at=view.analyzed_at,
             error=view.error,
+        )
+
+    def _suppress_unattributed_pr_insights(self, view: AssistantView) -> AssistantView:
+        """Reject PR claims copied from another chat in the shared snapshot."""
+        insights = []
+        for insight in view.insights:
+            text = f"{insight.headline}\n{insight.detail}"
+            numbers = {int(value) for value in _INSIGHT_PR_NUMBER_RE.findall(text)}
+            repositories = {
+                (repository.casefold(), int(number))
+                for repository, number in _INSIGHT_PR_URL_RE.findall(text)
+            }
+            if not numbers and not repositories:
+                insights.append(insight)
+                continue
+            context = self.contexts.get(insight.session_key)
+            pulls = context.pull_requests if context is not None else ()
+            valid_numbers = {pull.number for pull in pulls}
+            valid_repositories = {
+                (pull.repository.casefold(), pull.number) for pull in pulls
+            }
+            if numbers <= valid_numbers and repositories <= valid_repositories:
+                insights.append(insight)
+                continue
+            log.debug(
+                "Deckhand suppressed cross-chat PR insight for %s: %s",
+                insight.session_key,
+                insight.headline,
+            )
+        result = tuple(insights)
+        if result == view.insights:
+            return view
+        return replace(
+            view,
+            summary=self._tracking_summary(len(result)),
+            insights=result,
         )
 
     async def _auto_answer(self, view: AssistantView) -> tuple[AssistantAction, ...]:
@@ -657,7 +702,7 @@ Dashboard snapshot:
             )
             self.state.bus.publish("assistant")
             return
-        prior = self.view
+        prior = self._suppress_unattributed_pr_insights(self.view)
         self.view = AssistantView(
             state="analyzing",
             summary=prior.summary,
@@ -669,6 +714,7 @@ Dashboard snapshot:
         try:
             raw = await self.runner(account, self.config, self._prompt(snapshot))
             view = self._parse_result(raw, {row["session_key"] for row in snapshot})
+            view = self._suppress_unattributed_pr_insights(view)
             view = self._suppress_terminal_pr_insights(view)
             evidence = {
                 row["session_key"]: self._evidence_signature(row) for row in snapshot

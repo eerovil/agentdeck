@@ -503,3 +503,75 @@ def test_result_drops_hallucinated_session_keys():
     )
 
     assert not view.insights
+
+
+def test_pr_insight_must_match_target_chats_authoritative_context(tmp_path):
+    state = AppState()
+    assistant = AssistantService(_config(tmp_path), state)
+    assistant.contexts = {
+        "codex:test:agentdeck": GitContext("eerovil/agentdeck", "master", False),
+        "codex:test:storm": GitContext(
+            "protecomp/storm",
+            "claude/issue-238",
+            False,
+            pull_requests=(
+                PullRequestContext(
+                    "protecomp/storm",
+                    239,
+                    "Custobar coupon activation",
+                    "https://github.com/protecomp/storm/pull/239",
+                    "open",
+                ),
+            ),
+        ),
+    }
+    wrong = AssistantInsight(
+        "codex:test:agentdeck",
+        "waiting",
+        "PR #239 is idle and open",
+        "The completed fixes likely need review.",
+    )
+    right = AssistantInsight(
+        "codex:test:storm",
+        "waiting",
+        "PR #239 is awaiting review",
+        "See https://github.com/protecomp/storm/pull/239.",
+    )
+
+    result = assistant._suppress_unattributed_pr_insights(
+        AssistantView(state="ready", summary="Two PRs need review.", insights=(wrong, right))
+    )
+
+    assert result.insights == (right,)
+    assert result.summary == "Deckhand is tracking 1 item that still needs attention."
+
+
+async def test_refresh_does_not_retain_old_cross_chat_pr_insight(tmp_path):
+    state = AppState()
+    session = _session(tmp_path)
+    state.update_session(session)
+    assistant = AssistantService(
+        _config(tmp_path),
+        state,
+        runner=AsyncMock(return_value={"summary": "Nothing to report.", "insights": []}),
+    )
+    assistant.contexts[session.key] = GitContext("eerovil/agentdeck", "master", False)
+    row = assistant._snapshot_row(session)
+    assistant._evidence_signatures[session.key] = assistant._evidence_signature(row)
+    assistant.view = AssistantView(
+        state="ready",
+        summary="PR #239 needs review.",
+        insights=(
+            AssistantInsight(
+                session.key,
+                "waiting",
+                "PR #239 is idle and open",
+                "The completed fixes likely need review.",
+            ),
+        ),
+    )
+
+    await assistant.refresh(snapshot=[row])
+
+    assert assistant.view.insights == ()
+    assert assistant.view.summary == "Nothing to report."
