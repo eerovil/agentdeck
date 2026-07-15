@@ -508,8 +508,7 @@ class AssistantService:
 
     @property
     def handled_items(self) -> tuple[AssistantHandledItem, ...]:
-        """Handled cards, including persisted entries not yet seen this run."""
-        items = []
+        """Most recent handled card; older entries stay persisted as an undo stack."""
         for session_key in reversed(self._handled):
             insight = self._handled_insights.get(session_key)
             session = self.state.sessions.get(session_key)
@@ -518,8 +517,8 @@ class AssistantService:
                 if insight is not None
                 else (session.title if session is not None and session.title else "Handled item")
             )
-            items.append(AssistantHandledItem(session_key, headline))
-        return tuple(items)
+            return (AssistantHandledItem(session_key, headline),)
+        return ()
 
     def handled_insight(self, session_key: str) -> AssistantInsight | None:
         if session_key not in self._handled:

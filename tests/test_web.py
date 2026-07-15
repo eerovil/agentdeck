@@ -211,7 +211,7 @@ async def test_orchestration_assistant_item_can_be_marked_handled(tmp_path):
 
     assert response.status_code == 200
     assert 'class="assistant-insight-link"' not in response.text
-    assert 'aria-label="Handled Deckhand items"' in response.text
+    assert 'aria-label="Most recently handled Deckhand item"' in response.text
     assert "Choose one owner" in response.text
     assert "Undo" in response.text
     assert "Nothing needs your attention right now." in response.text
@@ -242,7 +242,7 @@ async def test_orchestration_assistant_item_can_be_marked_handled(tmp_path):
 
     assert restored.status_code == 200
     assert 'class="assistant-insight-link"' in restored.text
-    assert 'aria-label="Handled Deckhand items"' not in restored.text
+    assert 'aria-label="Most recently handled Deckhand item"' not in restored.text
     assert assistant._handled == {}
 
     async with _client(app) as client:

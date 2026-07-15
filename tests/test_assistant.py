@@ -394,6 +394,44 @@ async def test_unhandle_restores_cached_insight_immediately(tmp_path):
     assert insight.session_key not in assistant._handled
 
 
+def test_handled_panel_exposes_only_latest_item_as_undo_stack(tmp_path):
+    state = AppState()
+    first_session = _session(tmp_path)
+    second_session = Session(
+        **{
+            **vars(first_session),
+            "key": "codex:test:thread-2",
+            "session_id": "thread-2",
+            "title": "Second decision",
+        }
+    )
+    state.update_session(first_session)
+    state.update_session(second_session)
+    first = AssistantInsight(first_session.key, "waiting", "First decision", "Resolve first.")
+    second = AssistantInsight(
+        second_session.key, "coordination", "Second decision", "Resolve second."
+    )
+    assistant = AssistantService(_config(tmp_path), state)
+    assistant.view = AssistantView(state="ready", insights=(first, second))
+    for session in (first_session, second_session):
+        assistant._evidence_signatures[session.key] = assistant._evidence_signature(
+            assistant._snapshot_row(session)
+        )
+
+    assert assistant.handle(first.session_key)
+    assert assistant.handle(second.session_key)
+
+    assert len(assistant._handled) == 2
+    assert [(item.session_key, item.headline) for item in assistant.handled_items] == [
+        (second.session_key, "Second decision")
+    ]
+
+    assert assistant.unhandle(second.session_key)
+    assert [(item.session_key, item.headline) for item in assistant.handled_items] == [
+        (first.session_key, "First decision")
+    ]
+
+
 async def test_refresh_retains_insight_when_chat_leaves_analysis_window(tmp_path):
     state = AppState()
     first = _session(tmp_path)
