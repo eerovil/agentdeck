@@ -170,7 +170,8 @@ class GitContextResolver:
     async def _resolve_session(self, session: Session) -> GitContext | None:
         branch = None
         dirty = False
-        repository = self._repository_from_session(session)
+        referenced = self._repository_from_session(session)
+        checkout = None
         git_found = False
         if self._git is not None and session.cwd is not None:
             cwd = str(session.cwd)
@@ -187,11 +188,18 @@ class GitContextResolver:
                         branch = head
                 dirty = any(line and not line.startswith("## ") for line in lines)
             if remote_code == 0:
-                repository = github_repository(remote_text) or repository
+                checkout = github_repository(remote_text)
+
+        # The checkout's own remote is authoritative for branch discovery, but a
+        # repo named in the session's issue/prompt is where a bare "PR #123" from
+        # the transcript usually lives — e.g. a worker whose cwd is a superproject
+        # checkout while the PR is in a nested app repo. Try both for bare numbers.
+        repository = checkout or referenced
+        pull_repositories = list(dict.fromkeys(r for r in (checkout, referenced) if r))
 
         pulls: dict[tuple[str, int], PullRequestContext] = {}
         if self._gh is not None:
-            refs = self._explicit_refs(session, repository)
+            refs = self._explicit_refs(session, pull_repositories)
             resolved = await asyncio.gather(
                 *(self._pull_for_ref(repo, number) for repo, number in refs)
             )
@@ -240,7 +248,15 @@ class GitContextResolver:
         return f"{match.group(1)}/{match.group(2)}" if match else None
 
     @staticmethod
-    def _explicit_refs(session: Session, repository: str | None) -> list[tuple[str, int]]:
+    def _explicit_refs(
+        session: Session, repositories: str | list[str] | None
+    ) -> list[tuple[str, int]]:
+        if repositories is None:
+            candidates: list[str] = []
+        elif isinstance(repositories, str):
+            candidates = [repositories]
+        else:
+            candidates = repositories
         text = "\n".join(
             value
             for value in (
@@ -253,11 +269,14 @@ class GitContextResolver:
             if value
         )
         refs: list[tuple[str, int]] = []
+        # Full URLs carry their own repo — always authoritative.
         refs.extend(
             (f"{m.group(1)}/{m.group(2)}", int(m.group(3))) for m in _PR_URL_RE.finditer(text)
         )
-        if repository:
-            refs.extend((repository, int(m.group(1))) for m in _PR_NUMBER_RE.finditer(text))
+        # A bare "PR #123" has no repo; try each candidate (checkout + referenced).
+        bare_numbers = [int(m.group(1)) for m in _PR_NUMBER_RE.finditer(text)]
+        for repository in candidates:
+            refs.extend((repository, number) for number in bare_numbers)
         unique: dict[tuple[str, int], None] = {}
         for repo, number in refs:
             unique.setdefault((repo, number), None)
