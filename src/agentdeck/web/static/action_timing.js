@@ -89,12 +89,12 @@
   }
 
   function prepareNavigation(link) {
-    if (!link || !link.matches('a[data-agentdeck-action="open_session"]')) return null;
+    if (!link || !link.matches('a[data-agentdeck-action]')) return null;
     var current = link._agentdeckActionTiming;
     if (current && current.marks.settled === undefined) return current;
     var record = {
       id: uuid(),
-      action: 'open_session',
+      action: link.dataset.agentdeckAction,
       path: link.href,
       sessionKey: sessionKey(link.href),
       marks: {},
@@ -111,7 +111,7 @@
   function navigationLink(target) {
     if (!target || !target.closest) return null;
     if (target.closest('.expand-btn, .cc-btn, .gh-btn')) return null;
-    return target.closest('a[data-agentdeck-action="open_session"]');
+    return target.closest('a[data-agentdeck-action]');
   }
 
   function isPlainNavigation(event, link) {
@@ -134,7 +134,7 @@
     if (!raw) return;
     var record;
     try { record = JSON.parse(raw); } catch (_) { return; }
-    if (!record || record.action !== 'open_session' ||
+    if (!record || !record.action ||
         pathName(record.path) !== location.pathname) return;
     record.marks = record.marks || {};
     record.epochMarks = record.epochMarks || {};
@@ -196,7 +196,7 @@
   });
 
   window.addEventListener('pageshow', function () {
-    document.querySelectorAll('a.session.opening').forEach(function (link) {
+    document.querySelectorAll('a[data-agentdeck-action].opening').forEach(function (link) {
       link.classList.remove('opening');
       link.removeAttribute('aria-busy');
     });

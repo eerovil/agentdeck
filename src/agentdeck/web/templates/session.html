@@ -3,7 +3,8 @@
 {% block title %}{% if session.cwd and session.cwd.name %}{{ session.cwd.name[:14] }}{% else %}agentdeck{% endif %}{% endblock %}
 {% block body_class %}session-page{% endblock %}
 
-{% block topbar_nav %}<a class="back" href="/" aria-label="back to all sessions">←</a>{% endblock %}
+{% block topbar_nav %}<a class="back" href="/" aria-label="back to all sessions"
+  data-agentdeck-action="open_session_list">←</a>{% endblock %}
 
 {# One SSE connection for the whole page: status + transcript + the topbar usage
    bars all ride /events/sessions/<key>, so a session page holds a single socket. #}

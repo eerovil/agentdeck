@@ -29,8 +29,13 @@ body {
 .back { flex: none; display: inline-flex; align-items: center; justify-content: center;
   min-width: 34px; height: 30px; padding: 0 10px; font-size: 18px; line-height: 1;
   color: var(--fg); text-decoration: none; background: var(--panel2);
-  border: 1px solid var(--line); border-radius: var(--radius); }
+  border: 1px solid var(--line); border-radius: var(--radius); position: relative; }
 .back:active { background: var(--line); }
+.back.opening { color: transparent; border-color: var(--remote); }
+.back.opening::after { content: "Opening list…"; position: absolute; inset: -1px auto -1px -1px;
+  display: inline-flex; align-items: center; width: max-content; min-width: 100%; padding: 0 9px;
+  border: 1px solid var(--remote); border-radius: var(--radius); background: var(--panel2);
+  color: var(--remote); font-size: 11px; font-weight: 700; white-space: nowrap; }
 main { padding: 12px; max-width: 760px; margin: 0 auto; }
 
 /* Codex orchestration assistant */
