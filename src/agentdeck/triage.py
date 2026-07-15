@@ -199,6 +199,19 @@ def structured_trigger(
     return None
 
 
+def all_pulls_terminal(context: GitContext | None) -> bool:
+    """True when the session has resolved PRs and every one is merged or closed.
+
+    Such a session's work has shipped — there is nothing left to review, so it
+    must not produce a card: not a structured open-PR card (that only fires for
+    open PRs) and not an LLM "review" resurrected from a transcript that still
+    says "opened PR #123". A merged PR is done.
+    """
+    if context is None or not context.pull_requests:
+        return False
+    return all(pull.status in {"merged", "closed"} for pull in context.pull_requests)
+
+
 def needs_llm(session: Session) -> bool:
     """A finished agent whose final message must be read to judge attention.
 

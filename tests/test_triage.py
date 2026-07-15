@@ -103,6 +103,25 @@ def test_open_pull_request_on_idle_session_is_a_finished_card():
     assert "Add the thing" in card.detail
 
 
+def test_all_pulls_terminal_detects_shipped_work():
+    from agentdeck.triage import all_pulls_terminal
+
+    merged = GitContext(
+        "r", "b", False,
+        (PullRequestContext("r", 1, "t", "u", "merged"),
+         PullRequestContext("r", 2, "t", "u", "closed")),
+    )
+    open_too = GitContext(
+        "r", "b", False,
+        (PullRequestContext("r", 1, "t", "u", "merged"),
+         PullRequestContext("r", 2, "t", "u", "open")),
+    )
+    assert all_pulls_terminal(merged) is True
+    assert all_pulls_terminal(open_too) is False  # an open PR still needs review
+    assert all_pulls_terminal(GitContext("r", "b", False, ())) is False
+    assert all_pulls_terminal(None) is False
+
+
 def test_merged_or_draft_pull_request_does_not_trigger():
     context = GitContext(
         repository="eerovil/agentdeck",

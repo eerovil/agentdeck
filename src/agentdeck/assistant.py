@@ -31,6 +31,7 @@ from .triage import (
     AssistantInsight,
     AssistantView,
     Verdict,
+    all_pulls_terminal,
     card_priority,
     classification_prompt,
     needs_llm,
@@ -437,6 +438,9 @@ class AssistantService:
             )
             if card is not None:
                 cards.append(card)
+                continue
+            if all_pulls_terminal(context):
+                # The agent's PR(s) merged/closed — shipped, nothing to review.
                 continue
             if not needs_llm(session):
                 continue
