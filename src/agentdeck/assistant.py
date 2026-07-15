@@ -217,6 +217,8 @@ class AssistantService:
         self._wake = asyncio.Event()
         self._last_signature: str | None = None
         self._last_run = 0.0
+        self.refresh_status: str | None = None
+        self._manual_refresh_pending = False
         self._answered_interactions: set[str] = set()
         self._evidence_signatures: dict[str, str] = {}
         self.analysis_session_count = 0
@@ -346,9 +348,12 @@ class AssistantService:
             )
         return codex[0] if codex else None
 
-    def request_refresh(self) -> bool:
+    def request_refresh(self, *, manual: bool = False) -> bool:
         if not self.config.enabled:
             return False
+        if manual:
+            self._manual_refresh_pending = True
+            self.refresh_status = "Checking current evidence…"
         self._force = True
         self._wake.set()
         return True
@@ -1115,8 +1120,15 @@ Dashboard snapshot:
             due = loop.time() - self._last_run >= self.config.refresh_interval_s
             if not self._force and not due:
                 continue
+            # Consume only the request that caused this check. A second request
+            # arriving while context is resolved must remain armed for the next
+            # loop iteration.
+            self._force = False
+            started_at = loop.time()
             sessions = self._analysis_sessions()
+            collected_at = loop.time()
             resolved = await self.context_resolver.resolve(sessions)
+            resolved_at = loop.time()
             session_keys = set(self.state.sessions)
             self.contexts = {
                 key: context for key, context in self.contexts.items() if key in session_keys
@@ -1124,9 +1136,41 @@ Dashboard snapshot:
             self.contexts.update(resolved)
             snapshot = [self._snapshot_row(session) for session in sessions]
             signature = self._analysis_signature(snapshot)
-            if not self._force and signature == self._last_signature:
+            compared_at = loop.time()
+            manual = self._manual_refresh_pending
+            self._manual_refresh_pending = False
+            if signature == self._last_signature:
                 self._last_run = loop.time()
+                if manual:
+                    self.refresh_status = "No material changes · Luna not run"
+                    self.state.bus.publish("assistant")
+                log.debug(
+                    "Deckhand refresh unchanged in %.3fs (collect %.3fs, context %.3fs, "
+                    "compare %.3fs, manual=%s)",
+                    self._last_run - started_at,
+                    collected_at - started_at,
+                    resolved_at - collected_at,
+                    compared_at - resolved_at,
+                    manual,
+                )
                 continue
-            self._force = False
             self._last_run = loop.time()
+            if manual:
+                self.refresh_status = "Material changes found · running Luna…"
             await self.refresh(snapshot)
+            if manual:
+                self.refresh_status = (
+                    "Material changes found · analysis updated"
+                    if self.view.state == "ready"
+                    else "Material changes found · analysis failed"
+                )
+                self.state.bus.publish("assistant")
+            log.debug(
+                "Deckhand refresh analyzed in %.3fs (collect %.3fs, context %.3fs, "
+                "compare %.3fs, manual=%s)",
+                loop.time() - started_at,
+                collected_at - started_at,
+                resolved_at - collected_at,
+                compared_at - resolved_at,
+                manual,
+            )

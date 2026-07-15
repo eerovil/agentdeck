@@ -5,7 +5,7 @@ follow-ups here instead of creating GitHub issues unless external coordination i
 
 ## Open
 
-- [ ] Make Deckhand refresh fast when chats and PR state are unchanged.
+- [x] Make Deckhand refresh fast when chats and PR state are unchanged.
   - Measure where unchanged refresh time is spent: session collection, Git/PR context resolution,
     evidence comparison, or an unnecessary Luna invocation.
   - Verify automatic polling and manual Refresh separately; manual refresh should explain whether

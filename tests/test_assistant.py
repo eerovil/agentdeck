@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import replace
 from unittest.mock import AsyncMock
 
@@ -927,14 +928,62 @@ async def test_background_poll_skips_luna_until_material_evidence_changes(tmp_pa
         )
         assistant._last_run = 0
         assistant._wake.set()
+        unchanged_started_at = time.monotonic()
         await wait_until(lambda: resolver.calls >= 2)
         await asyncio.sleep(0.02)
+        assert time.monotonic() - unchanged_started_at < 0.5
         assert runner_calls == 1
 
         resolver.pr_status = "merged"
         assistant._last_run = 0
         assistant._wake.set()
         await wait_until(lambda: runner_calls == 2)
+    finally:
+        await assistant.stop()
+
+
+@pytest.mark.asyncio
+async def test_manual_refresh_skips_unchanged_luna_quickly_and_runs_for_new_evidence(tmp_path):
+    state = AppState()
+    session = _session(tmp_path)
+    state.update_session(session)
+    runner = AsyncMock(return_value={"summary": "Nothing needs attention.", "insights": []})
+    resolver = AsyncMock()
+    resolver.resolve = AsyncMock(return_value={})
+    assistant = AssistantService(
+        _config(tmp_path, refresh_interval_s=3600),
+        state,
+        runner=runner,
+        context_resolver=resolver,
+    )
+    await assistant.refresh(snapshot=assistant.snapshot())
+    runner.reset_mock()
+
+    async def wait_until(predicate):
+        for _ in range(100):
+            if predicate():
+                return
+            await asyncio.sleep(0.01)
+        pytest.fail("manual Deckhand refresh did not complete")
+
+    await assistant.start()
+    try:
+        started_at = time.monotonic()
+        assert assistant.request_refresh(manual=True)
+        assert assistant.refresh_status == "Checking current evidence…"
+        await wait_until(
+            lambda: assistant.refresh_status == "No material changes · Luna not run"
+        )
+        assert time.monotonic() - started_at < 0.5
+        runner.assert_not_awaited()
+        assert resolver.resolve.await_count == 1
+
+        state.update_session(replace(session, last_text="The transcript changed materially."))
+        assert assistant.request_refresh(manual=True)
+        await wait_until(lambda: runner.await_count == 1)
+        await wait_until(
+            lambda: assistant.refresh_status == "Material changes found · analysis updated"
+        )
     finally:
         await assistant.stop()
 

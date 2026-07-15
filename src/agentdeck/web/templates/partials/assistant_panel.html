@@ -9,7 +9,8 @@
       {% if assistant.config.enabled %}
       <form hx-post="/assistant/refresh" hx-target="#assistant-panel" hx-swap="outerHTML"
             hx-disabled-elt="find button">
-        <button type="submit" aria-label="Refresh orchestration advice">Refresh</button>
+        <button type="submit" aria-label="Check for changed chats and pull requests"
+                title="Checks current evidence; Luna runs only when something changed">Check now</button>
       </form>
       {% endif %}
     </div>
@@ -74,6 +75,7 @@
     · {{ assistant.analysis_session_count }} selected of {{ assistant.total_session_count }} chats
     {% endif %}
     {% if assistant.view.analyzed_at %} · {{ assistant.view.analyzed_at | reltime_ago }}{% endif %}
+    {% if assistant.refresh_status %} · {{ assistant.refresh_status }}{% endif %}
   </div>
   {% endif %}
 </section>

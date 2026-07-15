@@ -74,7 +74,7 @@ def _render_interaction(request: Request, session_key: str, interaction) -> HTML
 async def refresh_assistant(request: Request) -> HTMLResponse:
     _require_same_origin(request)
     assistant = request.app.state.assistant
-    if not assistant.request_refresh():
+    if not assistant.request_refresh(manual=True):
         raise HTTPException(status_code=409, detail="orchestration assistant is disabled")
     from .render import render_assistant
 

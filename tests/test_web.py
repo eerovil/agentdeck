@@ -251,6 +251,22 @@ async def test_orchestration_assistant_item_can_be_marked_handled(tmp_path):
     assert "Mark Choose one owner handled" in restored_page.text
 
 
+async def test_manual_deckhand_check_explains_that_unchanged_evidence_skips_luna(tmp_path):
+    app = _app_with_state(tmp_path)
+    assistant = app.state.assistant
+    assistant.config.enabled = True
+
+    async with _client(app) as client:
+        response = await client.post("/assistant/refresh")
+
+    assert response.status_code == 202
+    assert assistant._manual_refresh_pending is True
+    assert assistant._force is True
+    assert "Checking current evidence…" in response.text
+    assert "Check now" in response.text
+    assert "Luna runs only when something changed" in response.text
+
+
 async def test_host_usage_fits_collapsed_mobile_header(tmp_path):
     app = _app_with_state(tmp_path)
     app.state.accounts.extend(
