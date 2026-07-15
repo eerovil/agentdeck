@@ -108,6 +108,53 @@ async def test_resolves_explicit_pr_number_when_branch_has_no_pr(tmp_path, monke
     assert (pull.number, pull.status, pull.draft) == (92, "open", True)
 
 
+async def test_explicit_merged_pr_outranks_unrelated_shared_checkout_branch(
+    tmp_path, monkeypatch
+):
+    resolver = GitContextResolver()
+    resolver._git = "git"
+    resolver._gh = "gh"
+    branch_lookups = 0
+
+    async def fake_run(*args):
+        nonlocal branch_lookups
+        if "status" in args:
+            return (0, "## newer-work...origin/newer-work\n M search.py\n")
+        if "remote" in args:
+            return (0, "git@github.com:protecomp/storm.git\n")
+        if args[1:3] == ("pr", "view"):
+            return (
+                0,
+                json.dumps(
+                    {
+                        "number": 252,
+                        "title": "Older completed work",
+                        "url": "https://github.com/protecomp/storm/pull/252",
+                        "state": "MERGED",
+                        "isDraft": False,
+                        "mergedAt": "2026-07-14T13:17:40Z",
+                        "headRefName": "older-work",
+                        "baseRefName": "master",
+                    }
+                ),
+            )
+        if args[1:3] == ("pr", "list"):
+            branch_lookups += 1
+            return (0, "[]")
+        raise AssertionError(args)
+
+    monkeypatch.setattr(resolver, "_run", fake_run)
+    session = _session(
+        tmp_path,
+        last_text="Merged: https://github.com/protecomp/storm/pull/252",
+    )
+    context = (await resolver.resolve([session]))[session.key]
+
+    assert [pull.number for pull in context.pull_requests] == [252]
+    assert context.pull_requests[0].status == "merged"
+    assert branch_lookups == 0
+
+
 async def test_resolves_merged_pr_after_worktree_was_removed(tmp_path, monkeypatch):
     resolver = GitContextResolver()
     resolver._git = "git"

@@ -187,6 +187,48 @@ async def test_refresh_supplies_authoritative_merged_pr_context(tmp_path):
     assert assistant.view.summary == "The related PR is already merged."
 
 
+async def test_refresh_suppresses_attention_card_when_all_related_prs_are_merged(tmp_path):
+    state = AppState()
+    state.update_session(_session(tmp_path))
+    context = GitContext(
+        repository="eerovil/agentdeck",
+        branch="feature/deckhand",
+        dirty=True,
+        pull_requests=(
+            PullRequestContext(
+                repository="eerovil/agentdeck",
+                number=91,
+                title="Completed work",
+                url="https://github.com/eerovil/agentdeck/pull/91",
+                status="merged",
+            ),
+        ),
+    )
+    resolver = AsyncMock(return_value={})
+    resolver.resolve = AsyncMock(return_value={"codex:test:thread-1": context})
+
+    async def runner(account, config, prompt):
+        return {
+            "summary": "A shared worktree needs coordination.",
+            "insights": [
+                {
+                    "session_key": "codex:test:thread-1",
+                    "kind": "coordination",
+                    "headline": "Shared worktree has overlapping state",
+                    "detail": "Coordinate before changing branches.",
+                }
+            ],
+        }
+
+    assistant = AssistantService(
+        _config(tmp_path), state, runner=runner, context_resolver=resolver
+    )
+    await assistant.refresh()
+
+    assert assistant.view.insights == ()
+    assert assistant.view.summary == "Nothing needs your attention right now."
+
+
 def test_result_drops_hallucinated_session_keys():
     view = AssistantService._parse_result(
         {

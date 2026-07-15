@@ -186,10 +186,6 @@ class GitContextResolver:
                 repository = github_repository(remote_text) or repository
 
         pulls: dict[tuple[str, int], PullRequestContext] = {}
-        if self._gh is not None and repository and branch:
-            for pull in await self._pulls_for_branch(repository, branch):
-                pulls[(pull.repository.lower(), pull.number)] = pull
-
         if self._gh is not None:
             refs = self._explicit_refs(session, repository)
             resolved = await asyncio.gather(
@@ -197,6 +193,14 @@ class GitContextResolver:
             )
             for pull in resolved:
                 if pull is not None:
+                    pulls[(pull.repository.lower(), pull.number)] = pull
+
+            # A PR explicitly named by the chat is the work this session owns.
+            # This matters for shared checkouts: their current branch may belong
+            # to a newer session after the old PR was merged. Only fall back to
+            # branch discovery when the transcript did not resolve to a PR.
+            if not pulls and repository and branch:
+                for pull in await self._pulls_for_branch(repository, branch):
                     pulls[(pull.repository.lower(), pull.number)] = pull
 
         ordered = tuple(sorted(pulls.values(), key=lambda pull: pull.number, reverse=True))

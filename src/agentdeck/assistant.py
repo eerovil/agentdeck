@@ -316,6 +316,30 @@ Dashboard snapshot:
             analyzed_at=datetime.now(UTC),
         )
 
+    def _suppress_merged_pr_insights(self, view: AssistantView) -> AssistantView:
+        """Merged work is context, not an item requiring attention."""
+        insights = tuple(
+            insight
+            for insight in view.insights
+            if not (
+                (context := self.contexts.get(insight.session_key))
+                and context.pull_requests
+                and all(pull.status == "merged" for pull in context.pull_requests)
+            )
+        )
+        if insights == view.insights:
+            return view
+        return AssistantView(
+            state=view.state,
+            summary=(
+                view.summary if insights else "Nothing needs your attention right now."
+            ),
+            insights=insights,
+            actions=view.actions,
+            analyzed_at=view.analyzed_at,
+            error=view.error,
+        )
+
     async def _auto_answer(self, view: AssistantView) -> tuple[AssistantAction, ...]:
         if not self.config.auto_answer:
             return ()
@@ -403,6 +427,7 @@ Dashboard snapshot:
         try:
             raw = await self.runner(account, self.config, self._prompt(snapshot))
             view = self._parse_result(raw, {row["session_key"] for row in snapshot})
+            view = self._suppress_merged_pr_insights(view)
             actions = await self._auto_answer(view)
             self.view = AssistantView(
                 state=view.state,
