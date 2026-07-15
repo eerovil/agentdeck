@@ -42,6 +42,10 @@
   {% if session.cwd %}<span class="chip cwd">{{ session.cwd }}</span>{% endif %}
 </div>
 
+<div id="assistant-session-details" sse-swap="assistant-session">
+  {% include "partials/assistant_session_details.html" %}
+</div>
+
 {% if detail.todos %}
 <div class="todos">
   <h3>Todos</h3>

@@ -142,6 +142,9 @@ async def test_orchestration_assistant_fits_mobile_and_desktop(tmp_path):
     async with _client(app) as client:
         response = await client.get("/")
 
+    assert "This agent is waiting for an explicit architecture decision." not in response.text
+    assert "Another active session is changing the same service." not in response.text
+
     css = (Path(__file__).parents[1] / "src/agentdeck/web/static/app.css").read_text()
     html = response.text.replace("</head>", f"<style>{css}</style></head>")
     async with async_playwright() as playwright:
@@ -1113,6 +1116,19 @@ async def test_session_detail_renders_transcript(tmp_path):
 
 async def test_session_detail_uses_responsive_split_view(tmp_path):
     app = _app_with_state(tmp_path, with_transcript=True)
+    app.state.assistant.config.enabled = True
+    app.state.assistant.view = AssistantView(
+        state="ready",
+        summary="One chat needs attention.",
+        insights=(
+            AssistantInsight(
+                session_key="claude_code:test:sid1",
+                kind="waiting",
+                headline="Confirm the database choice",
+                detail="The agent needs the database decision before it can continue.",
+            ),
+        ),
+    )
     async with _client(app) as client:
         response = await client.get("/sessions/claude_code:test:sid1")
 
@@ -1122,6 +1138,16 @@ async def test_session_detail_uses_responsive_split_view(tmp_path):
     assert 'class="session-detail" aria-label="Selected chat"' in response.text
     assert 'aria-current="page"' in response.text
     assert response.text.index('id="assistant-panel"') < response.text.index('id="sessions"')
+    panel_start = response.text.index('id="assistant-panel"')
+    panel_end = response.text.index("</section>", panel_start)
+    assert "Confirm the database choice" in response.text[panel_start:panel_end]
+    assert (
+        "The agent needs the database decision before it can continue."
+        not in response.text[panel_start:panel_end]
+    )
+    assert 'id="assistant-session-details"' in response.text
+    assert 'class="assistant-chat-detail insight-waiting"' in response.text
+    assert "The agent needs the database decision before it can continue." in response.text
 
     css = (
         Path(__file__).parents[1] / "src/agentdeck/web/static/app.css"
@@ -1283,6 +1309,18 @@ async def test_session_sse_primes_desktop_list(tmp_path):
     from agentdeck.web.routes_sse import _session_stream
 
     app = _app_with_state(tmp_path)
+    app.state.assistant.view = AssistantView(
+        state="ready",
+        summary="One chat needs attention.",
+        insights=(
+            AssistantInsight(
+                session_key="claude_code:test:sid1",
+                kind="waiting",
+                headline="Confirm the database choice",
+                detail="The database choice is blocking this chat.",
+            ),
+        ),
+    )
 
     class FakeRequest:
         def __init__(self, application):
@@ -1297,6 +1335,7 @@ async def test_session_sse_primes_desktop_list(tmp_path):
         usage = await asyncio.wait_for(gen.__anext__(), timeout=5.0)
         sessions = await asyncio.wait_for(gen.__anext__(), timeout=5.0)
         assistant = await asyncio.wait_for(gen.__anext__(), timeout=5.0)
+        assistant_session = await asyncio.wait_for(gen.__anext__(), timeout=5.0)
     finally:
         await gen.aclose()
 
@@ -1304,5 +1343,8 @@ async def test_session_sse_primes_desktop_list(tmp_path):
     assert "event: sessions" in sessions
     assert "event: assistant" in assistant
     assert "Orchestration assistant" in assistant
+    assert "The database choice is blocking this chat." not in assistant
+    assert "event: assistant-session" in assistant_session
+    assert "The database choice is blocking this chat." in assistant_session
     assert "Hello World Session" in sessions
     assert 'aria-current="page"' in sessions

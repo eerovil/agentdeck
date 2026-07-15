@@ -27,14 +27,11 @@
   {% if assistant.view.insights %}
   <div class="assistant-insights">
     {% for insight in assistant.view.insights %}
-    {% set session = assistant_sessions.get(insight.session_key) %}
     <a class="assistant-insight insight-{{ insight.kind }}"
        href="/sessions/{{ insight.session_key }}">
       <span class="assistant-kind">{{ insight.kind }}</span>
       <span class="assistant-copy">
         <strong>{{ insight.headline }}</strong>
-        <span>{{ insight.detail }}</span>
-        {% if session %}<small>{{ session.title or session.cwd or insight.session_key }}</small>{% endif %}
       </span>
       <span class="assistant-arrow">›</span>
     </a>

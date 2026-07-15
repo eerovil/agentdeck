@@ -28,6 +28,7 @@ from .deps import (
 from .render import (
     activity_label,
     render_assistant,
+    render_assistant_session,
     render_limit_bars,
     render_session_list,
     render_session_status,
@@ -170,6 +171,12 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
             "assistant",
             render_assistant(templates, request.app.state.assistant, state),
         )
+        yield format_sse(
+            "assistant-session",
+            render_assistant_session(
+                templates, request.app.state.assistant, session_key
+            ),
+        )
         last_usage_sig = _usage_sig(accounts, state)
         last_usage_push = loop.time()
         while True:
@@ -227,6 +234,12 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
                 yield format_sse(
                     "assistant",
                     render_assistant(templates, request.app.state.assistant, state),
+                )
+                yield format_sse(
+                    "assistant-session",
+                    render_assistant_session(
+                        templates, request.app.state.assistant, session_key
+                    ),
                 )
             await asyncio.sleep(TAIL_INTERVAL_S)
 

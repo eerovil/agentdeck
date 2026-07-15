@@ -54,7 +54,7 @@ main { padding: 12px; max-width: 760px; margin: 0 auto; }
   border-top-color: var(--remote); border-radius: 50%; animation: send-spin .7s linear infinite; }
 .assistant-insights { display: grid; gap: 6px; margin-top: 9px; }
 .assistant-insight { display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: start; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 9px;
+  align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 9px;
   color: inherit; background: color-mix(in srgb, var(--panel2) 70%, transparent);
   text-decoration: none; }
 .assistant-kind { margin-top: 1px; padding: 1px 5px; border: 1px solid currentColor;
@@ -62,15 +62,25 @@ main { padding: 12px; max-width: 760px; margin: 0 auto; }
   letter-spacing: .04em; text-transform: uppercase; }
 .insight-waiting .assistant-kind, .insight-stalled .assistant-kind { color: var(--warn); }
 .insight-finished .assistant-kind { color: var(--live); }
-.assistant-copy { display: grid; min-width: 0; font-size: 12px; }
-.assistant-copy > span { color: var(--muted); }
-.assistant-copy small { margin-top: 3px; overflow: hidden; color: var(--muted);
-  text-overflow: ellipsis; white-space: nowrap; }
+.assistant-copy { min-width: 0; font-size: 12px; line-height: 1.3; }
+.assistant-copy strong { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2; line-clamp: 2; }
 .assistant-arrow { color: var(--muted); font-size: 20px; line-height: 1; }
 .assistant-actions { display: grid; gap: 2px; margin-top: 8px; font-size: 11px; }
 .assistant-actions a { color: var(--live); text-decoration: none; }
 .assistant-foot { margin-top: 8px; color: var(--muted); font-size: 10px; }
 @media (max-width: 420px) { .assistant-model { display: none; } }
+
+.assistant-chat-details { margin: 8px 0 12px; padding: 10px; border: 1px solid var(--line);
+  border-left: 3px solid var(--remote); border-radius: var(--radius);
+  background: color-mix(in srgb, var(--remote) 6%, var(--panel)); }
+.assistant-chat-head { display: flex; align-items: baseline; gap: 7px; margin-bottom: 7px; }
+.assistant-chat-head strong { font-size: 12px; }
+.assistant-chat-detail + .assistant-chat-detail { margin-top: 8px; padding-top: 8px;
+  border-top: 1px solid var(--line); }
+.assistant-chat-title { display: flex; align-items: flex-start; gap: 7px; }
+.assistant-chat-title strong { font-size: 12.5px; }
+.assistant-chat-detail p { margin: 4px 0 0 0; color: var(--muted); font-size: 12.5px; }
 
 /* usage — compact one-line summary; tap to expand the full bars */
 .usage-mini { display: flex; align-items: center; gap: 12px; width: 100%;

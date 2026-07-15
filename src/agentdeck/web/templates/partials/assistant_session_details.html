@@ -1,0 +1,17 @@
+{% if assistant_insights %}
+<section class="assistant-chat-details" aria-label="Deckhand details for this chat">
+  <div class="assistant-chat-head">
+    <span class="assistant-kicker">Deckhand</span>
+    <strong>Context for this chat</strong>
+  </div>
+  {% for insight in assistant_insights %}
+  <article class="assistant-chat-detail insight-{{ insight.kind }}">
+    <div class="assistant-chat-title">
+      <span class="assistant-kind">{{ insight.kind }}</span>
+      <strong>{{ insight.headline }}</strong>
+    </div>
+    <p>{{ insight.detail }}</p>
+  </article>
+  {% endfor %}
+</section>
+{% endif %}

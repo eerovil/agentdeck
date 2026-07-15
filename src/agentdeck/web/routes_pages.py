@@ -89,6 +89,7 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
     from .render import (
         _usage_rows,
         activity_label,
+        assistant_insights_for_session,
         pending_injection_messages,
         session_labels,
         session_queue_summaries,
@@ -140,6 +141,9 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
             "pending_interaction": provider.pending_interaction(account, session),
             "assistant": request.app.state.assistant,
             "assistant_sessions": state.sessions,
+            "assistant_insights": assistant_insights_for_session(
+                request.app.state.assistant, session.key
+            ),
             # topbar usage bars, rendered server-side so they paint immediately
             # (the per-session SSE stream then keeps them live over one socket).
             "rows": _usage_rows(accounts, state),
