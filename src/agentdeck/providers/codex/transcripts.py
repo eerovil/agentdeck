@@ -143,6 +143,7 @@ def _is_noise_user(text: str | None) -> bool:
     if folded.startswith(
         (
             "<environment_context>",
+            "<recommended_plugins>",
             "# agents.md instructions for ",
             "<instructions>",
         )
@@ -156,13 +157,21 @@ def _is_noise_user(text: str | None) -> bool:
 
 _INTERNAL_SYSTEM_PREFIXES = (
     "<permissions instructions>",
-    "You are /root, the primary agent in a team of agents",
     "<multi_agent_mode>",
+)
+
+_PRIMARY_AGENT_PREAMBLE = re.compile(
+    r"You are\s+`?/root`?,\s+the primary agent in a team of agents\b"
 )
 
 
 def _is_internal_system(text: str | None) -> bool:
-    return bool(text and text.lstrip().startswith(_INTERNAL_SYSTEM_PREFIXES))
+    if not text:
+        return False
+    stripped = text.lstrip()
+    return stripped.startswith(_INTERNAL_SYSTEM_PREFIXES) or bool(
+        _PRIMARY_AGENT_PREAMBLE.match(stripped)
+    )
 
 
 def _decode_js_string(value: str) -> str:

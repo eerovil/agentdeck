@@ -506,6 +506,38 @@ def test_codex_skips_repository_instruction_preambles_for_title(tmp_path):
     assert [event.text for event in visible] == ["Fix it"]
 
 
+def test_codex_hides_new_chat_orchestration_preamble_and_titles_from_prompt(tmp_path):
+    path = tmp_path / "rollout.jsonl"
+    messages = [
+        _message("developer", "<permissions instructions>\ninternal sandbox policy"),
+        _message(
+            "developer",
+            "You are `/root`, the primary agent in a team of agents "
+            "collaborating to fulfill the user's goals.",
+        ),
+        _message(
+            "developer",
+            "<multi_agent_mode>Do not spawn sub-agents.</multi_agent_mode>",
+        ),
+        _message(
+            "user",
+            "<recommended_plugins>\nHere is a list of plugins that are available "
+            "but not installed.</recommended_plugins>",
+        ),
+        _message("user", "Build an assistant inside AgentDeck"),
+    ]
+    path.write_text("".join(json.dumps(message) + "\n" for message in messages))
+
+    meta = transcripts.transcript_meta(path)
+    visible = transcripts.read_events(path).events
+
+    assert meta.title == "Build an assistant inside AgentDeck"
+    assert meta.last_prompt == "Build an assistant inside AgentDeck"
+    assert [(event.role, event.text) for event in visible] == [
+        ("user", "Build an assistant inside AgentDeck")
+    ]
+
+
 async def test_codex_hides_launcher_source_but_preserves_exec_kind(tmp_path):
     vscode_sid = "019f5b2b-c830-7922-a1ce-8c9c69526c07"
     exec_sid = "019f5b2b-c830-7922-a1ce-8c9c69526c08"
