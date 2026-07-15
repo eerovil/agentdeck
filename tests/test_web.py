@@ -8,6 +8,7 @@ from playwright.async_api import async_playwright
 from agentdeck.app import create_app
 from agentdeck.assistant import AssistantInsight, AssistantView
 from agentdeck.config import AccountConfig, AppConfig, HistoryConfig
+from agentdeck.git_context import GitContext, PullRequestContext
 from agentdeck.host_stats import HostStats
 from agentdeck.models import Account, Capability, Session, SessionStatus, UsageSnapshot
 from agentdeck.providers.claude_code.provider import worker_type
@@ -1129,6 +1130,20 @@ async def test_session_detail_uses_responsive_split_view(tmp_path):
             ),
         ),
     )
+    app.state.assistant.contexts["claude_code:test:sid1"] = GitContext(
+        repository="eerovil/agentdeck",
+        branch="feature/deckhand",
+        dirty=False,
+        pull_requests=(
+            PullRequestContext(
+                repository="eerovil/agentdeck",
+                number=91,
+                title="Add PR context",
+                url="https://github.com/eerovil/agentdeck/pull/91",
+                status="merged",
+            ),
+        ),
+    )
     async with _client(app) as client:
         response = await client.get("/sessions/claude_code:test:sid1")
 
@@ -1148,6 +1163,9 @@ async def test_session_detail_uses_responsive_split_view(tmp_path):
     assert 'id="assistant-session-details"' in response.text
     assert 'class="assistant-chat-detail insight-waiting"' in response.text
     assert "The agent needs the database decision before it can continue." in response.text
+    assert "feature/deckhand" in response.text
+    assert 'class="assistant-pr-state pr-merged">merged</span>' in response.text
+    assert "PR #91" in response.text
 
     css = (
         Path(__file__).parents[1] / "src/agentdeck/web/static/app.css"

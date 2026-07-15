@@ -1,0 +1,150 @@
+from __future__ import annotations
+
+import json
+
+from agentdeck.git_context import GitContextResolver, github_repository
+from agentdeck.models import Session, SessionStatus
+
+
+def _session(tmp_path, *, last_text=None, issue_url=None):
+    return Session(
+        key="codex:test:thread-1",
+        account_key="codex:test",
+        session_id="thread-1",
+        status=SessionStatus.IDLE,
+        cwd=tmp_path,
+        title="Ship the feature",
+        last_text=last_text,
+        issue_url=issue_url,
+        show_when_idle=True,
+    )
+
+
+def test_github_repository_parses_https_and_ssh():
+    assert github_repository("https://github.com/eerovil/agentdeck.git") == "eerovil/agentdeck"
+    assert github_repository("git@github.com:protecomp/storm.git") == "protecomp/storm"
+    assert github_repository("https://example.com/eerovil/agentdeck.git") is None
+
+
+async def test_resolves_merged_pr_for_worktree_branch(tmp_path, monkeypatch):
+    resolver = GitContextResolver()
+    resolver._git = "git"
+    resolver._gh = "gh"
+    calls = []
+
+    async def fake_run(*args):
+        calls.append(args)
+        if "status" in args:
+            return (0, "## feature/deckhand...origin/feature/deckhand\n M src/app.py\n")
+        if "remote" in args:
+            return (0, "git@github.com:eerovil/agentdeck.git\n")
+        if args[1:3] == ("pr", "list"):
+            return (
+                0,
+                json.dumps(
+                    [
+                        {
+                            "number": 91,
+                            "title": "Add PR context",
+                            "url": "https://github.com/eerovil/agentdeck/pull/91",
+                            "state": "MERGED",
+                            "isDraft": False,
+                            "mergedAt": "2026-07-15T07:00:00Z",
+                            "headRefName": "feature/deckhand",
+                            "baseRefName": "master",
+                        }
+                    ]
+                ),
+            )
+        raise AssertionError(args)
+
+    monkeypatch.setattr(resolver, "_run", fake_run)
+    contexts = await resolver.resolve([_session(tmp_path)])
+
+    context = contexts["codex:test:thread-1"]
+    assert context.repository == "eerovil/agentdeck"
+    assert context.branch == "feature/deckhand"
+    assert context.dirty is True
+    assert context.pull_requests[0].status == "merged"
+    assert context.pull_requests[0].number == 91
+    assert any(call[1:3] == ("pr", "list") for call in calls)
+
+
+async def test_resolves_explicit_pr_number_when_branch_has_no_pr(tmp_path, monkeypatch):
+    resolver = GitContextResolver()
+    resolver._git = "git"
+    resolver._gh = "gh"
+
+    async def fake_run(*args):
+        if "status" in args:
+            return (0, "## master...origin/master\n")
+        if "remote" in args:
+            return (0, "https://github.com/eerovil/agentdeck.git\n")
+        if args[1:3] == ("pr", "list"):
+            return (0, "[]")
+        if args[1:3] == ("pr", "view"):
+            assert args[3] == "92"
+            return (
+                0,
+                json.dumps(
+                    {
+                        "number": 92,
+                        "title": "Still in review",
+                        "url": "https://github.com/eerovil/agentdeck/pull/92",
+                        "state": "OPEN",
+                        "isDraft": True,
+                        "mergedAt": None,
+                        "headRefName": "feature/review",
+                        "baseRefName": "master",
+                    }
+                ),
+            )
+        raise AssertionError(args)
+
+    monkeypatch.setattr(resolver, "_run", fake_run)
+    contexts = await resolver.resolve([_session(tmp_path, last_text="Opened PR #92 for review.")])
+
+    pull = contexts["codex:test:thread-1"].pull_requests[0]
+    assert (pull.number, pull.status, pull.draft) == (92, "open", True)
+
+
+async def test_resolves_merged_pr_after_worktree_was_removed(tmp_path, monkeypatch):
+    resolver = GitContextResolver()
+    resolver._git = "git"
+    resolver._gh = "gh"
+
+    async def fake_run(*args):
+        if args[0] == "git":
+            return (128, "")
+        if args[1:3] == ("pr", "view"):
+            assert args[3] == "250"
+            assert args[5] == "protecomp/storm"
+            return (
+                0,
+                json.dumps(
+                    {
+                        "number": 250,
+                        "title": "Prevent category filter panel popping",
+                        "url": "https://github.com/protecomp/storm/pull/250",
+                        "state": "MERGED",
+                        "isDraft": False,
+                        "mergedAt": "2026-07-14T13:17:40Z",
+                        "headRefName": "claude/issue-246-tag-filter-last",
+                        "baseRefName": "master",
+                    }
+                ),
+            )
+        raise AssertionError(args)
+
+    monkeypatch.setattr(resolver, "_run", fake_run)
+    session = _session(
+        tmp_path / "removed-worktree",
+        last_text="PR #250 contains the fix.",
+        issue_url="https://github.com/protecomp/storm/issues/246",
+    )
+    contexts = await resolver.resolve([session])
+
+    context = contexts[session.key]
+    assert context.repository == "protecomp/storm"
+    assert context.branch is None
+    assert context.pull_requests[0].status == "merged"

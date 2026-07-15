@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 
 from agentdeck.assistant import AssistantAnswer, AssistantService
 from agentdeck.config import AccountConfig, AppConfig, AssistantConfig
+from agentdeck.git_context import GitContext, PullRequestContext
 from agentdeck.models import (
     InjectResult,
     InteractionOption,
@@ -150,6 +151,40 @@ async def test_refresh_never_auto_answers_approval(tmp_path, monkeypatch):
 
     answer.assert_not_awaited()
     assert not assistant.view.actions
+
+
+async def test_refresh_supplies_authoritative_merged_pr_context(tmp_path):
+    state = AppState()
+    state.update_session(_session(tmp_path))
+    context = GitContext(
+        repository="eerovil/agentdeck",
+        branch="feature/deckhand",
+        dirty=False,
+        pull_requests=(
+            PullRequestContext(
+                repository="eerovil/agentdeck",
+                number=91,
+                title="Add PR context",
+                url="https://github.com/eerovil/agentdeck/pull/91",
+                status="merged",
+            ),
+        ),
+    )
+    resolver = AsyncMock(return_value={})
+    resolver.resolve = AsyncMock(return_value={"codex:test:thread-1": context})
+
+    async def runner(account, config, prompt):
+        assert '"status":"merged"' in prompt
+        assert "Treat each\npull request's status as ground truth" in prompt
+        return {"summary": "The related PR is already merged.", "insights": []}
+
+    assistant = AssistantService(
+        _config(tmp_path), state, runner=runner, context_resolver=resolver
+    )
+    await assistant.refresh()
+
+    assert assistant.contexts["codex:test:thread-1"] == context
+    assert assistant.view.summary == "The related PR is already merged."
 
 
 def test_result_drops_hallucinated_session_keys():

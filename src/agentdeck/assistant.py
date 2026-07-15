@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import AppConfig, AssistantConfig
+from .git_context import GitContext, GitContextResolver
 from .models import Account, PendingInteraction, Session
 from .providers import PROVIDERS
 from .state import AppState
@@ -154,11 +155,14 @@ class AssistantService:
         state: AppState,
         *,
         runner: Runner = run_codex,
+        context_resolver: GitContextResolver | None = None,
     ) -> None:
         self.config = config.assistant
         self.state = state
         self.accounts = config.build_accounts()
         self.runner = runner
+        self.context_resolver = context_resolver or GitContextResolver()
+        self.contexts: dict[str, GitContext] = {}
         self.view = AssistantView(
             summary=("Starting orchestration assistant…" if self.config.enabled else "Disabled")
         )
@@ -218,6 +222,11 @@ class AssistantService:
                     "last_prompt": _trim(session.last_prompt),
                     "last_response": _trim(session.last_text),
                     "subagents": session.subagent_count,
+                    "git": (
+                        self.contexts[session.key].as_json()
+                        if session.key in self.contexts
+                        else None
+                    ),
                     "interaction": self._interaction_json(interaction),
                 }
             )
@@ -251,6 +260,10 @@ class AssistantService:
 Analyze the supplied coding-agent dashboard snapshot. Do not use tools. Give concise,
 specific advice about agents that are waiting, stuck, duplicating work, newly finished,
 or need coordination. Prefer silence over generic advice.
+
+The git and pull-request context was resolved authoritatively by AgentDeck. Treat each
+pull request's status as ground truth: never suggest review, merge, or follow-up work for
+an already merged PR, and distinguish open, draft, closed-unmerged, and merged PRs.
 
 For an ordinary question interaction, you may suggest answers. Mark safe_to_auto_answer
 true only when all answers are unambiguous choices explicitly present in the question,
@@ -360,8 +373,11 @@ Dashboard snapshot:
                 return False
         return True
 
-    async def refresh(self) -> None:
-        snapshot = self.snapshot()
+    async def refresh(self, snapshot: list[dict[str, Any]] | None = None) -> None:
+        if snapshot is None:
+            sessions = self.state.visible_sessions()[: self.config.max_sessions]
+            self.contexts = await self.context_resolver.resolve(sessions)
+            snapshot = self.snapshot()
         if not snapshot:
             self.view = AssistantView(state="ready", summary="No visible sessions to orchestrate.")
             self.state.bus.publish("assistant")
@@ -418,10 +434,15 @@ Dashboard snapshot:
             except TimeoutError:
                 pass
             self._wake.clear()
+            due = loop.time() - self._last_run >= self.config.refresh_interval_s
+            if not self._force and not due:
+                continue
+            sessions = self.state.visible_sessions()[: self.config.max_sessions]
+            self.contexts = await self.context_resolver.resolve(sessions)
             snapshot = self.snapshot()
             signature = json.dumps(snapshot, sort_keys=True, default=str)
-            due = loop.time() - self._last_run >= self.config.refresh_interval_s
-            if not self._force and (signature == self._last_signature or not due):
+            if not self._force and signature == self._last_signature:
+                self._last_run = loop.time()
                 continue
             self._force = False
             self._last_signature = signature

@@ -1,9 +1,26 @@
-{% if assistant_insights %}
+{% if assistant_insights or git_context %}
 <section class="assistant-chat-details" aria-label="Deckhand details for this chat">
   <div class="assistant-chat-head">
     <span class="assistant-kicker">Deckhand</span>
     <strong>Context for this chat</strong>
   </div>
+  {% if git_context %}
+  <div class="assistant-git-context">
+    <div class="assistant-git-line">
+      {% if git_context.repository %}
+      <a href="https://github.com/{{ git_context.repository }}" target="_blank" rel="noopener">{{ git_context.repository }}</a>
+      {% endif %}
+      {% if git_context.branch %}<code>{{ git_context.branch }}</code>{% endif %}
+      {% if git_context.dirty %}<span class="assistant-dirty">uncommitted changes</span>{% endif %}
+    </div>
+    {% for pull in git_context.pull_requests %}
+    <a class="assistant-pr" href="{{ pull.url }}" target="_blank" rel="noopener">
+      <span class="assistant-pr-state pr-{{ pull.status }}">{{ 'draft' if pull.draft and pull.status == 'open' else pull.status }}</span>
+      <span><strong>PR #{{ pull.number }}</strong> · {{ pull.title }}</span>
+    </a>
+    {% endfor %}
+  </div>
+  {% endif %}
   {% for insight in assistant_insights %}
   <article class="assistant-chat-detail insight-{{ insight.kind }}">
     <div class="assistant-chat-title">
