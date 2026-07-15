@@ -281,6 +281,38 @@ async def test_refresh_retains_unchanged_insight_when_next_analysis_omits_it(tmp
     assert assistant.view.summary == "Deckhand is tracking 1 item that still needs attention."
 
 
+async def test_refresh_keeps_wording_when_model_rephrases_unchanged_chat(tmp_path):
+    state = AppState()
+    state.update_session(_session(tmp_path))
+
+    def result(headline):
+        return {
+            "summary": "One item needs attention.",
+            "insights": [
+                {
+                    "session_key": "codex:test:thread-1",
+                    "kind": "coordination",
+                    "headline": headline,
+                    "detail": "Keep one owner.",
+                    "answers": [],
+                    "safe_to_auto_answer": False,
+                    "confidence": 0.9,
+                }
+            ],
+        }
+
+    assistant = AssistantService(
+        _config(tmp_path),
+        state,
+        runner=AsyncMock(side_effect=[result("Stable title"), result("Rephrased title")]),
+    )
+
+    await assistant.refresh(snapshot=assistant.snapshot())
+    await assistant.refresh(snapshot=assistant.snapshot())
+
+    assert [item.headline for item in assistant.view.insights] == ["Stable title"]
+
+
 async def test_handled_insight_stays_hidden_until_chat_evidence_changes(tmp_path):
     state = AppState()
     state.update_session(_session(tmp_path))

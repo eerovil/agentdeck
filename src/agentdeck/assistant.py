@@ -343,17 +343,16 @@ class AssistantService:
         retained = False
 
         # Preserve established ordering and wording when a stochastic refresh
-        # merely omits an unchanged chat. A fresh result for that chat replaces
-        # the old one in place.
+        # omits or rephrases an unchanged chat. Fresh advice replaces it only
+        # after the underlying evidence changes.
         for old in prior.insights:
             fresh = fresh_by_session.pop(old.session_key, None)
-            if fresh is not None:
-                stabilized.append(fresh)
-                continue
             current = evidence.get(old.session_key)
             if current is not None and current == self._evidence_signatures.get(old.session_key):
                 stabilized.append(old)
                 retained = True
+            elif fresh is not None:
+                stabilized.append(fresh)
         stabilized.extend(fresh_by_session.values())
 
         visible = []
