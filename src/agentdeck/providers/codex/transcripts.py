@@ -179,10 +179,46 @@ def _wrapped_exec_command(text: str) -> str | None:
     return _decode_js_string(match.group(1)) if match else None
 
 
-def _tool_summary(value: object) -> str | None:
+def _tool_string_field(value: object, key: str) -> str | None:
+    """Read a string argument from either JSON or a wrapped JavaScript call."""
     if not isinstance(value, str) or not value.strip():
         return None
     text = value.strip()
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, dict):
+        item = parsed.get(key)
+        return item if isinstance(item, str) and item else None
+    match = re.search(
+        rf'\b{re.escape(key)}\s*:\s*"((?:\\.|[^"\\])*)"', text
+    )
+    return _decode_js_string(match.group(1)) if match else None
+
+
+def _tool_display_name(native_name: object, value: object) -> str | None:
+    """Classify common operations hidden inside the Codex JS orchestrator."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    folded_name = native_name.casefold() if isinstance(native_name, str) else ""
+    if _tool_string_field(value, "justification") and (
+        _wrapped_exec_command(text) or folded_name in ("exec", "exec_command")
+    ):
+        return "Approval"
+    if re.search(r"\btools\.apply_patch\s*\(", text):
+        return "Edit files"
+    return None
+
+
+def _tool_summary(value: object, display_name: str | None = None) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    justification = _tool_string_field(value, "justification")
+    if display_name == "Approval" and justification:
+        return f"reason: {justification}"[:_MAX_TOOL_SUMMARY]
     # Newer Codex builds wrap tool calls in a small JavaScript orchestration
     # snippet. Pull the useful nested shell command back out for the UI.
     command = _wrapped_exec_command(text)
@@ -216,12 +252,19 @@ def _tool_summary(value: object) -> str | None:
     return keys[:_MAX_TOOL_SUMMARY] or None
 
 
-def _tool_detail(value: object) -> str | None:
+def _tool_detail(value: object, display_name: str | None = None) -> str | None:
     """Useful expandable input without exposing the orchestration wrapper."""
     if not isinstance(value, str) or not value.strip():
         return None
     text = value.strip()
     command = _wrapped_exec_command(text)
+    justification = _tool_string_field(value, "justification")
+    if display_name == "Approval" and justification:
+        command = command or _tool_string_field(value, "cmd")
+        sections = [f"Reason\n{justification}"]
+        if command:
+            sections.append(f"Command\n{command}")
+        return "\n\n".join(sections)[:_MAX_TOOL_DETAIL]
     if command:
         return command[:_MAX_TOOL_DETAIL]
     patch = re.search(r'\bconst\s+patch\s*=\s*"((?:\\.|[^"\\])*)"', text)
@@ -285,12 +328,14 @@ def _event_from_line(seq: int, data: dict) -> TranscriptEvent | None:
     if item_type in ("custom_tool_call", "function_call"):
         name = payload.get("name")
         arguments = payload.get("input", payload.get("arguments"))
+        display_name = _tool_display_name(name, arguments)
         return TranscriptEvent(
             seq=seq,
             role="assistant",
             tool_name=name if isinstance(name, str) else "tool",
-            tool_summary=_tool_summary(arguments),
-            tool_detail=_tool_detail(arguments),
+            tool_display_name=display_name,
+            tool_summary=_tool_summary(arguments, display_name),
+            tool_detail=_tool_detail(arguments, display_name),
             ts=timestamp,
         )
     if item_type in ("custom_tool_call_output", "function_call_output"):

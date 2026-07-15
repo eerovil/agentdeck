@@ -192,13 +192,18 @@ def detailed_activity_label(label: str | None, last_ev) -> str | None:
     """Add a compact user-facing detail to a generic tool activity label."""
     if label != "Using tools" or last_ev is None or not last_ev.tool_name:
         return label
-    name = last_ev.tool_name.rsplit("__", 1)[-1].replace("_", " ").strip()
+    name = last_ev.tool_display_name or (
+        last_ev.tool_name.rsplit("__", 1)[-1].replace("_", " ").strip()
+    )
     folded_name = name.casefold()
     if folded_name == "reasoning":
         return "Thinking"
     if folded_name in ("wait", "write stdin"):
         return "Waiting for command output"
     summary = (last_ev.tool_summary or "").strip()
+    if folded_name == "approval":
+        reason = summary.removeprefix("reason: ")
+        return f"Requesting approval: {reason}" if reason else "Requesting approval"
     if not summary:
         display_name = {"exec": "shell", "exec command": "shell"}.get(folded_name, name)
         return f"Using {display_name}" if display_name else label
@@ -225,6 +230,7 @@ class TranscriptEvent:  # normalized transcript line (parsed from v0.2)
     role: str  # "user" | "assistant" | "tool" | "system"
     text: str | None = None
     tool_name: str | None = None
+    tool_display_name: str | None = None  # optional user-facing override
     tool_summary: str | None = None  # short rendering of tool_use input
     question: str | None = None  # AskUserQuestion prompt, when this line asks one
     model: str | None = None

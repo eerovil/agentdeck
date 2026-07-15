@@ -7,7 +7,7 @@
 <details class="ev tool tool-call{% if e.subagent %} sub{% endif %}">
   <summary>
     <span class="ev-role">tool</span>
-    <span class="tool-name">{{ e.tool_name | tool_label }}</span>
+    <span class="tool-name">{{ e.tool_display_name or (e.tool_name | tool_label) }}</span>
     {% if e.tool_summary %}<span class="tool-peek">{{ e.tool_summary }}</span>{% endif %}
   </summary>
   <div class="ev-text">{{ e.tool_detail }}</div>
@@ -16,7 +16,7 @@
 <div class="ev tool tool-call{% if e.subagent %} sub{% endif %}">
   <div class="tool-call-head">
     <span class="ev-role">tool</span>
-    <span class="tool-name">{{ e.tool_name | tool_label }}</span>
+    <span class="tool-name">{{ e.tool_display_name or (e.tool_name | tool_label) }}</span>
   </div>
   {% if e.tool_summary %}<div class="tool-call-summary" title="{{ e.tool_summary }}">{{ e.tool_summary }}</div>{% endif %}
 </div>

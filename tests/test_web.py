@@ -670,8 +670,16 @@ def test_tool_calls_visible_outputs_hidden_and_live_marker(tmp_path):
             tool_detail="uv run pytest -q --verbose tests/test_web.py",
             text=None,
         ),
-        TranscriptEvent(seq=3, role="assistant", text="here is my answer"),
-        TranscriptEvent(seq=4, role="user", text="queued follow-up", queued=True),
+        TranscriptEvent(
+            seq=3,
+            role="assistant",
+            tool_name="exec",
+            tool_display_name="Approval",
+            tool_summary="reason: Allow deploying this change?",
+            tool_detail="Reason\nAllow deploying this change?\n\nCommand\ngit push",
+        ),
+        TranscriptEvent(seq=4, role="assistant", text="here is my answer"),
+        TranscriptEvent(seq=5, role="user", text="queued follow-up", queued=True),
     ]
     html = render_transcript_events(templates, events)
     assert "huge noisy tool result" not in html  # past tool result dropped
@@ -680,6 +688,9 @@ def test_tool_calls_visible_outputs_hidden_and_live_marker(tmp_path):
     assert "Bash" in html
     assert "cmd: uv run pytest -q" in html
     assert "uv run pytest -q --verbose tests/test_web.py" in html
+    assert "Approval" in html
+    assert "reason: Allow deploying this change?" in html
+    assert "Reason\nAllow deploying this change?" in html
     assert "here is my answer" in html  # real assistant text kept
     assert "queued follow-up" in html  # queued turns look like ordinary user chat
     assert "user · queued" not in html
@@ -870,7 +881,7 @@ def test_visible_idle_sessions_are_not_penalized_in_sort(tmp_path):
     assert keys.index("idle") < keys.index("live")
 
 
-async def test_thinking_badge_renders(tmp_path):
+async def test_working_card_uses_pulsing_dot_without_text_badge(tmp_path):
     app = _app_with_state(tmp_path)
     app.state.app_state.update_session(
         Session(
@@ -884,7 +895,7 @@ async def test_thinking_badge_renders(tmp_path):
     )
     async with _client(app) as c:
         r = await c.get("/partials/sessions")
-    assert "thinking-badge" in r.text
+    assert "thinking-badge" not in r.text
     assert "dot live thinking" in r.text
     assert 'data-session-key="claude_code:test:think1"' in r.text
     assert 'data-working="1"' in r.text

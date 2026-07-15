@@ -106,22 +106,15 @@ body.usage-open .limit-bars { display: flex; }
   0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--live) 60%, transparent); }
   50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--live) 0%, transparent); }
 }
-.thinking-badge { color: var(--live); font-size: 11px; font-weight: 600; text-transform: uppercase;
-  letter-spacing: .04em; white-space: nowrap; max-width: min(55vw, 420px); overflow: hidden;
-  text-overflow: ellipsis; }
-.thinking-badge::after { content: ''; display: inline-block; width: 1.1em; text-align: left;
-  animation: think-dots 1.4s steps(1, end) infinite; }
 .recently-stopped-badge { color: var(--warn); font-size: 11px; font-weight: 600;
   letter-spacing: .02em; white-space: nowrap; }
 .subagent-badge { flex: none; color: var(--wt-cloud); font-size: 10px; font-weight: 700;
   line-height: 1; white-space: nowrap; padding: 3px 7px; border: 1px solid currentColor;
   border-radius: 999px; text-transform: uppercase; letter-spacing: .03em;
   background: color-mix(in srgb, var(--wt-cloud) 10%, transparent); }
-@keyframes think-dots { 0% { content: ''; } 25% { content: '.'; } 50% { content: '..'; } 75%, 100% { content: '...'; } }
 .status-tag.thinking { color: var(--live); }
 @media (prefers-reduced-motion: reduce) {
   .dot.thinking { animation: none; }
-  .thinking-badge::after { content: '...'; animation: none; }
 }
 .card-title { font-weight: 600; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2;
   -webkit-box-orient: vertical; overflow: hidden; }
