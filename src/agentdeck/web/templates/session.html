@@ -17,6 +17,9 @@
     <a href="/">Sessions</a>
     <span class="count">{{ sessions | length }}</span>
   </div>
+  <div class="session-sidebar-assistant" sse-swap="assistant">
+    {% include "partials/assistant_panel.html" %}
+  </div>
   <div id="sessions" sse-swap="sessions">
     {% include "partials/session_list.html" %}
   </div>

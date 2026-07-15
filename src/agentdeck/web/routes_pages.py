@@ -138,6 +138,8 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
             "inject_max_chars": request.app.state.config.inject.max_message_chars,
             "owned_session": owned_session,
             "pending_interaction": provider.pending_interaction(account, session),
+            "assistant": request.app.state.assistant,
+            "assistant_sessions": state.sessions,
             # topbar usage bars, rendered server-side so they paint immediately
             # (the per-session SSE stream then keeps them live over one socket).
             "rows": _usage_rows(accounts, state),

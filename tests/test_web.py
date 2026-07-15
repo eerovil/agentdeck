@@ -1121,6 +1121,7 @@ async def test_session_detail_uses_responsive_split_view(tmp_path):
     assert 'class="session-sidebar" aria-label="All sessions"' in response.text
     assert 'class="session-detail" aria-label="Selected chat"' in response.text
     assert 'aria-current="page"' in response.text
+    assert response.text.index('id="assistant-panel"') < response.text.index('id="sessions"')
 
     css = (
         Path(__file__).parents[1] / "src/agentdeck/web/static/app.css"
@@ -1138,6 +1139,10 @@ async def test_session_detail_uses_responsive_split_view(tmp_path):
                 detailOverflow: getComputedStyle(document.querySelector('.session-detail'))
                     .overflowY,
                 back: getComputedStyle(document.querySelector('.back')).display,
+                assistantRects: document.querySelector('#assistant-panel').getClientRects().length,
+                assistantAboveSessions:
+                    document.querySelector('#assistant-panel').getBoundingClientRect().bottom <=
+                    document.querySelector('#sessions').getBoundingClientRect().top,
             })"""
         )
         await page.set_viewport_size({"width": 800, "height": 800})
@@ -1148,6 +1153,7 @@ async def test_session_detail_uses_responsive_split_view(tmp_path):
                 detailOverflow: getComputedStyle(document.querySelector('.session-detail'))
                     .overflowY,
                 back: getComputedStyle(document.querySelector('.back')).display,
+                assistantRects: document.querySelector('#assistant-panel').getClientRects().length,
             })"""
         )
         await browser.close()
@@ -1156,11 +1162,14 @@ async def test_session_detail_uses_responsive_split_view(tmp_path):
     assert len(desktop["columns"].split()) == 2
     assert desktop["detailOverflow"] == "auto"
     assert desktop["back"] == "none"
+    assert desktop["assistantRects"] == 1
+    assert desktop["assistantAboveSessions"] is True
     assert mobile == {
         "sidebar": "none",
         "layout": "block",
         "detailOverflow": "visible",
         "back": "flex",
+        "assistantRects": 0,
     }
 
 
@@ -1287,10 +1296,13 @@ async def test_session_sse_primes_desktop_list(tmp_path):
     try:
         usage = await asyncio.wait_for(gen.__anext__(), timeout=5.0)
         sessions = await asyncio.wait_for(gen.__anext__(), timeout=5.0)
+        assistant = await asyncio.wait_for(gen.__anext__(), timeout=5.0)
     finally:
         await gen.aclose()
 
     assert "event: usage" in usage
     assert "event: sessions" in sessions
+    assert "event: assistant" in assistant
+    assert "Orchestration assistant" in assistant
     assert "Hello World Session" in sessions
     assert 'aria-current="page"' in sessions

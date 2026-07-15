@@ -151,10 +151,10 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
     last_busy = None
     last_subagent_count = None
     last_label = None
-    # The topbar usage bars and desktop session list ride this same stream (see
+    # The topbar, Deckhand, and desktop session list ride this same stream (see
     # session.html), so the page still holds one socket. Each fragment is
     # re-pushed only when its underlying state changes.
-    with state.bus.subscribe("sessions") as sessions_sub:
+    with state.bus.subscribe("sessions", "assistant") as sidebar_sub:
         yield format_sse("usage", render_limit_bars(templates, accounts, state))
         yield format_sse(
             "sessions",
@@ -165,6 +165,10 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
                 selected_session_key=session_key,
                 injector=injector,
             ),
+        )
+        yield format_sse(
+            "assistant",
+            render_assistant(templates, request.app.state.assistant, state),
         )
         last_usage_sig = _usage_sig(accounts, state)
         last_usage_push = loop.time()
@@ -205,9 +209,10 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
                 last_usage_sig = sig
                 last_usage_push = loop.time()
                 yield format_sse("usage", render_limit_bars(templates, accounts, state))
-            if sessions_sub.get_nowait() is not None:
-                while sessions_sub.get_nowait() is not None:
-                    pass
+            sidebar_dirty = set()
+            while (item := sidebar_sub.get_nowait()) is not None:
+                sidebar_dirty.add(item[0])
+            if "sessions" in sidebar_dirty:
                 yield format_sse(
                     "sessions",
                     render_session_list(
@@ -217,6 +222,11 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
                         selected_session_key=session_key,
                         injector=injector,
                     ),
+                )
+            if "assistant" in sidebar_dirty:
+                yield format_sse(
+                    "assistant",
+                    render_assistant(templates, request.app.state.assistant, state),
                 )
             await asyncio.sleep(TAIL_INTERVAL_S)
 
