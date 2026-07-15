@@ -209,25 +209,27 @@ def classification_prompt(session: Session) -> str:
     task = _head(session.initial_prompt or session.title, _MAX_TASK_CHARS)
     final_message = _tail(session.last_text, _MAX_MESSAGE_CHARS)
     return f"""You triage one coding agent for a human operator. Decide one thing:
-does this agent need the operator to do something now?
+did this agent FAIL to finish, so the operator has to step in?
 
-Set attention=false when the agent completed what it was asked — INCLUDING when it opened a
-pull request, committed, or pushed. Finishing the task and opening a PR is the normal
-successful outcome; that PR is reviewed elsewhere, so a completed-and-opened-PR message is
-NOT a reason for attention.
+attention=false — the agent ACHIEVED the task it was given. This includes finishing and
+opening a pull request, committing, or pushing. It ALSO includes completions that add caveats,
+follow-up suggestions, or a request to sanity-check / double-check something: "achieved, with a
+note" is still done, and the PR is reviewed elsewhere. A polite "you may want to verify X" is
+not a reason to interrupt the operator.
 
-Set attention=true only when the agent stopped WITHOUT finishing: it failed, is blocked, hit
-an error it could not resolve, is unsure and wants guidance, or is explicitly asking the
-operator a question or to make a decision.
+attention=true — the agent did NOT achieve the task: it failed, is blocked, hit an error it
+could not resolve, needs a decision from the operator before it can proceed, or is directly
+asking a question it is waiting on an answer to. "I could not do X" or "which should I pick?"
+is attention; "done — consider also Y" is not.
 
-If you genuinely cannot tell whether it finished or got stuck, set attention=true. But do not
-treat a message that describes completed work plus a PR/commit as uncertain — that is done.
-Do not use tools. Judge only the text below.
+If you truly cannot tell whether it finished, set attention=true. But a message describing
+completed work — even with a caveat or a request to double-check — is done. Do not use tools.
+Judge only the text below.
 
 Return:
 - attention: boolean
 - summary: one short line stating what the agent did (plain, specific, no preamble)
-- reason: one short line on why it needs the operator, or "" when attention is false
+- reason: one short line on why the operator must step in, or "" when attention is false
 
 Task the agent was working on:
 {task or "(unknown)"}

@@ -191,7 +191,7 @@ class AssistantService:
     # --- persistence ---------------------------------------------------
 
     def _restore_checkpoint(self, payload: dict[str, Any] | None) -> None:
-        if not payload or payload.get("version") != 3:
+        if not payload or payload.get("version") != 4:
             return
         try:
             raw_view = payload["view"]
@@ -228,7 +228,7 @@ class AssistantService:
 
     def _checkpoint_payload(self) -> dict[str, Any]:
         return {
-            "version": 3,
+            "version": 4,
             "view": {
                 "summary": self.view.summary,
                 "insights": [
