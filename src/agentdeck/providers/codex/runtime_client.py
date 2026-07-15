@@ -9,6 +9,7 @@ from typing import Any
 
 import httpx
 
+from ...action_context import current_client_action_id
 from ...models import (
     Account,
     InjectResult,
@@ -143,6 +144,9 @@ class CodexRuntimeClient:
         )
 
     async def _post(self, action: str, payload: dict[str, Any]) -> InjectResult:
+        client_action_id = current_client_action_id()
+        if client_action_id:
+            payload = {**payload, "client_action_id": client_action_id}
         try:
             response = await self._http.post(f"{self._base}/{action}", json=payload)
             response.raise_for_status()

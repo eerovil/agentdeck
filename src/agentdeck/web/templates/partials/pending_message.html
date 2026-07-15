@@ -1,7 +1,9 @@
 {% if oob | default(false) %}<template hx-swap-oob="beforeend:.transcript">{% endif %}
-<div class="ev user pending-message" data-pending-message data-queue-id="{{ item.id }}">
+<div class="ev user pending-message" data-pending-message data-queue-id="{{ item.id }}"
+     {% if item.client_action_id %}data-client-action-id="{{ item.client_action_id }}"{% endif %}>
   <div class="ev-head">
     <span class="ev-role">user</span>
+    <span class="message-state">{{ 'Waiting for agent' if item.state == 'running' else 'Queued behind active turn' }}</span>
     <time class="ev-time" datetime="{{ item.created_at.isoformat() }}" title="{{ item.created_at | chat_time_title }}">{{ item.created_at | chat_time }}</time>
   </div>
   <div class="ev-text">{{ item.text }}</div>

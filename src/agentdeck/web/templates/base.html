@@ -45,6 +45,8 @@
   </script>
   <script src="/static/htmx.min.js?v={{ asset_ver }}" defer></script>
   <script src="/static/sse.js?v={{ asset_ver }}" defer></script>
+  <script src="/static/action_timing.js?v={{ asset_ver }}" defer></script>
+  <script src="/static/interaction_feedback.js?v={{ asset_ver }}" defer></script>
 </head>
 <body class="{% block body_class %}{% endblock %}" hx-ext="sse" {% block body_sse %}sse-connect="/events"{% endblock %}>
   <header class="topbar">

@@ -7,9 +7,11 @@ from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
+from starlette.datastructures import FormData
 
 from ..models import Capability
 from ..providers import PROVIDERS
+from .action_timing import bind_action, timing_span
 from .deps import (
     get_accounts,
     get_config,
@@ -118,36 +120,50 @@ async def unhandle_assistant_insight(request: Request) -> HTMLResponse:
     )
 
 
-async def _turn_form(request: Request) -> tuple[str, list[Path]]:
+async def _turn_form(request: Request) -> tuple[str, list[Path], FormData]:
     content_type = request.headers.get("content-type", "").lower()
     if not content_type.startswith(("application/x-www-form-urlencoded", "multipart/form-data")):
         raise HTTPException(status_code=415, detail="form content type required")
     config = get_config(request).inject
-    form = await request.form()
+    with timing_span(request, "form"):
+        form = await request.form()
     raw = form.get("message")
     message = raw.strip() if isinstance(raw, str) else ""
     if not message or len(message) > config.max_message_chars:
         raise HTTPException(status_code=422, detail="invalid message")
     try:
-        images = await save_uploaded_images(form, config)
+        with timing_span(request, "uploads"):
+            images = await save_uploaded_images(form, config)
     except ImageUploadError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
-    return message, images
+    return message, images, form
 
 
 @router.post("/sessions/{session_key}/inject", response_class=HTMLResponse)
 async def inject_message(request: Request, session_key: str) -> HTMLResponse:
     _require_same_origin(request)
     account, session, provider = resolve_session(request, session_key)
+    client_action_id = bind_action(
+        request, session_key=session.key, provider=account.provider_id
+    )
     config = get_config(request).inject
     injector = get_injector(request)
     if not config.enabled or (
         Capability.INJECT not in session.capabilities and not injector.can_queue(session.key)
     ):
         raise HTTPException(status_code=403, detail="message injection unavailable")
-    message, images = await _turn_form(request)
+    queued_behind_turn = session.thinking or injector.can_queue(session.key)
+    message, images, _ = await _turn_form(request)
     try:
-        result = await injector.start(account, session, provider, message, images)
+        with timing_span(request, "queue"):
+            result = await injector.start(
+                account,
+                session,
+                provider,
+                message,
+                images,
+                client_action_id=client_action_id,
+            )
     except BaseException:
         cleanup_image_files(images)
         raise
@@ -156,8 +172,12 @@ async def inject_message(request: Request, session_key: str) -> HTMLResponse:
         raise HTTPException(status_code=403, detail=result.reason)
     status = injector.status(session.key)
     queued_item = status.items[-1] if status and status.items else None
-    response = _render_status(request, session.key, status, queued_item)
+    with timing_span(request, "render"):
+        response = _render_status(request, session.key, status, queued_item)
     response.status_code = 202
+    response.headers["X-AgentDeck-Action-State"] = (
+        "queued" if queued_behind_turn else "accepted"
+    )
     return response
 
 
@@ -172,13 +192,15 @@ async def inject_status(request: Request, session_key: str) -> HTMLResponse:
 async def steer_turn(request: Request, session_key: str) -> HTMLResponse:
     _require_same_origin(request)
     account, session, provider = resolve_session(request, session_key)
+    bind_action(request, session_key=session.key, provider=account.provider_id)
     config = get_config(request).inject
     if not config.enabled or Capability.STEER not in session.capabilities:
         raise HTTPException(status_code=403, detail="active-turn steering unavailable")
-    message, images = await _turn_form(request)
+    message, images, _ = await _turn_form(request)
     try:
         kwargs = {"images": images} if images else {}
-        result = await provider.steer(account, session, message, **kwargs)
+        with timing_span(request, "runtime"):
+            result = await provider.steer(account, session, message, **kwargs)
     except BaseException:
         cleanup_image_files(images)
         raise
@@ -201,9 +223,11 @@ async def steer_turn(request: Request, session_key: str) -> HTMLResponse:
 async def interrupt_turn(request: Request, session_key: str) -> HTMLResponse:
     _require_same_origin(request)
     account, session, provider = resolve_session(request, session_key)
+    bind_action(request, session_key=session.key, provider=account.provider_id)
     if Capability.INTERRUPT not in session.capabilities:
         raise HTTPException(status_code=403, detail="turn interruption unavailable")
-    result = await provider.interrupt(account, session)
+    with timing_span(request, "runtime"):
+        result = await provider.interrupt(account, session)
     if not result.accepted:
         raise HTTPException(status_code=409, detail=result.reason)
     return HTMLResponse(
@@ -227,10 +251,12 @@ async def pending_interaction(request: Request, session_key: str) -> HTMLRespons
 async def answer_interaction(request: Request, session_key: str) -> HTMLResponse:
     _require_same_origin(request)
     account, session, provider = resolve_session(request, session_key)
+    bind_action(request, session_key=session.key, provider=account.provider_id)
     interaction = provider.pending_interaction(account, session)
     if interaction is None:
         raise HTTPException(status_code=409, detail="interaction is no longer pending")
-    form = await request.form()
+    with timing_span(request, "form"):
+        form = await request.form()
     interaction_id = form.get("interaction_id")
     decision = form.get("decision")
     if interaction_id != interaction.id:
@@ -255,23 +281,24 @@ async def answer_interaction(request: Request, session_key: str) -> HTMLResponse
         request
     ).inject.max_message_chars:
         raise HTTPException(status_code=422, detail="answers are too long")
-    result = await provider.answer_interaction(
-        account,
-        session,
-        interaction.id,
-        answers=answers,
-        decision=decision if isinstance(decision, str) else None,
-    )
+    with timing_span(request, "runtime"):
+        result = await provider.answer_interaction(
+            account,
+            session,
+            interaction.id,
+            answers=answers,
+            decision=decision if isinstance(decision, str) else None,
+        )
     if not result.accepted:
         raise HTTPException(status_code=422, detail=result.reason)
-    return _render_interaction(request, session_key, None)
+    with timing_span(request, "render"):
+        return _render_interaction(request, session_key, None)
 
 
 @router.post("/sessions/new", response_class=HTMLResponse)
 async def new_session(request: Request) -> HTMLResponse:
     _require_same_origin(request)
-    message, images = await _turn_form(request)
-    form = await request.form()
+    message, images, form = await _turn_form(request)
     account_key = form.get("account_key")
     raw_cwd = form.get("cwd")
     if not all(isinstance(value, str) for value in (account_key, raw_cwd)):
@@ -288,7 +315,16 @@ async def new_session(request: Request) -> HTMLResponse:
         cleanup_image_files(images)
         raise HTTPException(status_code=422, detail="invalid working directory") from None
     try:
-        result = await get_injector(request).start_new(account, provider, cwd, message, images)
+        client_action_id = bind_action(request, provider=account.provider_id)
+        with timing_span(request, "queue"):
+            result = await get_injector(request).start_new(
+                account,
+                provider,
+                cwd,
+                message,
+                images,
+                client_action_id=client_action_id,
+            )
     except BaseException:
         cleanup_image_files(images)
         raise
@@ -296,11 +332,12 @@ async def new_session(request: Request) -> HTMLResponse:
         cleanup_image_files(images)
         status_code = 409 if "already starting" in (result.reason or "") else 422
         raise HTTPException(status_code=status_code, detail=result.reason)
-    response = _render_new_status(
-        request,
-        account.key,
-        get_injector(request).new_status(account.key),
-    )
+    with timing_span(request, "render"):
+        response = _render_new_status(
+            request,
+            account.key,
+            get_injector(request).new_status(account.key),
+        )
     response.status_code = 202
     return response
 

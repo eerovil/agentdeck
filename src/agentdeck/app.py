@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from .action_context import client_action_context
 from .assistant import AssistantService
 from .collector import Collector
 from .config import AppConfig
@@ -18,6 +19,7 @@ from .db import make_db
 from .inject import InjectionService
 from .state import AppState
 from .web import render as render_mod
+from .web.action_timing import ActionTiming, identify_action
 from .web.routes_actions import router as actions_router
 from .web.routes_api import router as api_router
 from .web.routes_pages import router as pages_router
@@ -93,6 +95,20 @@ def create_app(config: AppConfig) -> FastAPI:
     app.state.injector = injector
     app.state.assistant = assistant
     app.state.db = db
+
+    @app.middleware("http")
+    async def measure_direct_actions(request, call_next):
+        action, session_key = identify_action(request)
+        if action is None:
+            return await call_next(request)
+        timing = ActionTiming.from_request(request, action, session_key)
+        request.state.action_timing = timing
+        with client_action_context(timing.client_action_id):
+            response = await call_next(request)
+        server_timing, _ = timing.finish(response.status_code)
+        response.headers["Server-Timing"] = server_timing
+        response.headers["X-AgentDeck-Action-ID"] = timing.client_action_id
+        return response
 
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
     app.include_router(pages_router)

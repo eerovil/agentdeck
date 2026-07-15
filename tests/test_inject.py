@@ -7,6 +7,7 @@ from pathlib import Path
 from httpx import ASGITransport, AsyncClient
 from playwright.async_api import async_playwright
 
+from agentdeck.action_context import current_client_action_id
 from agentdeck.app import create_app
 from agentdeck.config import AccountConfig, AppConfig, HistoryConfig, InjectConfig
 from agentdeck.inject import InjectionService, InjectionStatus, QueuedMessage
@@ -204,6 +205,39 @@ async def test_injection_service_queues_one_session_fifo(tmp_path):
     await service.stop()
 
 
+async def test_injection_service_keeps_each_queued_action_id(tmp_path):
+    seen = []
+
+    class Provider:
+        async def inject(self, account, session, message, *, timeout_s):
+            seen.append((message, current_client_action_id()))
+            return InjectResult(True)
+
+    service = InjectionService(InjectConfig(enabled=True))
+    account = Account("codex:test", "codex", "test", tmp_path)
+    session = Session(
+        "codex:test:sid",
+        account.key,
+        "sid",
+        SessionStatus.IDLE,
+        capabilities=frozenset({Capability.INJECT}),
+    )
+
+    await service.start(
+        account, session, Provider(), "first", client_action_id="action-first"
+    )
+    await service.start(
+        account, session, Provider(), "second", client_action_id="action-second"
+    )
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if len(seen) == 2:
+            break
+
+    assert seen == [("first", "action-first"), ("second", "action-second")]
+    await service.stop()
+
+
 async def test_queued_message_remains_visible_after_navigation(tmp_path, monkeypatch):
     app = _web_app(tmp_path)
     app.state.app_state.sessions["codex:test:sid"].show_when_idle = True
@@ -349,12 +383,22 @@ async def test_inject_route_accepts_and_reports_status(tmp_path, monkeypatch):
         response = await client.post(
             "/sessions/codex:test:sid/inject",
             data={"message": "continue safely"},
-            headers={"origin": "http://test"},
+            headers={
+                "origin": "http://test",
+                "x-agentdeck-action-id": "action-send-123",
+            },
         )
         assert response.status_code == 202
+        assert response.headers["x-agentdeck-action-id"] == "action-send-123"
+        assert response.headers["x-agentdeck-action-state"] == "accepted"
+        assert all(
+            name in response.headers["server-timing"]
+            for name in ("form;dur=", "queue;dur=", "render;dur=", "total;dur=")
+        )
         assert 'aria-label="Message queued: continue safely"' in response.text
         assert 'hx-swap-oob="beforeend:.transcript"' in response.text
         assert 'class="ev user pending-message"' in response.text
+        assert 'data-client-action-id="action-send-123"' in response.text
         assert '<span class="ev-role">user</span>' in response.text
         assert 'class="ev-time"' in response.text
         assert "user · queued" not in response.text
@@ -364,6 +408,7 @@ async def test_inject_route_accepts_and_reports_status(tmp_path, monkeypatch):
             headers={"origin": "http://test"},
         )
         assert conflict.status_code == 202
+        assert conflict.headers["x-agentdeck-action-state"] == "queued"
         assert "again" in conflict.text
         release.set()
         for _ in range(10):
@@ -773,6 +818,260 @@ async def test_idle_composer_hides_stop_button(tmp_path):
     assert 'id="composer-controls"' in page.text
     assert ">Send</button>" in page.text
     assert 'aria-label="Stop active turn"' not in page.text
+
+
+async def test_browser_action_timing_covers_htmx_response_and_sse_reconciliation(tmp_path):
+    app = _web_app(tmp_path)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/sessions/codex:test:sid")
+
+    static_dir = Path(__file__).parents[1] / "src/agentdeck/web/static"
+    scripts = {
+        "/static/htmx.min.js": (static_dir / "htmx.min.js").read_text(),
+        "/static/sse.js": (static_dir / "sse.js").read_text(),
+        "/static/action_timing.js": (static_dir / "action_timing.js").read_text(),
+        "/static/interaction_feedback.js": (
+            static_dir / "interaction_feedback.js"
+        ).read_text(),
+    }
+    measured = []
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        for width in (1200, 320):
+            context = await browser.new_context(
+                viewport={"width": width, "height": 800}, service_workers="block"
+            )
+            page = await context.new_page()
+            await page.add_init_script(
+                """
+                window.__eventSources = [];
+                class FakeEventSource extends EventTarget {
+                  static CONNECTING = 0; static OPEN = 1; static CLOSED = 2;
+                  constructor(url) {
+                    super(); this.url = url; this.readyState = FakeEventSource.OPEN;
+                    window.__eventSources.push(this);
+                    queueMicrotask(() => { if (this.onopen) this.onopen(new Event('open')); });
+                  }
+                  close() { this.readyState = FakeEventSource.CLOSED; }
+                  emit(name, data) {
+                    this.dispatchEvent(new MessageEvent(name, {data: data}));
+                  }
+                }
+                window.EventSource = FakeEventSource;
+                """
+            )
+            captured = {}
+
+            async def serve(route, request, captured=captured):
+                path = request.url.split("?", 1)[0].removeprefix("http://agentdeck.test")
+                if request.method == "POST":
+                    captured["action_id"] = request.headers["x-agentdeck-action-id"]
+                    captured["body"] = request.post_data
+                    await asyncio.sleep(0.15)
+                    action_id = captured["action_id"]
+                    await route.fulfill(
+                        status=202,
+                        content_type="text/html",
+                        headers={
+                            "Server-Timing": "form;dur=2.0, queue;dur=3.0, total;dur=55.0",
+                            "X-AgentDeck-Action-ID": action_id,
+                            "X-AgentDeck-Action-State": "accepted",
+                        },
+                        body=(
+                            '<div id="inject-result" class="inject-result running"></div>'
+                            '<template hx-swap-oob="beforeend:.transcript">'
+                            '<div class="ev user pending-message" data-pending-message '
+                            f'data-client-action-id="{action_id}">'
+                            '<div class="ev-text">measured send</div></div></template>'
+                        ),
+                    )
+                elif path == "/sessions/codex:test:sid":
+                    await route.fulfill(status=200, content_type="text/html", body=response.text)
+                elif path in scripts:
+                    await route.fulfill(
+                        status=200, content_type="text/javascript", body=scripts[path]
+                    )
+                else:
+                    await route.fulfill(status=204, body="")
+
+            await page.route("http://agentdeck.test/**", serve)
+            await page.goto("http://agentdeck.test/sessions/codex:test:sid")
+            await page.locator("#inject-message").fill("measured send")
+            await page.locator("#composer-controls button", has_text="Send").click()
+            await page.wait_for_function(
+                "document.querySelector('.optimistic-message .message-state')?.textContent "
+                "=== 'Sending'"
+            )
+            await page.wait_for_function(
+                "window.AgentDeckActionTiming && "
+                "window.AgentDeckActionTiming.snapshot()[0]?.marks.response !== undefined"
+            )
+            await page.evaluate(
+                """() => {
+                  const source = window.__eventSources[0];
+                  const actionId = window.AgentDeckActionTiming.snapshot()[0].id;
+                  if (!document.querySelector('[data-pending-message]')) {
+                    document.querySelector('.transcript').insertAdjacentHTML(
+                      'beforeend',
+                      '<div class="ev user pending-message" data-pending-message ' +
+                      'data-client-action-id="' + actionId + '">' +
+                      '<div class="ev-text">measured send</div></div>'
+                    );
+                  }
+                  source.emit('composer-controls', '<button type="submit">Send</button>');
+                  source.emit('transcript',
+                    '<div class="ev user"><div class="ev-text">measured send</div></div>');
+                }"""
+            )
+            await page.wait_for_function(
+                "window.AgentDeckActionTiming.snapshot()[0]?.marks.first_transcript !== undefined"
+            )
+            record = await page.evaluate("window.AgentDeckActionTiming.snapshot()[0]")
+            summary = await page.evaluate("window.AgentDeckActionTiming.summary().send")
+            measured.append(
+                {
+                    "width": width,
+                    "record": record,
+                    "action_id": captured["action_id"],
+                    "body": captured["body"],
+                    "summary": summary,
+                    "overflow": await page.evaluate(
+                        "document.documentElement.scrollWidth > "
+                        "document.documentElement.clientWidth"
+                    ),
+                }
+            )
+            await context.close()
+        await browser.close()
+
+    for item in measured:
+        record = item["record"]
+        assert record["id"] == item["action_id"]
+        assert record["action"] == "send"
+        assert record["serverTiming"] == (
+            "form;dur=2.0, queue;dur=3.0, total;dur=55.0"
+        )
+        assert record["marks"]["response"] - record["marks"]["request_start"] >= 100
+        assert {
+            "interaction",
+            "acknowledged",
+            "request_start",
+            "response",
+            "first_sse_state",
+            "first_transcript",
+            "settled",
+        } <= set(record["marks"])
+        assert item["action_id"] in item["body"]
+        assert item["summary"]["samples"] == 1
+        assert item["summary"]["acknowledgement_ms"]["p95"] < 16
+        assert item["summary"]["http_ms"]["p50"] >= 100
+        assert item["summary"]["sse_ms"] is not None
+        assert item["summary"]["transcript_ms"] is not None
+        assert item["overflow"] is False
+
+
+async def test_immediate_feedback_is_specific_and_recovers_failed_inputs():
+    static_dir = Path(__file__).parents[1] / "src/agentdeck/web/static"
+    action_script = (static_dir / "action_timing.js").read_text()
+    feedback_script = (static_dir / "interaction_feedback.js").read_text()
+    html = """
+      <div class="transcript"></div>
+      <form id="send" data-agentdeck-action="send" hx-post="/sessions/test/inject">
+        <textarea name="message">keep this draft</textarea><button type="submit">Send</button>
+      </form>
+      <form id="stop" data-agentdeck-action="stop" hx-post="/sessions/test/interrupt">
+        <button class="stop-button" type="submit">Stop</button>
+      </form>
+      <section id="pending-interaction">
+        <form id="interaction" data-agentdeck-action="interaction"
+              hx-post="/sessions/test/interaction">
+          <label><input type="radio" name="answer" value="yes" checked>Yes</label>
+          <button type="submit">Submit answer</button>
+        </form>
+      </section>
+      <form id="new" data-agentdeck-action="new_session" hx-post="/sessions/new">
+        <textarea name="message">new task</textarea><button type="submit">Start chat</button>
+      </form>
+      <div id="new-session-result"></div>
+    """
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(html)
+        await page.add_script_tag(content=action_script)
+        await page.add_script_tag(content=feedback_script)
+        result = await page.evaluate(
+            """() => {
+              function submit(id) {
+                const form = document.querySelector(id);
+                const button = form.querySelector('button[type="submit"]');
+                form.dispatchEvent(new SubmitEvent('submit', {
+                  bubbles: true, cancelable: true, submitter: button
+                }));
+                return form;
+              }
+              const send = submit('#send');
+              const sendRecord = send._agentdeckActionTiming;
+              const stop = submit('#stop');
+              const interaction = submit('#interaction');
+              const fresh = submit('#new');
+              const immediate = {
+                sendState: document.querySelector('.optimistic-message .message-state').textContent,
+                stopText: stop.querySelector('button').textContent,
+                stopDisabled: stop.querySelector('button').disabled,
+                interactionStatus: interaction.querySelector('.interaction-submitting').textContent,
+                interactionDisabled: interaction.querySelector('button').disabled,
+                answerPreserved: interaction.querySelector('input').checked,
+                newStatus: document.querySelector('#new-session-result').textContent,
+                acknowledgementMs:
+                  sendRecord.marks.acknowledged - sendRecord.marks.interaction,
+              };
+              [send, stop, interaction, fresh].forEach(form => {
+                form.dispatchEvent(new CustomEvent('htmx:afterRequest', {
+                  bubbles: true, detail: {elt: form, successful: false}
+                }));
+              });
+              return {
+                immediate,
+                failedSend: document.querySelector(
+                  '.optimistic-message .message-state'
+                ).textContent,
+                draft: send.querySelector('textarea').value,
+                stopText: stop.querySelector('button').textContent,
+                stopDisabled: stop.querySelector('button').disabled,
+                interactionStatus: Boolean(interaction.querySelector('.interaction-submitting')),
+                interactionDisabled: interaction.querySelector('button').disabled,
+                answerPreserved: interaction.querySelector('input').checked,
+                newStatus: document.querySelector('#new-session-result').textContent,
+              };
+            }"""
+        )
+        await browser.close()
+
+    assert result["immediate"] == {
+        "sendState": "Sending",
+        "stopText": "Stopping…",
+        "stopDisabled": True,
+        "interactionStatus": "Submitting…",
+        "interactionDisabled": True,
+        "answerPreserved": True,
+        "newStatus": "Starting chat…",
+        "acknowledgementMs": result["immediate"]["acknowledgementMs"],
+    }
+    assert result["immediate"]["acknowledgementMs"] < 16
+    assert result | {"immediate": None} == {
+        "immediate": None,
+        "failedSend": "Failed · retry",
+        "draft": "keep this draft",
+        "stopText": "Stop",
+        "stopDisabled": False,
+        "interactionStatus": False,
+        "interactionDisabled": False,
+        "answerPreserved": True,
+        "newStatus": "Failed to start chat. Retry.",
+    }
 
 
 async def test_composer_controls_survive_repeated_sse_updates_on_desktop_and_mobile(tmp_path):

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import shutil
+import time
 import uuid
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
@@ -18,18 +21,24 @@ from .models import Account, InjectResult
 from .providers.codex.appserver import CodexAppServer
 from .providers.codex.runtime_client import runtime_socket_path
 
+log = logging.getLogger(__name__)
 
-class TurnRequest(BaseModel):
+
+class ActionRequest(BaseModel):
+    client_action_id: str | None = None
+
+
+class TurnRequest(ActionRequest):
     thread_id: str
     message: str
     images: list[str] = Field(default_factory=list)
 
 
-class ThreadRequest(BaseModel):
+class ThreadRequest(ActionRequest):
     thread_id: str
 
 
-class StartRequest(BaseModel):
+class StartRequest(ActionRequest):
     cwd: str
     message: str
     images: list[str] = Field(default_factory=list)
@@ -38,7 +47,7 @@ class StartRequest(BaseModel):
     approval_policy: str | None = None
 
 
-class AnswerRequest(BaseModel):
+class AnswerRequest(ActionRequest):
     thread_id: str
     interaction_id: str
     answers: dict[str, list[str]] = Field(default_factory=dict)
@@ -47,6 +56,38 @@ class AnswerRequest(BaseModel):
 
 def _result(result: InjectResult) -> dict[str, Any]:
     return asdict(result)
+
+
+async def _timed_action(
+    action: str,
+    label: str,
+    client_action_id: str | None,
+    operation: Callable[[], Awaitable[InjectResult]],
+) -> InjectResult:
+    started = time.perf_counter_ns()
+    try:
+        result = await operation()
+    except BaseException:
+        if client_action_id:
+            log.debug(
+                "runtime_action action_id=%s action=%s account=%s outcome=error "
+                "elapsed_ms=%.1f",
+                client_action_id,
+                action,
+                label,
+                (time.perf_counter_ns() - started) / 1_000_000,
+            )
+        raise
+    if client_action_id:
+        log.debug(
+            "runtime_action action_id=%s action=%s account=%s accepted=%s elapsed_ms=%.1f",
+            client_action_id,
+            action,
+            label,
+            result.accepted,
+            (time.perf_counter_ns() - started) / 1_000_000,
+        )
+    return result
 
 
 class CodexRuntime:
@@ -171,13 +212,18 @@ def create_runtime_app(config: AppConfig) -> FastAPI:
     async def start(label: str, body: StartRequest) -> dict[str, Any]:
         client = runtime.client(label)
         return _result(
-            await client.start_thread(
-                Path(body.cwd),
-                body.message,
-                images=_paths(body.images),
-                sandbox=body.sandbox,
-                model=body.model,
-                approval_policy=body.approval_policy,
+            await _timed_action(
+                "new_session",
+                label,
+                body.client_action_id,
+                lambda: client.start_thread(
+                    Path(body.cwd),
+                    body.message,
+                    images=_paths(body.images),
+                    sandbox=body.sandbox,
+                    model=body.model,
+                    approval_policy=body.approval_policy,
+                ),
             )
         )
 
@@ -187,7 +233,12 @@ def create_runtime_app(config: AppConfig) -> FastAPI:
         images, root = _preserve_images(client.account, body.images)
         cleanup_now = True
         try:
-            result = await client.queue_turn(body.thread_id, body.message, images=images)
+            result = await _timed_action(
+                "send",
+                label,
+                body.client_action_id,
+                lambda: client.queue_turn(body.thread_id, body.message, images=images),
+            )
             if root is not None and result.accepted:
                 runtime.defer_upload_cleanup(client, body.thread_id, root)
                 cleanup_now = False
@@ -207,23 +258,40 @@ def create_runtime_app(config: AppConfig) -> FastAPI:
     @app.post("/accounts/{label}/steer")
     async def steer(label: str, body: TurnRequest) -> dict[str, Any]:
         return _result(
-            await runtime.client(label).steer(
-                body.thread_id, body.message, images=_paths(body.images)
+            await _timed_action(
+                "steer",
+                label,
+                body.client_action_id,
+                lambda: runtime.client(label).steer(
+                    body.thread_id, body.message, images=_paths(body.images)
+                ),
             )
         )
 
     @app.post("/accounts/{label}/interrupt")
     async def interrupt(label: str, body: ThreadRequest) -> dict[str, Any]:
-        return _result(await runtime.client(label).interrupt(body.thread_id))
+        return _result(
+            await _timed_action(
+                "stop",
+                label,
+                body.client_action_id,
+                lambda: runtime.client(label).interrupt(body.thread_id),
+            )
+        )
 
     @app.post("/accounts/{label}/answer")
     async def answer(label: str, body: AnswerRequest) -> dict[str, Any]:
         return _result(
-            await runtime.client(label).answer(
-                body.thread_id,
-                body.interaction_id,
-                answers=body.answers,
-                decision=body.decision,
+            await _timed_action(
+                "interaction",
+                label,
+                body.client_action_id,
+                lambda: runtime.client(label).answer(
+                    body.thread_id,
+                    body.interaction_id,
+                    answers=body.answers,
+                    decision=body.decision,
+                ),
             )
         )
 

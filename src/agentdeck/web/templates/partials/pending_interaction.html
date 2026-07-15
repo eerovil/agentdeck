@@ -10,7 +10,8 @@
   <p><a href="{{ interaction.url }}" target="_blank" rel="noopener">Continue in browser ↗</a></p>
   {% endif %}
   <form hx-post="/sessions/{{ session_key }}/interaction"
-        hx-target="#pending-interaction" hx-swap="outerHTML">
+        hx-target="#pending-interaction" hx-swap="outerHTML"
+        data-agentdeck-action="interaction">
     <input type="hidden" name="interaction_id" value="{{ interaction.id }}">
     {% for question in interaction.questions %}
     <fieldset>

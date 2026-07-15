@@ -10,7 +10,8 @@
 <details class="new-chat">
   <summary>＋ New Codex chat</summary>
   <form hx-post="/sessions/new" hx-target="#new-session-result" hx-swap="outerHTML"
-        hx-disabled-elt="find button" hx-encoding="multipart/form-data" data-clear-on-send>
+        hx-disabled-elt="find button" hx-encoding="multipart/form-data" data-clear-on-send
+        data-agentdeck-action="new_session">
     <label for="new-chat-account">Account</label>
     <select id="new-chat-account" name="account_key" required>
       {% for account in new_chat_accounts %}

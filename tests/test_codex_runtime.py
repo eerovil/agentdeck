@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 
+from agentdeck.action_context import client_action_context
 from agentdeck.config import AccountConfig, AppConfig
 from agentdeck.models import Account, InjectResult, PendingInteraction
 from agentdeck.providers.codex.runtime_client import CodexRuntimeClient
@@ -111,6 +112,28 @@ async def test_runtime_client_sends_compact_action(tmp_path):
 
     assert result.accepted
     assert json.loads(requests[0].content) == {"thread_id": "thread-1"}
+    await client.stop()
+
+
+async def test_runtime_client_forwards_browser_action_id(tmp_path):
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/accounts/local/queue":
+            requests.append(request)
+            return httpx.Response(200, json={"accepted": True})
+        if request.url.path == "/accounts/local/state":
+            return httpx.Response(200, json={"threads": {"thread-1": {}}})
+        raise AssertionError(request.url.path)
+
+    client = CodexRuntimeClient(
+        _account(tmp_path), transport=httpx.MockTransport(handler)
+    )
+    with client_action_context("browser-action-123"):
+        result = await client.queue_turn("thread-1", "Queued work")
+
+    assert result.accepted
+    assert json.loads(requests[0].content)["client_action_id"] == "browser-action-123"
     await client.stop()
 
 

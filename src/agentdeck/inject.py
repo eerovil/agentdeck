@@ -6,10 +6,12 @@ import asyncio
 import logging
 import uuid
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from .action_context import client_action_context
 from .config import InjectConfig
 from .models import Account, Capability, InjectResult, Session
 from .providers.base import SessionProvider
@@ -31,6 +33,7 @@ class QueuedMessage:
     id: int
     text: str
     images: tuple[Path, ...] = ()
+    client_action_id: str | None = None
     state: str = "queued"
     reason: str | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
@@ -119,6 +122,8 @@ class InjectionService:
         provider: SessionProvider,
         message: str,
         images: list[Path] | None = None,
+        *,
+        client_action_id: str | None = None,
     ) -> InjectResult:
         if not self.config.enabled:
             return InjectResult(False, "message injection is disabled")
@@ -129,7 +134,12 @@ class InjectionService:
             return InjectResult(False, "message is empty")
         if len(message) > self.config.max_message_chars:
             return InjectResult(False, "message is too long")
-        item = QueuedMessage(self._next_id, message, tuple(images or []))
+        item = QueuedMessage(
+            self._next_id,
+            message,
+            tuple(images or []),
+            client_action_id=client_action_id,
+        )
         self._next_id += 1
         self._items.setdefault(session.key, []).append(item)
         self._snapshot(session.key, "queued")
@@ -158,13 +168,19 @@ class InjectionService:
                 self._snapshot(session.key)
                 try:
                     kwargs = {"images": list(item.images)} if item.images else {}
-                    result = await provider.inject(
-                        account,
-                        session,
-                        item.text,
-                        timeout_s=self.config.timeout_s,
-                        **kwargs,
+                    action_context = (
+                        client_action_context(item.client_action_id)
+                        if item.client_action_id
+                        else nullcontext()
                     )
+                    with action_context:
+                        result = await provider.inject(
+                            account,
+                            session,
+                            item.text,
+                            timeout_s=self.config.timeout_s,
+                            **kwargs,
+                        )
                 finally:
                     cleanup_image_files(item.images)
                 item.state = "complete" if result.accepted else "failed"
@@ -204,6 +220,8 @@ class InjectionService:
         cwd: Path,
         message: str,
         images: list[Path] | None = None,
+        *,
+        client_action_id: str | None = None,
     ) -> InjectResult:
         if not self.config.enabled:
             return InjectResult(False, "message injection is disabled")
@@ -220,10 +238,14 @@ class InjectionService:
         if running is not None and not running.done():
             return InjectResult(False, "a new session is already starting for this account")
         self._new_status[account.key] = InjectionStatus("running")
-        self._new_tasks[account.key] = asyncio.create_task(
-            self._run_new(account, provider, cwd, message, images or []),
-            name=f"new-session:{account.key}",
+        action_context = (
+            client_action_context(client_action_id) if client_action_id else nullcontext()
         )
+        with action_context:
+            self._new_tasks[account.key] = asyncio.create_task(
+                self._run_new(account, provider, cwd, message, images or []),
+                name=f"new-session:{account.key}",
+            )
         return InjectResult(True)
 
     async def _run_new(

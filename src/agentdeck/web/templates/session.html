@@ -96,7 +96,7 @@
 {% if can_inject %}
 <form class="inject-form" hx-post="/sessions/{{ session.key }}/inject"
       hx-target="#inject-result" hx-swap="outerHTML" hx-disabled-elt="find button"
-      hx-encoding="multipart/form-data" data-clear-on-send>
+      hx-encoding="multipart/form-data" data-clear-on-send data-agentdeck-action="send">
   <label for="inject-message">Message</label>
   <textarea id="inject-message" class="send-on-enter" name="message" rows="3" maxlength="{{ inject_max_chars }}"
             required placeholder="Send a follow-up…"></textarea>
@@ -116,7 +116,7 @@
   {% include "partials/inject_status.html" %}
 </form>
 <form id="interrupt-form" hx-post="/sessions/{{ session.key }}/interrupt"
-      hx-target="#inject-result" hx-swap="outerHTML"></form>
+      hx-target="#inject-result" hx-swap="outerHTML" data-agentdeck-action="stop"></form>
 {% endif %}
 </section>
 </div>
@@ -207,13 +207,24 @@
     followTranscript = false;
   }
   function reconcilePendingMessages() {
+    var actionRows = new Map();
     document.querySelectorAll('.transcript [data-pending-message]').forEach(function (pending) {
+      var pendingActionId = pending.dataset.clientActionId;
+      if (pendingActionId && actionRows.has(pendingActionId)) {
+        pending.remove();
+        return;
+      }
+      if (pendingActionId) actionRows.set(pendingActionId, pending);
       var text = pending.querySelector('.ev-text');
       var next = pending.nextElementSibling;
       while (text && next) {
         var nextText = next.matches('.ev.user:not([data-pending-message])') &&
           next.querySelector('.ev-text');
         if (nextText && nextText.textContent === text.textContent) {
+          var actionId = pending.dataset.clientActionId;
+          if (actionId && window.AgentDeckActionTiming) {
+            window.AgentDeckActionTiming.mark(actionId, 'first_transcript');
+          }
           pending.remove();
           break;
         }
@@ -227,6 +238,10 @@
   // its own lifecycle events rather than the ordinary before/afterSwap pair.
   document.body.addEventListener('htmx:sseBeforeMessage', beforeTranscriptSwap);
   document.body.addEventListener('htmx:sseMessage', afterTranscriptSwap);
+  document.body.addEventListener('agentdeck:optimistic-send', function () {
+    followAfterSend = true;
+    requestAnimationFrame(followBottom);
+  });
   document.body.addEventListener('htmx:afterRequest', function (event) {
     var form = event.detail && event.detail.elt;
     if (!event.detail || !event.detail.successful || !form || !form.matches('.inject-form')) return;
