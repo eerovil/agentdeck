@@ -64,11 +64,20 @@ class AssistantView:
 
 @dataclass(frozen=True)
 class Verdict:
-    """LLM judgement of one finished agent's final message."""
+    """LLM judgement of one finished agent's final message.
 
-    attention: bool
+    ``status`` is one of: ``blocked`` (did not finish, step in now), ``review``
+    (finished, work — usually a PR — is awaiting your review), ``done`` (finished,
+    nothing left for you). Only ``done`` produces no card.
+    """
+
+    status: str
     summary: str
     reason: str
+
+
+# Verdict status -> card kind. "done" is absent: it produces no card.
+_STATUS_KIND = {"blocked": KIND_STALLED, "review": KIND_FINISHED}
 
 
 def tracking_summary(count: int) -> str:
@@ -190,6 +199,19 @@ def structured_trigger(
     return None
 
 
+def all_pulls_terminal(context: GitContext | None) -> bool:
+    """True when the session has resolved PRs and every one is merged or closed.
+
+    Such a session's work has shipped — there is nothing left to review, so it
+    must not produce a card: not a structured open-PR card (that only fires for
+    open PRs) and not an LLM "review" resurrected from a transcript that still
+    says "opened PR #123". A merged PR is done.
+    """
+    if context is None or not context.pull_requests:
+        return False
+    return all(pull.status in {"merged", "closed"} for pull in context.pull_requests)
+
+
 def needs_llm(session: Session) -> bool:
     """A finished agent whose final message must be read to judge attention.
 
@@ -208,26 +230,28 @@ def classification_prompt(session: Session) -> str:
     """One tiny prompt: does THIS agent's final message need the operator?"""
     task = _head(session.initial_prompt or session.title, _MAX_TASK_CHARS)
     final_message = _tail(session.last_text, _MAX_MESSAGE_CHARS)
-    return f"""You triage one coding agent for a human operator. Decide one thing:
-does this agent need the operator to do something now?
+    return f"""You triage one coding agent for a human operator. Put it in ONE of three states:
 
-Set attention=false when the agent completed what it was asked — INCLUDING when it opened a
-pull request, committed, or pushed. Finishing the task and opening a PR is the normal
-successful outcome; that PR is reviewed elsewhere, so a completed-and-opened-PR message is
-NOT a reason for attention.
+- "blocked": the agent did NOT finish and needs the operator to step in now. It failed, is
+  blocked, hit an error it could not resolve, needs a decision before it can proceed, or is
+  directly asking a question it is waiting on an answer to. ("I could not do X"; "which should
+  I pick?")
 
-Set attention=true only when the agent stopped WITHOUT finishing: it failed, is blocked, hit
-an error it could not resolve, is unsure and wants guidance, or is explicitly asking the
-operator a question or to make a decision.
+- "review": the agent FINISHED and left work awaiting your review or merge. Most often it
+  opened or updated a pull request. A completion that opens a PR is "review" — INCLUDING when
+  it adds caveats or asks you to sanity-check something. The work is done; it wants your eyes
+  on the result. This still needs you, just less urgently than "blocked".
 
-If you genuinely cannot tell whether it finished or got stuck, set attention=true. But do not
-treat a message that describes completed work plus a PR/commit as uncertain — that is done.
-Do not use tools. Judge only the text below.
+- "done": the agent finished and there is nothing for the operator — no PR to review, no
+  question, nothing awaiting a human (e.g. it answered a question, or made a small local
+  change with no follow-up).
+
+If you cannot tell whether it finished, use "blocked". Do not use tools. Judge only the text.
 
 Return:
-- attention: boolean
+- status: "blocked" | "review" | "done"
 - summary: one short line stating what the agent did (plain, specific, no preamble)
-- reason: one short line on why it needs the operator, or "" when attention is false
+- reason: one short line on what the operator should do, or "" when status is "done"
 
 Task the agent was working on:
 {task or "(unknown)"}
@@ -241,18 +265,26 @@ def parse_verdict(raw: dict) -> Verdict:
     """Coerce the model's JSON into a Verdict, failing open on missing fields."""
     summary = raw.get("summary")
     reason = raw.get("reason")
-    # Missing/invalid attention fails open to True: never silently drop a handoff.
-    attention_value = raw.get("attention")
-    attention = True if not isinstance(attention_value, bool) else attention_value
+    # Missing/invalid status fails open to "blocked": never silently drop a handoff.
+    status = raw.get("status")
+    if status not in {"blocked", "review", "done"}:
+        status = "blocked"
     has_summary = isinstance(summary, str) and bool(summary.strip())
     return Verdict(
-        attention=attention,
+        status=status,
         summary=_first_line(summary) if has_summary else "Finished",
         reason=_first_line(reason) if isinstance(reason, str) else "",
     )
 
 
-def verdict_card(session_key: str, verdict: Verdict) -> AssistantInsight:
-    """Render an attention Verdict as a card. Only call when verdict.attention."""
-    detail = verdict.reason or "The agent's final message suggests it needs you."
-    return AssistantInsight(session_key, KIND_STALLED, verdict.summary, detail)
+def verdict_card(session_key: str, verdict: Verdict) -> AssistantInsight | None:
+    """Render a Verdict as a card, or None when the agent is fully done."""
+    kind = _STATUS_KIND.get(verdict.status)
+    if kind is None:
+        return None
+    detail = verdict.reason or (
+        "Finished — ready for your review."
+        if verdict.status == "review"
+        else "The agent's final message suggests it needs you."
+    )
+    return AssistantInsight(session_key, kind, verdict.summary, detail)

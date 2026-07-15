@@ -5,6 +5,7 @@
       <strong>Attention triage</strong>
     </div>
     <div class="assistant-controls">
+      {% if working_count %}<span class="assistant-working" title="chats actively working right now"><span class="assistant-gear"></span>{{ working_count }} working</span>{% endif %}
       <span class="assistant-model">{{ assistant.config.model or 'Codex default' }}</span>
       {% if assistant.config.enabled %}
       <form hx-post="/assistant/refresh" hx-target="#assistant-panel" hx-swap="outerHTML"

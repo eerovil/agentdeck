@@ -5,6 +5,15 @@ follow-ups here instead of creating GitHub issues unless external coordination i
 
 ## Open
 
+- [ ] Investigate why the session list can show a very old assistant-message preview.
+  - Reproduce with the `Start working on TODO.md` Codex session: the open chat contains current
+    activity, while its list card still shows the much older initial assistant update.
+  - Trace how the card preview is selected, cached, and refreshed across collector polls, SSE
+    updates, optimistic messages, tool activity, and partial transcript reloads.
+  - Done when the card consistently shows the latest eligible human-readable assistant message,
+    updates promptly without requiring a full reload, and a regression covers a long-running chat
+    whose newest events include tools or other non-previewable entries.
+
 - [ ] Execute the [AgentDeck interaction latency UX plan](docs/UX_LATENCY_PLAN.md).
   - Prioritize measurable interaction feedback: Send, queued follow-ups, Stop, approvals/questions,
     transcript updates, and control-state reconciliation.

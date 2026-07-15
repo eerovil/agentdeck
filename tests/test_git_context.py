@@ -39,6 +39,35 @@ def test_explicit_refs_recognize_markdown_formatted_pr_number(tmp_path):
     ]
 
 
+def test_explicit_refs_try_bare_number_against_every_candidate_repo(tmp_path):
+    # A worker whose checkout is a superproject (docker) but whose PR lives in a
+    # nested app repo (tilhi, named via the issue URL) must resolve the bare
+    # number against both candidates, not just the cwd remote.
+    session = _session(
+        tmp_path,
+        issue_url="https://github.com/ScandinavianOutdoor/tilhi/issues/1634",
+        last_text="Shipped a guardrail and tests in PR #1628, with orders tests green.",
+    )
+
+    refs = GitContextResolver._explicit_refs(
+        session, ["ScandinavianOutdoor/docker", "ScandinavianOutdoor/tilhi"]
+    )
+
+    assert ("ScandinavianOutdoor/tilhi", 1628) in refs
+    assert ("ScandinavianOutdoor/docker", 1628) in refs
+
+
+def test_explicit_refs_full_url_wins_regardless_of_candidates(tmp_path):
+    session = _session(
+        tmp_path,
+        last_text="Opened https://github.com/ScandinavianOutdoor/tilhi/pull/1628 for review.",
+    )
+
+    assert GitContextResolver._explicit_refs(session, []) == [
+        ("ScandinavianOutdoor/tilhi", 1628),
+    ]
+
+
 async def test_resolves_merged_pr_for_worktree_branch(tmp_path, monkeypatch):
     resolver = GitContextResolver()
     resolver._git = "git"

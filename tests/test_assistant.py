@@ -6,19 +6,24 @@ from unittest.mock import AsyncMock
 from agentdeck.assistant import AssistantInsight, AssistantService, AssistantView, run_codex
 from agentdeck.config import AccountConfig, AppConfig, AssistantConfig
 from agentdeck.db import Db
+from agentdeck.git_context import GitContext, PullRequestContext
 from agentdeck.models import PendingInteraction, Session, SessionStatus
 from agentdeck.providers import PROVIDERS
 from agentdeck.state import AppState
 
-_ATTENTION = {"attention": True, "summary": "Stopped early", "reason": "Needs a decision"}
-_CLEAR = {"attention": False, "summary": "All tests pass", "reason": ""}
+_ATTENTION = {"status": "blocked", "summary": "Stopped early", "reason": "Needs a decision"}
+_REVIEW = {"status": "review", "summary": "Opened a PR", "reason": "Review it"}
+_CLEAR = {"status": "done", "summary": "All tests pass", "reason": ""}
 
 
 class _StubResolver:
-    """Never resolves git/PR context, so tests stay hermetic and offline."""
+    """Resolves fixed git/PR context (default: none), so tests stay hermetic."""
+
+    def __init__(self, contexts=None):
+        self._contexts = contexts or {}
 
     async def resolve(self, sessions):
-        return {}
+        return dict(self._contexts)
 
 
 def _config(tmp_path, **assistant):
@@ -93,6 +98,43 @@ async def test_finished_agent_cleared_by_the_model_shows_no_card(tmp_path):
 
     assert assistant.view.insights == ()
     assert assistant.view.summary == "Nothing needs your attention right now."
+
+
+async def test_finished_agent_with_pr_review_shows_a_finished_card(tmp_path):
+    runner = AsyncMock(return_value=_REVIEW)
+    state = AppState()
+    state.update_session(_finished(tmp_path))
+    assistant = _service(tmp_path, runner, state=state)
+
+    await assistant.refresh()
+
+    (insight,) = assistant.view.insights
+    assert insight.kind == "finished"  # PR-in-review still surfaces, as a review card
+    assert insight.headline == "Opened a PR"
+
+
+async def test_merged_pr_produces_no_card_and_skips_the_model(tmp_path):
+    runner = AsyncMock(return_value=_REVIEW)
+    state = AppState()
+    session = _finished(tmp_path, last_text="Shipped the guardrail in PR #1628.")
+    state.update_session(session)
+    context = GitContext(
+        "ScandinavianOutdoor/tilhi",
+        "feature/guardrail",
+        False,
+        (PullRequestContext("ScandinavianOutdoor/tilhi", 1628, "Guardrail", "u", "merged"),),
+    )
+    assistant = AssistantService(
+        _config(tmp_path),
+        state,
+        runner=runner,
+        context_resolver=_StubResolver({session.key: context}),
+    )
+
+    await assistant.refresh()
+
+    assert assistant.view.insights == ()  # merged work is done — no green card
+    runner.assert_not_awaited()  # and we don't even ask the model
 
 
 async def test_verdict_is_cached_until_the_final_message_changes(tmp_path):

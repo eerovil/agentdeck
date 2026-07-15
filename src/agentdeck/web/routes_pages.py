@@ -80,6 +80,7 @@ async def dashboard(request: Request) -> HTMLResponse:
             "new_chat_cwds": cwd_options,
             "assistant": request.app.state.assistant,
             "assistant_sessions": state.sessions,
+            "working_count": sum(1 for s in state.visible_sessions() if s.thinking),
         },
     )
     # Live dashboard — always revalidate so a deploy's HTML (and the inline
@@ -160,6 +161,7 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
             "pending_interaction": provider.pending_interaction(account, session),
             "assistant": assistant,
             "assistant_sessions": state.sessions,
+            "working_count": sum(1 for s in state.visible_sessions() if s.thinking),
             "assistant_insights": assistant_insights_for_session(
                 assistant, session.key
             ),
