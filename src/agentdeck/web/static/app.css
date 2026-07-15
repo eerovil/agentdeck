@@ -162,7 +162,7 @@ body.usage-open .limit-bars { display: flex; }
 .acct-badge.acct-main { color: var(--live); }
 .acct-badge.acct-alt { color: var(--remote); }
 .session { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
-  padding: 9px 11px; margin-bottom: 7px;
+  padding: 9px 11px; margin-bottom: 7px; position: relative;
   /* Left stripe = worker type (grouping). Status is shown by the dot below. */
   border-left: 5px solid var(--idle); }
 .session.wt-kanban { border-left-color: var(--wt-kanban); }
@@ -275,6 +275,10 @@ body.usage-open .limit-bars { display: flex; }
 .empty { color: var(--muted); font-size: 13px; padding: 6px 2px; }
 a.session { display: block; text-decoration: none; color: inherit; }
 a.session:active { background: var(--panel2); }
+a.session.opening { border-color: var(--remote); background: var(--panel2); }
+a.session.opening::after { content: "Opening…"; position: absolute; top: 7px; right: 8px;
+  padding: 2px 7px; border-radius: 7px; background: var(--panel2); color: var(--remote);
+  font-size: 11px; font-weight: 700; box-shadow: 0 0 0 1px var(--line); }
 .session.selected { border-top-color: var(--remote); border-right-color: var(--remote);
   border-bottom-color: var(--remote); background: color-mix(in srgb, var(--remote) 7%, var(--panel)); }
 

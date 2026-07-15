@@ -1,6 +1,7 @@
 {# One session row. `s` = Session. #}
 <a class="session {{ s.status }} wt-{{ s.worker_type or 'you' }}{% if selected_session_key == s.key %} selected{% endif %}"
    href="/sessions/{{ s.key }}" data-session-key="{{ s.key }}"
+   data-agentdeck-action="open_session"
    data-working="{{ '1' if s.thinking else '0' }}"{% if selected_session_key == s.key %}
    aria-current="page"{% endif %}>
   <div class="session-main">

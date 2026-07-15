@@ -2,6 +2,7 @@
   'use strict';
 
   var records = new Map();
+  var pendingNavigationKey = 'agentdeck.pendingNavigation';
   var relevantSseTargets = new Set([
     'session-status',
     'composer-controls',
@@ -21,13 +22,28 @@
     }).join('');
   }
 
-  function mark(record, phase) {
+  function recordMark(record, phase, relativeTime, epochTime) {
     if (!record || record.marks[phase] !== undefined) return;
-    record.marks[phase] = performance.now();
-    performance.mark('agentdeck:' + record.id + ':' + phase);
+    record.marks[phase] = relativeTime;
+    record.epochMarks = record.epochMarks || {};
+    record.epochMarks[phase] = epochTime;
+    try {
+      performance.mark('agentdeck:' + record.id + ':' + phase, {startTime: relativeTime});
+    } catch (_) {
+      performance.mark('agentdeck:' + record.id + ':' + phase);
+    }
     document.dispatchEvent(new CustomEvent('agentdeck:action-timing', {
       detail: { actionId: record.id, action: record.action, phase: phase }
     }));
+  }
+
+  function mark(record, phase) {
+    var now = performance.now();
+    recordMark(record, phase, now, performance.timeOrigin + now);
+  }
+
+  function pathName(path) {
+    try { return new URL(path, location.href).pathname; } catch (_) { return path; }
   }
 
   function actionPath(form) {
@@ -35,7 +51,7 @@
   }
 
   function sessionKey(path) {
-    var match = path.match(/^\/sessions\/([^/]+)\//);
+    var match = pathName(path).match(/^\/sessions\/([^/]+)(?:\/|$)/);
     return match ? decodeURIComponent(match[1]) : null;
   }
 
@@ -61,6 +77,7 @@
       path: path,
       sessionKey: sessionKey(path),
       marks: {},
+      epochMarks: {},
       serverTiming: ''
     };
     form._agentdeckActionTiming = record;
@@ -69,6 +86,77 @@
     hiddenId(form, record.id);
     mark(record, 'interaction');
     return record;
+  }
+
+  function prepareNavigation(link) {
+    if (!link || !link.matches('a[data-agentdeck-action="open_session"]')) return null;
+    var current = link._agentdeckActionTiming;
+    if (current && current.marks.settled === undefined) return current;
+    var record = {
+      id: uuid(),
+      action: 'open_session',
+      path: link.href,
+      sessionKey: sessionKey(link.href),
+      marks: {},
+      epochMarks: {},
+      serverTiming: ''
+    };
+    link._agentdeckActionTiming = record;
+    records.set(record.id, record);
+    if (records.size > 100) records.delete(records.keys().next().value);
+    mark(record, 'interaction');
+    return record;
+  }
+
+  function navigationLink(target) {
+    if (!target || !target.closest) return null;
+    if (target.closest('.expand-btn, .cc-btn, .gh-btn')) return null;
+    return target.closest('a[data-agentdeck-action="open_session"]');
+  }
+
+  function isPlainNavigation(event, link) {
+    return !event.defaultPrevented && event.button === 0 && !event.metaKey &&
+      !event.ctrlKey && !event.shiftKey && !event.altKey &&
+      !link.hasAttribute('download') && (!link.target || link.target === '_self') &&
+      new URL(link.href, location.href).origin === location.origin;
+  }
+
+  function persistNavigation(record) {
+    try { sessionStorage.setItem(pendingNavigationKey, JSON.stringify(record)); } catch (_) {}
+  }
+
+  function restoreNavigation() {
+    var raw;
+    try {
+      raw = sessionStorage.getItem(pendingNavigationKey);
+      sessionStorage.removeItem(pendingNavigationKey);
+    } catch (_) {}
+    if (!raw) return;
+    var record;
+    try { record = JSON.parse(raw); } catch (_) { return; }
+    if (!record || record.action !== 'open_session' ||
+        pathName(record.path) !== location.pathname) return;
+    record.marks = record.marks || {};
+    record.epochMarks = record.epochMarks || {};
+    records.set(record.id, record);
+    var navigation = performance.getEntriesByType('navigation')[0];
+    if (navigation) {
+      recordMark(
+        record,
+        'response',
+        navigation.responseEnd,
+        performance.timeOrigin + navigation.responseEnd
+      );
+      record.serverTiming = (navigation.serverTiming || []).map(function (entry) {
+        return entry.name + ';dur=' + entry.duration.toFixed(1);
+      }).join(', ');
+    } else {
+      mark(record, 'response');
+    }
+    record.successful = true;
+    window.addEventListener('pageshow', function () {
+      requestAnimationFrame(function () { mark(record, 'settled'); });
+    }, {once: true});
   }
 
   function formFromEvent(event) {
@@ -80,17 +168,39 @@
   document.addEventListener('pointerdown', function (event) {
     var button = event.target.closest('button[type="submit"], input[type="submit"]');
     if (button && button.form) prepare(button.form);
+    var link = navigationLink(event.target);
+    if (link && event.button === 0) prepareNavigation(link);
   }, true);
 
   document.addEventListener('keydown', function (event) {
     if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
     var form = event.target.form;
     if (form) prepare(form);
+    var link = navigationLink(event.target);
+    if (link) prepareNavigation(link);
   }, true);
 
   document.addEventListener('submit', function (event) {
     prepare(event.target);
   }, true);
+
+  document.addEventListener('click', function (event) {
+    var link = navigationLink(event.target);
+    if (!link || !isPlainNavigation(event, link)) return;
+    var record = prepareNavigation(link);
+    link.classList.add('opening');
+    link.setAttribute('aria-busy', 'true');
+    mark(record, 'acknowledged');
+    mark(record, 'request_start');
+    persistNavigation(record);
+  });
+
+  window.addEventListener('pageshow', function () {
+    document.querySelectorAll('a.session.opening').forEach(function (link) {
+      link.classList.remove('opening');
+      link.removeAttribute('aria-busy');
+    });
+  });
 
   document.body.addEventListener('htmx:configRequest', function (event) {
     var form = formFromEvent(event);
@@ -157,8 +267,12 @@
       }
       function duration(items, start, end) {
         return percentiles(items.filter(function (item) {
-          return item.marks[start] !== undefined && item.marks[end] !== undefined;
-        }).map(function (item) { return item.marks[end] - item.marks[start]; }));
+          var marks = item.epochMarks || item.marks;
+          return marks[start] !== undefined && marks[end] !== undefined;
+        }).map(function (item) {
+          var marks = item.epochMarks || item.marks;
+          return marks[end] - marks[start];
+        }));
       }
       var result = {};
       Object.keys(grouped).forEach(function (action) {
@@ -174,6 +288,8 @@
       });
       return result;
     },
+    prepareNavigation: prepareNavigation,
     mark: function (actionId, phase) { mark(records.get(actionId), phase); }
   };
+  restoreNavigation();
 })();

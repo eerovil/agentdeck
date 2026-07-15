@@ -1082,6 +1082,114 @@ async def test_working_card_uses_pulsing_dot_without_text_badge(tmp_path):
     assert 'data-working="1"' in r.text
 
 
+async def test_opening_session_card_acknowledges_and_times_navigation(tmp_path):
+    app = _app_with_state(tmp_path)
+    async with _client(app) as client:
+        dashboard = await client.get("/")
+        detail = await client.get("/sessions/claude_code:test:sid1")
+
+    static_dir = Path(__file__).parents[1] / "src/agentdeck/web/static"
+    action_script = (static_dir / "action_timing.js").read_text()
+    stylesheet = (static_dir / "app.css").read_text()
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        for width in (1200, 320):
+            release = asyncio.Event()
+            requested = asyncio.Event()
+            context = await browser.new_context(
+                viewport={"width": width, "height": 800}, service_workers="block"
+            )
+            page = await context.new_page()
+
+            async def serve(route, request, requested=requested, release=release):
+                path = request.url.split("?", 1)[0].removeprefix("http://agentdeck.test")
+                if path == "/":
+                    await route.fulfill(status=200, content_type="text/html", body=dashboard.text)
+                elif path == "/sessions/claude_code:test:sid1":
+                    requested.set()
+                    await release.wait()
+                    await route.fulfill(status=200, content_type="text/html", body=detail.text)
+                elif path == "/static/action_timing.js":
+                    await route.fulfill(
+                        status=200, content_type="text/javascript", body=action_script
+                    )
+                elif path == "/static/app.css":
+                    await route.fulfill(status=200, content_type="text/css", body=stylesheet)
+                else:
+                    await route.fulfill(status=204, body="")
+
+            await page.route("http://agentdeck.test/**", serve)
+            await page.goto("http://agentdeck.test/")
+            card = page.locator('a.session[data-session-key="claude_code:test:sid1"]')
+            immediate_result = asyncio.get_running_loop().create_future()
+
+            def report_immediate(value, immediate_result=immediate_result):
+                if not immediate_result.done():
+                    immediate_result.set_result(value)
+
+            await page.expose_function("reportOpeningState", report_immediate)
+            await page.evaluate(
+                """() => document.addEventListener('click', event => {
+                  var card = event.target.closest('a.session');
+                  if (!card) return;
+                  window.reportOpeningState({
+                    opening: card.classList.contains('opening'),
+                    busy: card.getAttribute('aria-busy'),
+                    label: getComputedStyle(card, '::after').content,
+                    timing: JSON.parse(JSON.stringify(
+                      Array.from(AgentDeckActionTiming.records.values())[0]
+                    )),
+                    overflow: document.documentElement.scrollWidth > innerWidth,
+                  });
+                }, {once: true})"""
+            )
+            click = asyncio.create_task(card.click())
+            immediate = await asyncio.wait_for(immediate_result, timeout=5)
+            await requested.wait()
+            await asyncio.sleep(0.15)
+            release.set()
+            await click
+            await page.wait_for_url("**/sessions/claude_code:test:sid1")
+            await page.wait_for_function(
+                "AgentDeckActionTiming.summary().open_session?.settled_ms !== null"
+            )
+            completed = await page.evaluate(
+                """() => ({
+                  record: AgentDeckActionTiming.snapshot()[0],
+                  summary: AgentDeckActionTiming.summary().open_session,
+                  overflow: document.documentElement.scrollWidth > innerWidth,
+                })"""
+            )
+            await page.go_back()
+            restored = await page.locator(
+                'a.session[data-session-key="claude_code:test:sid1"]'
+            ).evaluate(
+                "card => ({opening: card.classList.contains('opening'), "
+                "busy: card.getAttribute('aria-busy')})"
+            )
+            await context.close()
+
+            assert immediate["opening"] is True
+            assert immediate["busy"] == "true"
+            assert immediate["label"] == '"Opening…"'
+            assert immediate["overflow"] is False
+            assert immediate["timing"]["action"] == "open_session"
+            assert (
+                immediate["timing"]["epochMarks"]["acknowledged"]
+                - immediate["timing"]["epochMarks"]["interaction"]
+                < 16
+            )
+            assert completed["record"]["sessionKey"] == "claude_code:test:sid1"
+            assert completed["record"]["successful"] is True
+            assert completed["summary"]["samples"] == 1
+            assert completed["summary"]["http_ms"]["p50"] >= 100
+            assert completed["summary"]["settled_ms"]["p50"] >= 100
+            assert completed["overflow"] is False
+            assert restored == {"opening": False, "busy": None}
+        await browser.close()
+
+
 async def test_subagent_count_renders_on_card_and_detail_header(tmp_path):
     app = _app_with_state(tmp_path)
     session = app.state.app_state.sessions["claude_code:test:sid1"]
