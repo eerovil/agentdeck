@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -104,6 +105,20 @@ async def test_dashboard_renders_usage_and_session(tmp_path):
     assert 'id="hide-closed"' in r.text
     assert 'id="assistant-panel"' in r.text
     assert "Attention triage" in r.text
+
+
+async def test_deckhand_shows_active_working_count(tmp_path):
+    app = _app_with_state(tmp_path)
+    app.state.assistant.config.enabled = True
+    state = app.state.app_state
+    session = state.sessions["claude_code:test:sid1"]
+    state.update_session(replace(session, thinking=True))
+
+    async with _client(app) as client:
+        response = await client.get("/")
+
+    assert 'class="assistant-working"' in response.text
+    assert "1 working" in response.text
 
 
 async def test_dashboard_collapsed_usage_renders_weekly_only_plan(tmp_path):
