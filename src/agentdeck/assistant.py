@@ -39,6 +39,10 @@ _UNSAFE_AUTO_ANSWER_RE = re.compile(
     re.IGNORECASE,
 )
 _PR_TITLE_WORD_RE = re.compile(r"[^\W_][\w.+-]*", re.UNICODE)
+_PR_HEADLINE_PREFIX_RE = re.compile(
+    r"^(?:(?:open|draft)\s+)?(?:PR|pull request)\s*(?:#\d+)?\s*",
+    re.IGNORECASE,
+)
 _GENERIC_PR_TITLE_WORDS = {
     "add",
     "allow",
@@ -768,13 +772,13 @@ Dashboard snapshot:
             project = _PROJECT_DISPLAY_NAMES.get(
                 repository_name.casefold(), repository_name.replace("-", " ").title()
             )
-            if insight.headline.startswith(f"{project} · "):
+            feature = self._pr_feature_word(pull.title, project)
+            prefix = f"{project} · {feature} · PR #{pull.number}"
+            if insight.headline.startswith(prefix):
                 insights.append(insight)
                 continue
-            feature = self._pr_feature_word(pull.title, project)
-            insights.append(
-                replace(insight, headline=f"{project} · {feature} · {insight.headline}")
-            )
+            action = _PR_HEADLINE_PREFIX_RE.sub("", insight.headline).strip()
+            insights.append(replace(insight, headline=f"{prefix} {action}".strip()))
         result = tuple(insights)
         if result == view.insights:
             return view

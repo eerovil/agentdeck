@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -626,6 +627,16 @@ def test_pr_headline_includes_project_and_feature_from_authoritative_title(tmp_p
         "Storm · Elasticsearch · PR #255 is open and awaiting review"
     )
     assert assistant._enrich_pr_headlines(result) == result
+
+    number_in_detail = replace(
+        insight,
+        headline="Open PR needs review",
+        detail="Implementation is complete in PR #255.",
+    )
+    detail_result = assistant._enrich_pr_headlines(
+        AssistantView(state="ready", insights=(number_in_detail,))
+    )
+    assert detail_result.insights[0].headline == ("Storm · Elasticsearch · PR #255 needs review")
 
 
 async def test_refresh_does_not_retain_old_cross_chat_pr_insight(tmp_path):
