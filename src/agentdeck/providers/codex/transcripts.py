@@ -41,6 +41,7 @@ class TranscriptMeta:
     cwd: str | None = None
     started_at: datetime | None = None
     title: str | None = None
+    first_prompt: str | None = None
     last_prompt: str | None = None
     last_text: str | None = None
     # The agent's canonical final message from the last `task_complete` event.
@@ -509,7 +510,7 @@ def transcript_meta(
     session_id = cwd = kind = model = None
     is_approval_review = is_subagent = is_spawned_subagent = task_active = False
     started_at = None
-    title = last_prompt = last_text = last_role = None
+    title = first_prompt = last_prompt = last_text = last_role = None
     last_agent_message = None
     tokens = None
     context_tokens = None
@@ -517,7 +518,7 @@ def transcript_meta(
     def scan(objects: list[dict], *, find_title: bool) -> None:
         nonlocal session_id, cwd, kind, model, started_at, is_approval_review
         nonlocal is_subagent, is_spawned_subagent, task_active
-        nonlocal title, last_prompt, last_text, last_role, tokens, context_tokens
+        nonlocal title, first_prompt, last_prompt, last_text, last_role, tokens, context_tokens
         nonlocal last_agent_message
         for obj in objects:
             payload = obj.get("payload")
@@ -567,6 +568,8 @@ def transcript_meta(
                 native_role = payload.get("role")
                 text = _text_content(payload.get("content"))
                 if native_role == "user" and text and not _is_noise_user(text):
+                    if first_prompt is None:
+                        first_prompt = text
                     if find_title and title is None:
                         title = " ".join(text.split())[:_MAX_TITLE]
                     last_prompt = text
@@ -599,6 +602,7 @@ def transcript_meta(
         cwd=cwd,
         started_at=started_at,
         title=title,
+        first_prompt=first_prompt,
         last_prompt=last_prompt,
         last_text=last_text,
         last_agent_message=last_agent_message,

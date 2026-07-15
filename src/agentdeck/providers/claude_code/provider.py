@@ -272,6 +272,7 @@ class ClaudeCodeProvider(SessionProvider):
                     activity=activity,
                     cwd=cwd,
                     title=title,
+                    initial_prompt=first_user,
                     last_prompt=last_prompt,
                     last_text=last_text,
                     last_role=last_role,

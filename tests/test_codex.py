@@ -502,6 +502,7 @@ def test_codex_skips_repository_instruction_preambles_for_title(tmp_path):
     visible = transcripts.read_events(path).events
 
     assert meta.title == "Fix it"
+    assert meta.first_prompt == "Fix it"
     assert meta.last_prompt == "Fix it"
     assert [event.text for event in visible] == ["Fix it"]
 
@@ -532,6 +533,7 @@ def test_codex_hides_new_chat_orchestration_preamble_and_titles_from_prompt(tmp_
     visible = transcripts.read_events(path).events
 
     assert meta.title == "Build an assistant inside AgentDeck"
+    assert meta.first_prompt == "Build an assistant inside AgentDeck"
     assert meta.last_prompt == "Build an assistant inside AgentDeck"
     assert [(event.role, event.text) for event in visible] == [
         ("user", "Build an assistant inside AgentDeck")
@@ -637,6 +639,7 @@ async def test_codex_sweep_refreshes_status_and_tail_metadata(tmp_path):
     assert session.status == SessionStatus.LIVE
     assert session.thinking is True
     assert session.last_prompt == "One more change"
+    assert session.initial_prompt is not None
     assert session.last_role == "user"
 
 

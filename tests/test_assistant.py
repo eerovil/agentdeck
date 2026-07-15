@@ -223,7 +223,7 @@ async def test_refresh_never_auto_answers_approval(tmp_path, monkeypatch):
     assert not assistant.view.actions
 
 
-async def test_refresh_supplies_authoritative_merged_pr_context(tmp_path):
+async def test_refresh_omits_sessions_when_all_related_prs_are_terminal(tmp_path):
     state = AppState()
     state.update_session(_session(tmp_path))
     context = GitContext(
@@ -238,15 +238,19 @@ async def test_refresh_supplies_authoritative_merged_pr_context(tmp_path):
                 url="https://github.com/eerovil/agentdeck/pull/91",
                 status="merged",
             ),
+            PullRequestContext(
+                repository="eerovil/agentdeck",
+                number=92,
+                title="Closed replacement",
+                url="https://github.com/eerovil/agentdeck/pull/92",
+                status="closed",
+            ),
         ),
     )
     resolver = AsyncMock(return_value={})
     resolver.resolve = AsyncMock(return_value={"codex:test:thread-1": context})
 
-    async def runner(account, config, prompt):
-        assert '"status":"merged"' in prompt
-        assert "Treat each\npull request's status as ground truth" in prompt
-        return {"summary": "The related PR is already merged.", "insights": []}
+    runner = AsyncMock()
 
     assistant = AssistantService(
         _config(tmp_path), state, runner=runner, context_resolver=resolver
@@ -254,7 +258,8 @@ async def test_refresh_supplies_authoritative_merged_pr_context(tmp_path):
     await assistant.refresh()
 
     assert assistant.contexts["codex:test:thread-1"] == context
-    assert assistant.view.summary == "The related PR is already merged."
+    assert assistant.view.summary == "Nothing needs your attention right now."
+    runner.assert_not_awaited()
 
 
 async def test_refresh_suppresses_attention_card_when_all_related_prs_are_merged(tmp_path):
@@ -277,18 +282,7 @@ async def test_refresh_suppresses_attention_card_when_all_related_prs_are_merged
     resolver = AsyncMock(return_value={})
     resolver.resolve = AsyncMock(return_value={"codex:test:thread-1": context})
 
-    async def runner(account, config, prompt):
-        return {
-            "summary": "A shared worktree needs coordination.",
-            "insights": [
-                {
-                    "session_key": "codex:test:thread-1",
-                    "kind": "coordination",
-                    "headline": "Shared worktree has overlapping state",
-                    "detail": "Coordinate before changing branches.",
-                }
-            ],
-        }
+    runner = AsyncMock()
 
     assistant = AssistantService(
         _config(tmp_path), state, runner=runner, context_resolver=resolver
@@ -297,6 +291,7 @@ async def test_refresh_suppresses_attention_card_when_all_related_prs_are_merged
 
     assert assistant.view.insights == ()
     assert assistant.view.summary == "Nothing needs your attention right now."
+    runner.assert_not_awaited()
 
 
 def test_result_drops_hallucinated_session_keys():

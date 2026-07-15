@@ -61,6 +61,7 @@ class Session:
     thinking: bool = False  # LIVE and actively writing its transcript right now
     cwd: Path | None = None
     title: str | None = None  # from history.jsonl "display"
+    initial_prompt: str | None = None  # first real user prompt; stable ownership/reference context
     last_prompt: str | None = None  # user's most recent prompt
     last_text: str | None = None  # agent's most recent response text
     last_role: str | None = None  # "user" | "agent": who sent the most recent message

@@ -234,6 +234,13 @@ class AssistantService:
     def snapshot(self) -> list[dict[str, Any]]:
         rows = []
         for session in self.state.visible_sessions()[: self.config.max_sessions]:
+            context = self.contexts.get(session.key)
+            if (
+                context
+                and context.pull_requests
+                and all(pull.status in {"closed", "merged"} for pull in context.pull_requests)
+            ):
+                continue
             interaction = self._interaction(session)
             rows.append(
                 {
@@ -247,9 +254,7 @@ class AssistantService:
                     "last_response": _trim(session.last_text),
                     "subagents": session.subagent_count,
                     "git": (
-                        self.contexts[session.key].as_json()
-                        if session.key in self.contexts
-                        else None
+                        context.as_json() if context is not None else None
                     ),
                     "interaction": self._interaction_json(interaction),
                 }
@@ -286,8 +291,9 @@ specific advice about agents that are waiting, stuck, duplicating work, newly fi
 or need coordination. Prefer silence over generic advice.
 
 The git and pull-request context was resolved authoritatively by AgentDeck. Treat each
-pull request's status as ground truth: never suggest review, merge, or follow-up work for
-an already merged PR, and distinguish open, draft, closed-unmerged, and merged PRs.
+pull request's status as ground truth. A merged or closed-unmerged PR is terminal: never
+treat it as active work or suggest review, merge, or coordination for it. Distinguish
+open and draft PRs. Sessions whose related PRs are all terminal are omitted entirely.
 
 For an ordinary question interaction, you may suggest answers. Mark safe_to_auto_answer
 true only when all answers are unambiguous choices explicitly present in the question,
@@ -340,15 +346,18 @@ Dashboard snapshot:
             analyzed_at=datetime.now(UTC),
         )
 
-    def _suppress_merged_pr_insights(self, view: AssistantView) -> AssistantView:
-        """Merged work is context, not an item requiring attention."""
+    def _suppress_terminal_pr_insights(self, view: AssistantView) -> AssistantView:
+        """Closed and merged work is context, not an item requiring attention."""
         insights = tuple(
             insight
             for insight in view.insights
             if not (
                 (context := self.contexts.get(insight.session_key))
                 and context.pull_requests
-                and all(pull.status == "merged" for pull in context.pull_requests)
+                and all(
+                    pull.status in {"closed", "merged"}
+                    for pull in context.pull_requests
+                )
             )
         )
         if insights == view.insights:
@@ -427,7 +436,9 @@ Dashboard snapshot:
             self.contexts = await self.context_resolver.resolve(sessions)
             snapshot = self.snapshot()
         if not snapshot:
-            self.view = AssistantView(state="ready", summary="No visible sessions to orchestrate.")
+            self.view = AssistantView(
+                state="ready", summary="Nothing needs your attention right now."
+            )
             self.state.bus.publish("assistant")
             return
         account = self._account()
@@ -451,7 +462,7 @@ Dashboard snapshot:
         try:
             raw = await self.runner(account, self.config, self._prompt(snapshot))
             view = self._parse_result(raw, {row["session_key"] for row in snapshot})
-            view = self._suppress_merged_pr_insights(view)
+            view = self._suppress_terminal_pr_insights(view)
             actions = await self._auto_answer(view)
             self.view = AssistantView(
                 state=view.state,

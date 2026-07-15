@@ -212,7 +212,13 @@ class GitContextResolver:
     def _repository_from_session(session: Session) -> str | None:
         text = "\n".join(
             value
-            for value in (session.issue_url, session.title, session.last_prompt, session.last_text)
+            for value in (
+                session.issue_url,
+                session.initial_prompt,
+                session.title,
+                session.last_prompt,
+                session.last_text,
+            )
             if value
         )
         match = _GITHUB_REPO_URL_RE.search(text)
@@ -222,7 +228,13 @@ class GitContextResolver:
     def _explicit_refs(session: Session, repository: str | None) -> list[tuple[str, int]]:
         text = "\n".join(
             value
-            for value in (session.title, session.last_prompt, session.last_text, session.issue_url)
+            for value in (
+                session.initial_prompt,
+                session.title,
+                session.last_prompt,
+                session.last_text,
+                session.issue_url,
+            )
             if value
         )
         refs: list[tuple[str, int]] = []

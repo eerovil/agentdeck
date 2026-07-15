@@ -6,7 +6,7 @@ from agentdeck.git_context import GitContextResolver, github_repository
 from agentdeck.models import Session, SessionStatus
 
 
-def _session(tmp_path, *, last_text=None, issue_url=None):
+def _session(tmp_path, *, initial_prompt=None, last_text=None, issue_url=None):
     return Session(
         key="codex:test:thread-1",
         account_key="codex:test",
@@ -14,6 +14,7 @@ def _session(tmp_path, *, last_text=None, issue_url=None):
         status=SessionStatus.IDLE,
         cwd=tmp_path,
         title="Ship the feature",
+        initial_prompt=initial_prompt,
         last_text=last_text,
         issue_url=issue_url,
         show_when_idle=True,
@@ -152,6 +153,54 @@ async def test_explicit_merged_pr_outranks_unrelated_shared_checkout_branch(
 
     assert [pull.number for pull in context.pull_requests] == [252]
     assert context.pull_requests[0].status == "merged"
+    assert branch_lookups == 0
+
+
+async def test_initial_prompt_pr_outranks_unrelated_shared_checkout_branch(
+    tmp_path, monkeypatch
+):
+    resolver = GitContextResolver()
+    resolver._git = "git"
+    resolver._gh = "gh"
+    branch_lookups = 0
+
+    async def fake_run(*args):
+        nonlocal branch_lookups
+        if "status" in args:
+            return (0, "## codex/issue-253-search-updates...origin/current\n")
+        if "remote" in args:
+            return (0, "git@github.com:protecomp/storm.git\n")
+        if args[1:3] == ("pr", "view"):
+            assert args[3] == "239"
+            return (
+                0,
+                json.dumps(
+                    {
+                        "number": 239,
+                        "title": "Custobar automated-campaign coupon activation",
+                        "url": "https://github.com/protecomp/storm/pull/239",
+                        "state": "OPEN",
+                        "isDraft": False,
+                        "mergedAt": None,
+                        "headRefName": "issue-238-custobar-coupon",
+                        "baseRefName": "master",
+                    }
+                ),
+            )
+        if args[1:3] == ("pr", "list"):
+            branch_lookups += 1
+            raise AssertionError("shared checkout branch must not be attributed")
+        raise AssertionError(args)
+
+    monkeypatch.setattr(resolver, "_run", fake_run)
+    session = _session(
+        tmp_path,
+        initial_prompt="GitHub issue #238; PR #239 is open and in review.",
+        last_text="Corrected the logging level. Tests: 21 passed.",
+    )
+    context = (await resolver.resolve([session]))[session.key]
+
+    assert [pull.number for pull in context.pull_requests] == [239]
     assert branch_lookups == 0
 
 
