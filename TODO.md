@@ -5,6 +5,15 @@ follow-ups here instead of creating GitHub issues unless external coordination i
 
 ## Open
 
+- [ ] Check that Luna reads only materially changed chats during Deckhand updates.
+  - Audit the incremental prompt payload: the existing debounce may skip fully unchanged polls but
+    still send the entire selected chat window when one chat changes.
+  - Determine the minimum related-chat context needed for cross-chat coordination without
+    repeatedly sending every unchanged transcript excerpt.
+  - Done when update prompts contain only changed chats plus explicitly required related context,
+    unchanged findings remain stable, and payload-content regressions cover transcript and PR
+    changes.
+
 - [x] Make Deckhand refresh fast when chats and PR state are unchanged.
   - Measure where unchanged refresh time is spent: session collection, Git/PR context resolution,
     evidence comparison, or an unnecessary Luna invocation.
