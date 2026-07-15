@@ -148,3 +148,34 @@ async def test_resolves_merged_pr_after_worktree_was_removed(tmp_path, monkeypat
     assert context.repository == "protecomp/storm"
     assert context.branch is None
     assert context.pull_requests[0].status == "merged"
+
+
+async def test_gh_command_retries_without_failed_environment_token(monkeypatch):
+    resolver = GitContextResolver()
+    resolver._gh = "gh"
+    monkeypatch.setenv("GH_TOKEN", "stale-token")
+    calls = []
+
+    class Process:
+        returncode = 1
+
+        async def communicate(self):
+            return (b"", b"")
+
+    async def create(*args, **kwargs):
+        calls.append(kwargs.get("env"))
+        process = Process()
+        if kwargs.get("env") is not None:
+            process.returncode = 0
+            process.communicate = lambda: _communicate(b"[]")
+        return process
+
+    async def _communicate(output):
+        return (output, b"")
+
+    monkeypatch.setattr("agentdeck.git_context.asyncio.create_subprocess_exec", create)
+    code, output = await resolver._run("gh", "pr", "list")
+
+    assert (code, output) == (0, "[]")
+    assert calls[0] is None
+    assert "GH_TOKEN" not in calls[1]

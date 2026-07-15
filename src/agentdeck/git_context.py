@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import shutil
 import time
@@ -126,18 +127,33 @@ class GitContextResolver:
         self._command_limit = asyncio.Semaphore(6)
 
     async def _run(self, *args: str) -> tuple[int, str]:
+        async def invoke(env: dict[str, str] | None = None) -> tuple[int, bytes]:
+            process = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                env=env,
+            )
+            stdout, _ = await asyncio.wait_for(process.communicate(), self.COMMAND_TIMEOUT_S)
+            return (process.returncode or 0, stdout)
+
         try:
             async with self._command_limit:
-                process = await asyncio.create_subprocess_exec(
-                    *args,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.DEVNULL,
-                )
-                stdout, _ = await asyncio.wait_for(process.communicate(), self.COMMAND_TIMEOUT_S)
+                code, stdout = await invoke()
+                if code != 0 and args[0] == self._gh and (
+                    "GH_TOKEN" in os.environ or "GITHUB_TOKEN" in os.environ
+                ):
+                    # A stale service token overrides gh's working hosts.yml login.
+                    # Fall back to that login only after the explicit environment
+                    # credentials fail.
+                    env = os.environ.copy()
+                    env.pop("GH_TOKEN", None)
+                    env.pop("GITHUB_TOKEN", None)
+                    code, stdout = await invoke(env)
         except (OSError, TimeoutError) as exc:
             log.debug("Deckhand context command failed: %s", exc)
             return (1, "")
-        return (process.returncode or 0, stdout.decode("utf-8", "replace"))
+        return (code, stdout.decode("utf-8", "replace"))
 
     async def resolve(self, sessions: list[Session]) -> dict[str, GitContext]:
         rows = await asyncio.gather(*(self._resolve_session(session) for session in sessions))
