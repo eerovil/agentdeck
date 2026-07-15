@@ -31,7 +31,7 @@ follow-ups here instead of creating GitHub issues unless external coordination i
     interruptible turn, repeated SSE updates do not duplicate controls, and desktop plus narrow
     mobile regressions cover the behavior.
 
-- [ ] Investigate Deckhand ignoring some newly created chats.
+- [x] Investigate Deckhand ignoring some newly created chats.
   - Check the 30-chat analysis window, initial visibility and ordering, collector timing, material
     evidence debounce, and whether blocking/question chats crowd ordinary new chats out.
   - Done when at least one missed-chat case is reproduced, the responsible collection/selection/

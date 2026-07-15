@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
@@ -733,6 +734,43 @@ def test_analysis_window_always_includes_blocking_chat(tmp_path):
     assert assistant.total_session_count == 2
 
 
+def test_analysis_window_uses_recency_instead_of_active_card_insertion_order(tmp_path):
+    state = AppState()
+    now = datetime.now(UTC)
+    old_question = replace(
+        _session(tmp_path),
+        key="codex:test:old-question",
+        session_id="old-question",
+        status=SessionStatus.LIVE,
+        thinking=True,
+        last_activity=now - timedelta(minutes=10),
+    )
+    recent = replace(
+        old_question,
+        key="codex:test:recent",
+        session_id="recent",
+        question=None,
+        last_activity=now - timedelta(minutes=1),
+    )
+    newly_created = replace(
+        recent,
+        key="codex:test:new",
+        session_id="new",
+        last_activity=now,
+    )
+    # AppState intentionally preserves insertion order for simultaneously active
+    # dashboard cards, which used to leave this newest chat outside Deckhand's window.
+    state.update_session(old_question)
+    state.update_session(recent)
+    state.update_session(newly_created)
+    assistant = AssistantService(_config(tmp_path, max_sessions=2), state)
+
+    assert [row["session_key"] for row in assistant.snapshot()] == [
+        newly_created.key,
+        recent.key,
+    ]
+
+
 def test_interaction_snapshot_contains_approval_context(tmp_path):
     interaction = PendingInteraction(
         id="approval-1",
@@ -984,6 +1022,75 @@ async def test_manual_refresh_skips_unchanged_luna_quickly_and_runs_for_new_evid
         await wait_until(
             lambda: assistant.refresh_status == "Material changes found · analysis updated"
         )
+    finally:
+        await assistant.stop()
+
+
+@pytest.mark.asyncio
+async def test_newly_visible_chat_is_analyzed_once_without_rerunning_activity_churn(tmp_path):
+    state = AppState()
+    now = datetime.now(UTC)
+    first = replace(
+        _session(tmp_path),
+        key="codex:test:first",
+        session_id="first",
+        question=None,
+        last_activity=now - timedelta(minutes=2),
+    )
+    second = replace(
+        first,
+        key="codex:test:second",
+        session_id="second",
+        last_activity=now - timedelta(minutes=1),
+    )
+    state.update_session(first)
+    state.update_session(second)
+    prompts = []
+
+    async def runner(account, config, prompt):
+        prompts.append(prompt)
+        return {"summary": "Nothing needs attention.", "insights": []}
+
+    resolver = AsyncMock()
+    resolver.resolve = AsyncMock(return_value={})
+    assistant = AssistantService(
+        _config(tmp_path, max_sessions=2, refresh_interval_s=3600),
+        state,
+        runner=runner,
+        context_resolver=resolver,
+    )
+
+    async def wait_until(predicate):
+        for _ in range(100):
+            if predicate():
+                return
+            await asyncio.sleep(0.01)
+        pytest.fail("new Deckhand chat was not evaluated")
+
+    await assistant.start()
+    try:
+        assistant._wake.set()
+        await wait_until(lambda: len(prompts) == 1)
+        assert "codex:test:first" in prompts[0]
+        assert "codex:test:second" in prompts[0]
+
+        newly_created = replace(
+            second,
+            key="codex:test:new",
+            session_id="new",
+            last_activity=now,
+        )
+        state.update_session(newly_created)
+        await wait_until(lambda: len(prompts) == 2)
+        assert "codex:test:new" in prompts[1]
+        assert "codex:test:first" not in prompts[1]
+
+        # Collector activity for the same chat wakes only the cheap key check.
+        # It must not resolve Git context or invoke Luna again.
+        state.update_session(replace(newly_created, thinking=True, activity="Working"))
+        await asyncio.sleep(0.05)
+        assert len(prompts) == 2
+        assert resolver.resolve.await_count == 2
     finally:
         await assistant.stop()
 

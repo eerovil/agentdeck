@@ -214,7 +214,9 @@ class AssistantService:
             summary=("Starting orchestration assistant…" if self.config.enabled else "Disabled")
         )
         self._task: asyncio.Task | None = None
+        self._session_watch_task: asyncio.Task | None = None
         self._wake = asyncio.Event()
+        self._known_visible_session_keys: set[str] = set()
         self._last_signature: str | None = None
         self._last_run = 0.0
         self.refresh_status: str | None = None
@@ -405,13 +407,31 @@ class AssistantService:
     async def start(self) -> None:
         if self.config.enabled and self._task is None:
             self._task = asyncio.create_task(self._loop(), name="orchestration-assistant")
+            self._session_watch_task = asyncio.create_task(
+                self._watch_sessions(), name="orchestration-assistant-sessions"
+            )
 
     async def stop(self) -> None:
-        task = self._task
+        tasks = tuple(
+            task for task in (self._task, self._session_watch_task) if task is not None
+        )
         self._task = None
-        if task is not None:
+        self._session_watch_task = None
+        for task in tasks:
             task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _watch_sessions(self) -> None:
+        """Wake the cheap eligibility check as soon as collection changes.
+
+        Most session events are transient activity churn and stop before Git or
+        Luna work. Newly visible keys bypass the normal refresh interval once.
+        """
+        with self.state.bus.subscribe("sessions") as subscription:
+            while True:
+                await subscription.get()
+                self._wake.set()
 
     def _interaction(self, session: Session) -> PendingInteraction | None:
         account = next((item for item in self.accounts if item.key == session.account_key), None)
@@ -437,17 +457,27 @@ class AssistantService:
         }
 
     def _analysis_sessions(self) -> list[Session]:
-        """Prioritize blocking interactions, then fill the configured recent window."""
+        """Prioritize blocking interactions, then the most recently active chats.
+
+        Dashboard ordering deliberately ties active sessions to prevent card
+        churn. Deckhand must not reuse that insertion-stable order: a new active
+        chat would otherwise sit behind the existing analysis window forever.
+        """
         visible = self.state.visible_sessions()
         blocking = [session for session in visible if self._interaction(session) is not None]
         blocking_keys = {session.key for session in blocking}
         remaining = [session for session in visible if session.key not in blocking_keys]
-        questions = [session for session in remaining if session.question]
-        question_keys = {session.key for session in questions}
-        ordinary = [session for session in remaining if session.key not in question_keys]
-        selected = (
-            blocking + (questions + ordinary)[: max(0, self.config.max_sessions - len(blocking))]
+        remaining.sort(
+            key=lambda session: (
+                -(
+                    (session.last_activity or session.started_at).timestamp()
+                    if session.last_activity or session.started_at
+                    else 0.0
+                ),
+                0 if session.question else 1,
+            )
         )
+        selected = blocking + remaining[: max(0, self.config.max_sessions - len(blocking))]
         self.analysis_session_count = len(selected)
         self.total_session_count = len(visible)
         return selected
@@ -1118,7 +1148,10 @@ Dashboard snapshot:
                 pass
             self._wake.clear()
             due = loop.time() - self._last_run >= self.config.refresh_interval_s
-            if not self._force and not due:
+            visible_keys = {session.key for session in self.state.visible_sessions()}
+            newly_visible = bool(visible_keys - self._known_visible_session_keys)
+            self._known_visible_session_keys = visible_keys
+            if not self._force and not due and not newly_visible:
                 continue
             # Consume only the request that caused this check. A second request
             # arriving while context is resolved must remain armed for the next
