@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from .assistant import AssistantService
 from .collector import Collector
 from .config import AppConfig
 from .db import make_db
@@ -69,13 +70,16 @@ def create_app(config: AppConfig) -> FastAPI:
         config.inject,
         on_change=lambda _session_key: state.bus.publish("sessions"),
     )
+    assistant = AssistantService(config, state)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         await collector.start()
+        await assistant.start()
         try:
             yield
         finally:
+            await assistant.stop()
             await injector.stop()
             await collector.stop()
             db.close()
@@ -87,6 +91,7 @@ def create_app(config: AppConfig) -> FastAPI:
     app.state.templates = templates
     app.state.collector = collector
     app.state.injector = injector
+    app.state.assistant = assistant
     app.state.db = db
 
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")

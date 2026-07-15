@@ -3,6 +3,9 @@
 {% block limit_bars %}{% include "partials/limit_bars.html" %}{% endblock %}
 
 {% block content %}
+<div sse-swap="assistant">
+  {% include "partials/assistant_panel.html" %}
+</div>
 {% if new_chat_enabled and new_chat_accounts %}
 <details class="new-chat">
   <summary>＋ New Codex chat</summary>

@@ -70,6 +70,38 @@ class InjectConfig(BaseModel):
         return value
 
 
+class AssistantConfig(BaseModel):
+    enabled: bool = False
+    account_key: str = ""
+    model: str = "gpt-5.6-luna"
+    refresh_interval_s: float = 60.0
+    timeout_s: float = 120.0
+    max_sessions: int = 30
+    auto_answer: bool = False
+    auto_answer_confidence: float = 0.9
+
+    @field_validator("refresh_interval_s", "timeout_s")
+    @classmethod
+    def _positive_interval(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("assistant intervals must be positive")
+        return value
+
+    @field_validator("auto_answer_confidence")
+    @classmethod
+    def _confidence_range(cls, value: float) -> float:
+        if not 0 <= value <= 1:
+            raise ValueError("assistant.auto_answer_confidence must be between 0 and 1")
+        return value
+
+    @field_validator("max_sessions")
+    @classmethod
+    def _positive_session_limit(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("assistant.max_sessions must be positive")
+        return value
+
+
 class AccountConfig(BaseModel):
     provider: str
     label: str
@@ -104,6 +136,7 @@ class AppConfig(BaseModel):
     usage: UsageConfig = UsageConfig()
     history: HistoryConfig = HistoryConfig()
     inject: InjectConfig = InjectConfig()
+    assistant: AssistantConfig = AssistantConfig()
     accounts: list[AccountConfig] = []
 
     @model_validator(mode="after")

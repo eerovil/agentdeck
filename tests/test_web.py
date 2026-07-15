@@ -6,6 +6,7 @@ from httpx import ASGITransport, AsyncClient
 from playwright.async_api import async_playwright
 
 from agentdeck.app import create_app
+from agentdeck.assistant import AssistantInsight, AssistantView
 from agentdeck.config import AccountConfig, AppConfig, HistoryConfig
 from agentdeck.host_stats import HostStats
 from agentdeck.models import Account, Capability, Session, SessionStatus, UsageSnapshot
@@ -95,6 +96,8 @@ async def test_dashboard_renders_usage_and_session(tmp_path):
     assert 'class="acct host-acct"' in r.text
     # The "hide closed" filter toggle is present.
     assert 'id="hide-closed"' in r.text
+    assert 'id="assistant-panel"' in r.text
+    assert "Orchestration assistant" in r.text
 
 
 async def test_dashboard_collapsed_usage_renders_weekly_only_plan(tmp_path):
@@ -113,6 +116,63 @@ async def test_dashboard_collapsed_usage_renders_weekly_only_plan(tmp_path):
         response = await c.get("/")
     assert '<b class="mini-pct ">12%</b>' in response.text
     assert '<span class="mini-7d">7d</span>' in response.text
+
+
+async def test_orchestration_assistant_fits_mobile_and_desktop(tmp_path):
+    app = _app_with_state(tmp_path)
+    app.state.assistant.config.enabled = True
+    app.state.assistant.view = AssistantView(
+        state="ready",
+        summary="Two agents may need coordination before the next deploy.",
+        insights=(
+            AssistantInsight(
+                session_key="claude_code:test:sid1",
+                kind="waiting",
+                headline="Confirm the database choice",
+                detail="This agent is waiting for an explicit architecture decision.",
+            ),
+            AssistantInsight(
+                session_key="claude_code:test:sid1",
+                kind="coordination",
+                headline="Avoid overlapping deploys",
+                detail="Another active session is changing the same service.",
+            ),
+        ),
+    )
+    async with _client(app) as client:
+        response = await client.get("/")
+
+    css = (Path(__file__).parents[1] / "src/agentdeck/web/static/app.css").read_text()
+    html = response.text.replace("</head>", f"<style>{css}</style></head>")
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        page = await browser.new_page(viewport={"width": 320, "height": 800})
+        await page.set_content(html)
+        sizes = []
+        for width in (320, 760):
+            await page.set_viewport_size({"width": width, "height": 800})
+            sizes.append(
+                await page.evaluate(
+                    """() => {
+                        const panel = document.querySelector('#assistant-panel');
+                        const rect = panel.getBoundingClientRect();
+                        return {
+                            left: rect.left,
+                            right: rect.right,
+                            viewport: document.documentElement.clientWidth,
+                            scroll: document.documentElement.scrollWidth,
+                            insights: panel.querySelectorAll('.assistant-insight').length,
+                        };
+                    }"""
+                )
+            )
+        await browser.close()
+
+    for size in sizes:
+        assert size["left"] >= 0
+        assert size["right"] <= size["viewport"]
+        assert size["scroll"] <= size["viewport"]
+        assert size["insights"] == 2
 
 
 async def test_host_usage_fits_collapsed_mobile_header(tmp_path):

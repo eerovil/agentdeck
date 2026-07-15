@@ -13,9 +13,23 @@ from .deps import (
     require_access,
     resolve_session,
 )
-from .render import render_limit_bars, render_session_list, render_transcript_events
+from .render import (
+    render_assistant,
+    render_limit_bars,
+    render_session_list,
+    render_transcript_events,
+)
 
 router = APIRouter(prefix="/partials", dependencies=[Depends(require_access)])
+
+
+@router.get("/assistant", response_class=HTMLResponse)
+async def assistant_panel(request: Request) -> HTMLResponse:
+    return HTMLResponse(
+        render_assistant(
+            get_templates(request), request.app.state.assistant, get_state(request)
+        )
+    )
 
 
 @router.get("/limit-bars", response_class=HTMLResponse)

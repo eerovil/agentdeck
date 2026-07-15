@@ -70,6 +70,20 @@ def _render_interaction(request: Request, session_key: str, interaction) -> HTML
     )
 
 
+@router.post("/assistant/refresh", response_class=HTMLResponse)
+async def refresh_assistant(request: Request) -> HTMLResponse:
+    _require_same_origin(request)
+    assistant = request.app.state.assistant
+    if not assistant.request_refresh():
+        raise HTTPException(status_code=409, detail="orchestration assistant is disabled")
+    from .render import render_assistant
+
+    return HTMLResponse(
+        render_assistant(get_templates(request), assistant, request.app.state.app_state),
+        status_code=202,
+    )
+
+
 async def _turn_form(request: Request) -> tuple[str, list[Path]]:
     content_type = request.headers.get("content-type", "").lower()
     if not content_type.startswith(("application/x-www-form-urlencoded", "multipart/form-data")):

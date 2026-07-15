@@ -1,0 +1,59 @@
+<section id="assistant-panel" class="assistant-panel assistant-{{ assistant.view.state }}">
+  <div class="assistant-head">
+    <div>
+      <span class="assistant-kicker">Deckhand</span>
+      <strong>Orchestration assistant</strong>
+    </div>
+    <div class="assistant-controls">
+      <span class="assistant-model">{{ assistant.config.model or 'Codex default' }}</span>
+      {% if assistant.config.enabled %}
+      <form hx-post="/assistant/refresh" hx-target="#assistant-panel" hx-swap="outerHTML"
+            hx-disabled-elt="find button">
+        <button type="submit" aria-label="Refresh orchestration advice">Refresh</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if not assistant.config.enabled %}
+  <p class="assistant-summary">Enable <code>[assistant]</code> in the AgentDeck config.</p>
+  {% else %}
+  <p class="assistant-summary">{{ assistant.view.summary }}</p>
+  {% if assistant.view.error %}<p class="assistant-error">{{ assistant.view.error }}</p>{% endif %}
+  {% if assistant.view.state == 'analyzing' %}
+  <div class="assistant-running"><span class="assistant-spinner"></span> Reading the deck…</div>
+  {% endif %}
+
+  {% if assistant.view.insights %}
+  <div class="assistant-insights">
+    {% for insight in assistant.view.insights %}
+    {% set session = assistant_sessions.get(insight.session_key) %}
+    <a class="assistant-insight insight-{{ insight.kind }}"
+       href="/sessions/{{ insight.session_key }}">
+      <span class="assistant-kind">{{ insight.kind }}</span>
+      <span class="assistant-copy">
+        <strong>{{ insight.headline }}</strong>
+        <span>{{ insight.detail }}</span>
+        {% if session %}<small>{{ session.title or session.cwd or insight.session_key }}</small>{% endif %}
+      </span>
+      <span class="assistant-arrow">›</span>
+    </a>
+    {% endfor %}
+  </div>
+  {% elif assistant.view.state == 'ready' %}
+  <div class="assistant-clear">Nothing needs your attention right now.</div>
+  {% endif %}
+
+  {% if assistant.view.actions %}
+  <div class="assistant-actions">
+    {% for action in assistant.view.actions[-3:] %}
+    <a href="/sessions/{{ action.session_key }}">✓ {{ action.text }}</a>
+    {% endfor %}
+  </div>
+  {% endif %}
+  <div class="assistant-foot">
+    {% if assistant.config.auto_answer %}Auto-answer on · choices only{% else %}Advice only{% endif %}
+    {% if assistant.view.analyzed_at %} · {{ assistant.view.analyzed_at | reltime_ago }}{% endif %}
+  </div>
+  {% endif %}
+</section>

@@ -64,6 +64,8 @@ async def dashboard(request: Request) -> HTMLResponse:
             "new_chat_accounts": new_chat_accounts,
             "new_chat_enabled": request.app.state.config.inject.enabled,
             "new_chat_cwds": cwd_options,
+            "assistant": request.app.state.assistant,
+            "assistant_sessions": state.sessions,
         },
     )
     # Live dashboard — always revalidate so a deploy's HTML (and the inline

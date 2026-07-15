@@ -1,0 +1,429 @@
+"""Codex-powered orchestration advice for the dashboard."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import signal
+import tempfile
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from .config import AppConfig, AssistantConfig
+from .models import Account, PendingInteraction, Session
+from .providers import PROVIDERS
+from .state import AppState
+
+log = logging.getLogger(__name__)
+
+_SCHEMA_PATH = Path(__file__).with_name("assistant_output.schema.json")
+_MAX_CONTEXT_CHARS = 1_000
+
+
+@dataclass(frozen=True)
+class AssistantAnswer:
+    question_id: str
+    values: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class AssistantInsight:
+    session_key: str
+    kind: str
+    headline: str
+    detail: str
+    answers: tuple[AssistantAnswer, ...] = ()
+    safe_to_auto_answer: bool = False
+    confidence: float = 0.0
+
+
+@dataclass(frozen=True)
+class AssistantAction:
+    session_key: str
+    text: str
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
+@dataclass(frozen=True)
+class AssistantView:
+    state: str = "idle"
+    summary: str = "Waiting for session activity."
+    insights: tuple[AssistantInsight, ...] = ()
+    actions: tuple[AssistantAction, ...] = ()
+    analyzed_at: datetime | None = None
+    error: str | None = None
+
+
+Runner = Callable[[Account, AssistantConfig, str], Awaitable[dict[str, Any]]]
+
+
+def _trim(value: str | None) -> str | None:
+    if not value:
+        return None
+    return value[-_MAX_CONTEXT_CHARS:]
+
+
+async def _terminate_group(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        await asyncio.wait_for(process.wait(), timeout=5.0)
+    except TimeoutError:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        await process.wait()
+
+
+async def run_codex(account: Account, config: AssistantConfig, prompt: str) -> dict[str, Any]:
+    """Run one read-only, ephemeral Codex analysis and return its JSON result."""
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(account.root)
+    with tempfile.TemporaryDirectory(prefix="agentdeck-assistant-") as tmp:
+        output = Path(tmp) / "result.json"
+        args = [
+            "codex",
+            "--ask-for-approval",
+            "never",
+            "exec",
+            "--ephemeral",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "--sandbox",
+            "read-only",
+            "--output-schema",
+            str(_SCHEMA_PATH),
+            "--output-last-message",
+            str(output),
+            "--skip-git-repo-check",
+        ]
+        if config.model:
+            args.extend(("--model", config.model))
+        args.append("-")
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *args,
+                cwd=str(Path.cwd()),
+                env=env,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            raise RuntimeError(f"could not start Codex: {exc}") from exc
+        try:
+            _, stderr = await asyncio.wait_for(
+                process.communicate((prompt + "\n").encode()), timeout=config.timeout_s
+            )
+        except TimeoutError as exc:
+            await _terminate_group(process)
+            raise RuntimeError("Codex assistant timed out") from exc
+        except asyncio.CancelledError:
+            await _terminate_group(process)
+            raise
+        if process.returncode != 0:
+            detail = stderr.decode(errors="replace").strip()[-1_000:]
+            suffix = f": {detail}" if detail else ""
+            raise RuntimeError(f"Codex assistant exited without an answer{suffix}")
+        try:
+            value = json.loads(output.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError("Codex assistant returned invalid JSON") from exc
+        if not isinstance(value, dict):
+            raise RuntimeError("Codex assistant returned an invalid result")
+        return value
+
+
+class AssistantService:
+    """Debounce session changes into low-cost orchestration analyses."""
+
+    def __init__(
+        self,
+        config: AppConfig,
+        state: AppState,
+        *,
+        runner: Runner = run_codex,
+    ) -> None:
+        self.config = config.assistant
+        self.state = state
+        self.accounts = config.build_accounts()
+        self.runner = runner
+        self.view = AssistantView(
+            summary=("Starting orchestration assistant…" if self.config.enabled else "Disabled")
+        )
+        self._task: asyncio.Task | None = None
+        self._wake = asyncio.Event()
+        self._force = False
+        self._last_signature: str | None = None
+        self._last_run = 0.0
+        self._answered_interactions: set[str] = set()
+
+    def _account(self) -> Account | None:
+        codex = [account for account in self.accounts if account.provider_id == "codex"]
+        if self.config.account_key:
+            return next(
+                (account for account in codex if account.key == self.config.account_key), None
+            )
+        return codex[0] if codex else None
+
+    def request_refresh(self) -> bool:
+        if not self.config.enabled:
+            return False
+        self._force = True
+        self._wake.set()
+        return True
+
+    async def start(self) -> None:
+        if self.config.enabled and self._task is None:
+            self._task = asyncio.create_task(self._loop(), name="orchestration-assistant")
+
+    async def stop(self) -> None:
+        task = self._task
+        self._task = None
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    def _interaction(self, session: Session) -> PendingInteraction | None:
+        account = next(
+            (item for item in self.accounts if item.key == session.account_key), None
+        )
+        if account is None:
+            return None
+        return PROVIDERS[account.provider_id].pending_interaction(account, session)
+
+    def snapshot(self) -> list[dict[str, Any]]:
+        rows = []
+        for session in self.state.visible_sessions()[: self.config.max_sessions]:
+            interaction = self._interaction(session)
+            rows.append(
+                {
+                    "session_key": session.key,
+                    "title": session.title,
+                    "cwd": str(session.cwd) if session.cwd else None,
+                    "state": session.display_state,
+                    "activity": session.activity,
+                    "question": session.question,
+                    "last_prompt": _trim(session.last_prompt),
+                    "last_response": _trim(session.last_text),
+                    "subagents": session.subagent_count,
+                    "interaction": self._interaction_json(interaction),
+                }
+            )
+        return rows
+
+    @staticmethod
+    def _interaction_json(interaction: PendingInteraction | None) -> dict | None:
+        if interaction is None:
+            return None
+        return {
+            "id": interaction.id,
+            "kind": interaction.kind,
+            "title": interaction.title,
+            "message": interaction.message,
+            "questions": [
+                {
+                    "id": question.id,
+                    "prompt": question.prompt,
+                    "secret": question.secret,
+                    "allow_other": question.allow_other,
+                    "options": [option.label for option in question.options],
+                }
+                for question in interaction.questions
+            ],
+        }
+
+    @staticmethod
+    def _prompt(snapshot: list[dict[str, Any]]) -> str:
+        payload = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
+        return f"""You are the orchestration assistant inside AgentDeck.
+Analyze the supplied coding-agent dashboard snapshot. Do not use tools. Give concise,
+specific advice about agents that are waiting, stuck, duplicating work, newly finished,
+or need coordination. Prefer silence over generic advice.
+
+For an ordinary question interaction, you may suggest answers. Mark safe_to_auto_answer
+true only when all answers are unambiguous choices explicitly present in the question,
+reversible, low-impact, and confidently inferable from the visible context. Never mark
+approvals, permissions, secrets, open-ended product choices, or destructive actions safe.
+Use session_key and question_id exactly as supplied.
+
+Dashboard snapshot:
+{payload}
+"""
+
+    @staticmethod
+    def _parse_result(raw: dict[str, Any], valid_keys: set[str]) -> AssistantView:
+        summary = raw.get("summary")
+        insights = []
+        for item in raw.get("insights") or []:
+            if not isinstance(item, dict) or item.get("session_key") not in valid_keys:
+                continue
+            answers = []
+            for answer in item.get("answers") or []:
+                if not isinstance(answer, dict) or not isinstance(answer.get("question_id"), str):
+                    continue
+                values = tuple(
+                    value for value in answer.get("values") or [] if isinstance(value, str)
+                )
+                if values:
+                    answers.append(AssistantAnswer(answer["question_id"], values))
+            confidence = item.get("confidence")
+            insights.append(
+                AssistantInsight(
+                    session_key=item["session_key"],
+                    kind=item.get("kind") if isinstance(item.get("kind"), str) else "info",
+                    headline=(
+                        item.get("headline")
+                        if isinstance(item.get("headline"), str)
+                        else "Agent update"
+                    ),
+                    detail=item.get("detail") if isinstance(item.get("detail"), str) else "",
+                    answers=tuple(answers),
+                    safe_to_auto_answer=bool(item.get("safe_to_auto_answer")),
+                    confidence=(
+                        float(confidence) if isinstance(confidence, (int, float)) else 0.0
+                    ),
+                )
+            )
+        return AssistantView(
+            state="ready",
+            summary=summary if isinstance(summary, str) else "Analysis complete.",
+            insights=tuple(insights),
+            analyzed_at=datetime.now(UTC),
+        )
+
+    async def _auto_answer(self, view: AssistantView) -> tuple[AssistantAction, ...]:
+        if not self.config.auto_answer:
+            return ()
+        actions = []
+        for insight in view.insights:
+            if (
+                not insight.safe_to_auto_answer
+                or insight.confidence < self.config.auto_answer_confidence
+            ):
+                continue
+            session = self.state.sessions.get(insight.session_key)
+            if session is None:
+                continue
+            interaction = self._interaction(session)
+            if not self._answers_are_safe(interaction, insight.answers):
+                continue
+            assert interaction is not None
+            if interaction.id in self._answered_interactions:
+                continue
+            account = next(item for item in self.accounts if item.key == session.account_key)
+            answers = {answer.question_id: list(answer.values) for answer in insight.answers}
+            result = await PROVIDERS[account.provider_id].answer_interaction(
+                account,
+                session,
+                interaction.id,
+                answers=answers,
+                decision=None,
+            )
+            self._answered_interactions.add(interaction.id)
+            if result.accepted:
+                actions.append(AssistantAction(session.key, f"Answered: {insight.headline}"))
+        return tuple(actions)
+
+    @staticmethod
+    def _answers_are_safe(
+        interaction: PendingInteraction | None, answers: tuple[AssistantAnswer, ...]
+    ) -> bool:
+        if interaction is None or interaction.kind != "question" or not interaction.questions:
+            return False
+        supplied = {answer.question_id: answer.values for answer in answers}
+        if set(supplied) != {question.id for question in interaction.questions}:
+            return False
+        for question in interaction.questions:
+            if question.secret or question.allow_other or not question.options:
+                return False
+            allowed = {
+                value
+                for option in question.options
+                for value in (option.label, option.value)
+                if value
+            }
+            if not supplied[question.id] or any(
+                value not in allowed for value in supplied[question.id]
+            ):
+                return False
+        return True
+
+    async def refresh(self) -> None:
+        snapshot = self.snapshot()
+        if not snapshot:
+            self.view = AssistantView(state="ready", summary="No visible sessions to orchestrate.")
+            self.state.bus.publish("assistant")
+            return
+        account = self._account()
+        if account is None:
+            self.view = AssistantView(
+                state="error",
+                summary="Assistant unavailable.",
+                error="No Codex account is configured.",
+            )
+            self.state.bus.publish("assistant")
+            return
+        prior = self.view
+        self.view = AssistantView(
+            state="analyzing",
+            summary=prior.summary,
+            insights=prior.insights,
+            actions=prior.actions,
+            analyzed_at=prior.analyzed_at,
+        )
+        self.state.bus.publish("assistant")
+        try:
+            raw = await self.runner(account, self.config, self._prompt(snapshot))
+            view = self._parse_result(raw, {row["session_key"] for row in snapshot})
+            actions = await self._auto_answer(view)
+            self.view = AssistantView(
+                state=view.state,
+                summary=view.summary,
+                insights=view.insights,
+                actions=tuple((prior.actions + actions)[-6:]),
+                analyzed_at=view.analyzed_at,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 -- background failure belongs in the panel
+            log.warning("orchestration assistant failed: %s", exc)
+            self.view = AssistantView(
+                state="error",
+                summary=prior.summary,
+                insights=prior.insights,
+                actions=prior.actions,
+                analyzed_at=prior.analyzed_at,
+                error=str(exc),
+            )
+        self.state.bus.publish("assistant")
+
+    async def _loop(self) -> None:
+        loop = asyncio.get_running_loop()
+        self._force = True
+        while True:
+            try:
+                await asyncio.wait_for(self._wake.wait(), timeout=5.0)
+            except TimeoutError:
+                pass
+            self._wake.clear()
+            snapshot = self.snapshot()
+            signature = json.dumps(snapshot, sort_keys=True, default=str)
+            due = loop.time() - self._last_run >= self.config.refresh_interval_s
+            if not self._force and (signature == self._last_signature or not due):
+                continue
+            self._force = False
+            self._last_signature = signature
+            self._last_run = loop.time()
+            await self.refresh()

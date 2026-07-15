@@ -23,6 +23,10 @@ What works today:
 - **Codex chat controls** (opt-in): start persisted chats, queue follow-up
   messages on completed non-interactive sessions, and watch replies arrive in
   the existing transcript view — see the safety limits below.
+- **Deckhand orchestration assistant** (opt-in): an ephemeral, read-only Codex
+  pass turns the current deck into concise waiting/stalled/coordination tips.
+  It can optionally answer only explicit low-risk multiple-choice questions;
+  approvals, permissions, secrets, and open-ended choices always remain manual.
 
 Roadmap: interactive streaming chat, more agent CLI providers (Gemini), and
 `docs/claude-code-internals.md`. See
@@ -86,6 +90,9 @@ for the annotated reference. Highlights:
 - `[[accounts]]` — one block per agent config dir; for Claude Code, one per
   `CLAUDE_CONFIG_DIR` (e.g. `~/.claude` and `~/.claude2`), and for Codex the
   normal `CODEX_HOME` (usually `~/.codex`).
+- `[assistant]` — enables Deckhand and selects its Codex account/model. Luna is
+  the default for frequent economical checks; Terra is a configurable deeper
+  alternative. `auto_answer` is off by default.
 
 The config file contains **no secrets** — credentials always come from the
 provider's own store.

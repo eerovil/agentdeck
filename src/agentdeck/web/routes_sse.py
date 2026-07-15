@@ -27,6 +27,7 @@ from .deps import (
 )
 from .render import (
     activity_label,
+    render_assistant,
     render_limit_bars,
     render_session_list,
     render_session_status,
@@ -72,16 +73,22 @@ async def _stream(request: Request) -> AsyncIterator[str]:
     def render(topic: str) -> str:
         if topic == "usage":
             return format_sse("usage", render_limit_bars(templates, accounts, state))
+        if topic == "assistant":
+            return format_sse(
+                "assistant",
+                render_assistant(templates, request.app.state.assistant, state),
+            )
         return format_sse(
             "sessions",
             render_session_list(templates, accounts, state, injector=injector),
         )
 
     loop = asyncio.get_event_loop()
-    with state.bus.subscribe("usage", "sessions") as sub:
+    with state.bus.subscribe("usage", "sessions", "assistant") as sub:
         # Prime the client with current state on connect.
         yield render("usage")
         yield render("sessions")
+        yield render("assistant")
         last_usage_push = loop.time()
         while True:
             if await request.is_disconnected():
@@ -100,7 +107,7 @@ async def _stream(request: Request) -> AsyncIterator[str]:
             if not dirty:
                 yield ": ping\n\n"
                 continue
-            for t in ("usage", "sessions"):
+            for t in ("usage", "sessions", "assistant"):
                 if t in dirty:
                     yield render(t)
             if "usage" in dirty:

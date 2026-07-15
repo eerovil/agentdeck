@@ -156,6 +156,13 @@ def render_limit_bars(templates: Jinja2Templates, accounts: list[Account], state
     )
 
 
+def render_assistant(templates: Jinja2Templates, assistant, state: AppState) -> str:
+    return templates.get_template("partials/assistant_panel.html").render(
+        assistant=assistant,
+        assistant_sessions=state.sessions,
+    )
+
+
 def session_labels(accounts: list[Account]) -> dict[str, str]:
     return {acc.key: acc.label for acc in accounts}
 
