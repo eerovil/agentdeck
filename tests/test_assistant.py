@@ -307,7 +307,7 @@ async def test_refresh_clears_waiting_insight_when_agent_resumes(tmp_path):
     assert assistant.view.summary == "Nothing needs your attention right now."
 
 
-async def test_refresh_keeps_wording_when_model_rephrases_unchanged_chat(tmp_path):
+async def test_refresh_does_not_resend_unchanged_chat_for_rephrasing(tmp_path):
     state = AppState()
     state.update_session(_session(tmp_path))
 
@@ -337,6 +337,112 @@ async def test_refresh_keeps_wording_when_model_rephrases_unchanged_chat(tmp_pat
     await assistant.refresh(snapshot=assistant.snapshot())
 
     assert [item.headline for item in assistant.view.insights] == ["Stable title"]
+    assert assistant.runner.await_count == 1
+
+
+async def test_incremental_prompt_contains_changed_and_explicitly_related_chats_only(tmp_path):
+    state = AppState()
+    first = replace(
+        _session(tmp_path),
+        key="codex:test:changed",
+        session_id="changed",
+        question=None,
+        last_text="FIRST_BASELINE",
+    )
+    related = replace(
+        first,
+        key="codex:test:related",
+        session_id="related",
+        last_text="RELATED_UNCHANGED",
+    )
+    unrelated = replace(
+        first,
+        key="codex:test:unrelated",
+        session_id="unrelated",
+        last_text="THIRD_ONLY_UNCHANGED",
+    )
+    for session in (first, related, unrelated):
+        state.update_session(session)
+
+    shared_pull = PullRequestContext(
+        "eerovil/agentdeck",
+        91,
+        "Shared work",
+        "https://github.com/eerovil/agentdeck/pull/91",
+        "open",
+        head_branch="feature/shared",
+        base_branch="master",
+    )
+    unrelated_pull = PullRequestContext(
+        "eerovil/agentdeck",
+        92,
+        "Other work",
+        "https://github.com/eerovil/agentdeck/pull/92",
+        "open",
+        head_branch="feature/other",
+        base_branch="master",
+    )
+    prompts = []
+
+    async def runner(account, config, prompt):
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            return {
+                "summary": "One item needs attention.",
+                "insights": [
+                    {
+                        "session_key": related.key,
+                        "kind": "coordination",
+                        "headline": "Stable related finding",
+                        "detail": "Keep one owner.",
+                        "coordination_key": "shared-pr-91",
+                        "answers": [],
+                        "safe_to_auto_answer": False,
+                        "confidence": 0.9,
+                    }
+                ],
+            }
+        return {"summary": "Nothing new.", "insights": []}
+
+    assistant = AssistantService(_config(tmp_path), state, runner=runner)
+    assistant.contexts = {
+        first.key: GitContext("eerovil/agentdeck", "feature/shared", False, (shared_pull,)),
+        related.key: GitContext(
+            "eerovil/agentdeck", "feature/shared", False, (shared_pull,)
+        ),
+        unrelated.key: GitContext(
+            "eerovil/agentdeck", "feature/other", False, (unrelated_pull,)
+        ),
+    }
+
+    await assistant.refresh(snapshot=assistant.snapshot())
+    assert all(
+        marker in prompts[0]
+        for marker in ("FIRST_BASELINE", "RELATED_UNCHANGED", "THIRD_ONLY_UNCHANGED")
+    )
+
+    state.update_session(replace(first, last_text="FIRST_TRANSCRIPT_CHANGED"))
+    await assistant.refresh(snapshot=assistant.snapshot())
+    transcript_prompt = prompts[1]
+    assert "FIRST_TRANSCRIPT_CHANGED" in transcript_prompt
+    assert "RELATED_UNCHANGED" in transcript_prompt
+    assert '"deckhand_scope":"changed"' in transcript_prompt
+    assert '"deckhand_scope":"related"' in transcript_prompt
+    assert "THIRD_ONLY_UNCHANGED" not in transcript_prompt
+    assert [item.headline for item in assistant.view.insights] == ["Stable related finding"]
+
+    assistant.contexts[unrelated.key] = GitContext(
+        "eerovil/agentdeck",
+        "feature/other",
+        False,
+        (replace(unrelated_pull, status="merged"),),
+    )
+    await assistant.refresh(snapshot=assistant.snapshot())
+    pr_prompt = prompts[2]
+    assert "THIRD_ONLY_UNCHANGED" in pr_prompt
+    assert '"status":"merged"' in pr_prompt
+    assert "FIRST_TRANSCRIPT_CHANGED" not in pr_prompt
+    assert "RELATED_UNCHANGED" not in pr_prompt
 
 
 async def test_handled_insight_stays_hidden_until_chat_evidence_changes(tmp_path):

@@ -551,6 +551,80 @@ class AssistantService:
         }
         return json.dumps(evidence, sort_keys=True, separators=(",", ":"))
 
+    @staticmethod
+    def _coordination_identities(row: dict[str, Any]) -> set[str]:
+        """Stable work identities that justify including an unchanged chat."""
+        git = row.get("git")
+        if not isinstance(git, dict):
+            return set()
+        identities = set()
+        repository = git.get("repository")
+        branch = git.get("branch")
+        if isinstance(repository, str) and isinstance(branch, str):
+            identities.add(f"branch:{repository.lower()}:{branch}")
+        for pull in git.get("pull_requests") or ():
+            if not isinstance(pull, dict):
+                continue
+            pull_repository = pull.get("repository")
+            number = pull.get("number")
+            if isinstance(pull_repository, str) and isinstance(number, int):
+                identities.add(f"pr:{pull_repository.lower()}#{number}")
+        return identities
+
+    def _incremental_snapshot(
+        self, snapshot: list[dict[str, Any]], prior: AssistantView
+    ) -> tuple[list[dict[str, Any]], set[str]]:
+        """Return changed rows plus unchanged rows required for coordination.
+
+        The full snapshot still drives evidence stabilization and checkpointing.
+        Luna receives only material changes and chats explicitly connected by a
+        shared PR, branch, or established coordination key.
+        """
+        rows = {str(row.get("session_key", "")): row for row in snapshot}
+        signatures = {key: self._evidence_signature(row) for key, row in rows.items()}
+        changed = {
+            key
+            for key, signature in signatures.items()
+            if signature != self._evidence_signatures.get(key)
+        }
+        if not changed:
+            return [], set()
+
+        changed_identities = set()
+        for key in changed:
+            changed_identities.update(self._coordination_identities(rows[key]))
+            previous = self._evidence_signatures.get(key)
+            if previous:
+                try:
+                    previous_row = json.loads(previous)
+                except ValueError:
+                    previous_row = None
+                if isinstance(previous_row, dict):
+                    changed_identities.update(self._coordination_identities(previous_row))
+
+        related = {
+            key
+            for key, row in rows.items()
+            if key not in changed
+            and changed_identities.intersection(self._coordination_identities(row))
+        }
+        changed_coordination_keys = {
+            insight.coordination_key
+            for insight in prior.insights
+            if insight.session_key in changed and insight.coordination_key
+        }
+        if changed_coordination_keys:
+            related.update(
+                insight.session_key
+                for insight in prior.insights
+                if insight.session_key in rows
+                and insight.session_key not in changed
+                and insight.coordination_key in changed_coordination_keys
+            )
+
+        included = changed | related
+        return [row for row in snapshot if row.get("session_key") in included], changed
+
     def _stabilize_insights(
         self,
         view: AssistantView,
@@ -717,9 +791,27 @@ class AssistantService:
         return True
 
     @staticmethod
-    def _prompt(snapshot: list[dict[str, Any]], total_sessions: int | None = None) -> str:
-        payload = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
+    def _prompt(
+        snapshot: list[dict[str, Any]],
+        total_sessions: int | None = None,
+        *,
+        changed_keys: set[str] | None = None,
+        selected_sessions: int | None = None,
+    ) -> str:
+        changed = changed_keys or {str(row.get("session_key", "")) for row in snapshot}
+        scoped_snapshot = [
+            {
+                **row,
+                "deckhand_scope": (
+                    "changed" if str(row.get("session_key", "")) in changed else "related"
+                ),
+            }
+            for row in snapshot
+        ]
+        payload = json.dumps(scoped_snapshot, ensure_ascii=False, separators=(",", ":"))
         total = total_sessions if total_sessions is not None else len(snapshot)
+        selected = selected_sessions if selected_sessions is not None else len(snapshot)
+        related = len(snapshot) - len(changed)
         return f"""You are the orchestration assistant inside AgentDeck.
 Analyze the supplied coding-agent dashboard snapshot. Do not use tools. Give concise,
 specific advice about agents that are waiting, stuck, duplicating work, newly finished,
@@ -746,8 +838,13 @@ When multiple sessions concern the same underlying PR, issue, branch, or task, e
 coordination insight anchored to the chat that should own the work, not one card per chat.
 Do not report an agent merely because it is actively progressing or validating work.
 
-Coverage: {len(snapshot)} selected sessions out of {total}. Do not make claims about
-sessions outside this snapshot.
+This is an incremental update. Evaluate the {len(changed)} rows marked changed. The
+{related} rows marked related are unchanged and supplied only when a shared PR, branch,
+or established coordination identity requires cross-chat context. Preserve existing
+findings for related rows unless the changed evidence proves they were resolved.
+
+Coverage: {selected} selected sessions out of {total}; {len(snapshot)} are included in
+this update payload. Do not make claims about sessions outside this snapshot.
 
 Dashboard snapshot:
 {payload}
@@ -882,7 +979,7 @@ Dashboard snapshot:
             insight
             for insight in view.insights
             if not (
-                insight.kind == "info"
+                insight.kind in {"info", "waiting", "stalled"}
                 and (session := self.state.sessions.get(insight.session_key)) is not None
                 and session.thinking
                 and self._interaction(session) is None
@@ -1092,6 +1189,14 @@ Dashboard snapshot:
         prior = self._suppress_non_actionable_insights(prior)
         prior = self._enrich_pr_headlines(prior)
         prior = self._deduplicate_insights(prior)
+        analysis_snapshot, changed_keys = self._incremental_snapshot(snapshot, prior)
+        if not analysis_snapshot:
+            if prior != self.view:
+                self.view = prior
+                self.state.bus.publish("assistant")
+            self._last_signature = analysis_signature
+            self._save_checkpoint()
+            return
         self.view = AssistantView(
             state="analyzing",
             summary=prior.summary,
@@ -1102,9 +1207,18 @@ Dashboard snapshot:
         self.state.bus.publish("assistant")
         try:
             raw = await self.runner(
-                account, self.config, self._prompt(snapshot, self.total_session_count)
+                account,
+                self.config,
+                self._prompt(
+                    analysis_snapshot,
+                    self.total_session_count,
+                    changed_keys=changed_keys,
+                    selected_sessions=len(snapshot),
+                ),
             )
-            view = self._parse_result(raw, {row["session_key"] for row in snapshot})
+            view = self._parse_result(
+                raw, {row["session_key"] for row in analysis_snapshot}
+            )
             view = self._suppress_unattributed_pr_insights(view)
             view = self._suppress_terminal_pr_insights(view)
             view = self._suppress_non_actionable_insights(view)

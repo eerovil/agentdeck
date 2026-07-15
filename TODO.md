@@ -5,7 +5,7 @@ follow-ups here instead of creating GitHub issues unless external coordination i
 
 ## Open
 
-- [ ] Check that Luna reads only materially changed chats during Deckhand updates.
+- [x] Check that Luna reads only materially changed chats during Deckhand updates.
   - Audit the incremental prompt payload: the existing debounce may skip fully unchanged polls but
     still send the entire selected chat window when one chat changes.
   - Determine the minimum related-chat context needed for cross-chat coordination without
