@@ -405,6 +405,8 @@ details.ev.tool > .ev-text { margin-top: 6px; max-height: 420px; overflow: auto;
 .composer-actions { display: flex; align-items: center; justify-content: space-between;
   gap: 10px; margin-top: 8px; }
 .composer-actions span { color: var(--muted); font-size: 11px; }
+.composer-controls { display: flex; align-items: center; gap: 7px; }
+.inject-form .stop-button { background: var(--crit); }
 .inject-result { min-height: 1.4em; margin: 8px 2px; color: var(--muted); }
 .inject-result.failed { color: var(--crit); }
 .inject-form > .inject-result { position: absolute; top: 12px; right: 12px;

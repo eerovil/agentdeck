@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from fastapi.templating import Jinja2Templates
 
 from ..inject import InjectionService
-from ..models import Account
+from ..models import Account, Capability
 from ..models import activity_label as activity_label  # single impl lives in models
 from ..state import AppState
 
@@ -274,6 +274,13 @@ def render_transcript_events(templates: Jinja2Templates, events) -> str:
 
 def render_session_status(templates: Jinja2Templates, session) -> str:
     return templates.get_template("partials/session_status.html").render(s=session)
+
+
+def render_composer_controls(templates: Jinja2Templates, session) -> str:
+    return templates.get_template("partials/composer_controls.html").render(
+        session_key=session.key,
+        can_interrupt=Capability.INTERRUPT in session.capabilities,
+    )
 
 
 def render_tool_activity(

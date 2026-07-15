@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
-from ..models import SessionStatus, detailed_activity_label
+from ..models import Capability, SessionStatus, detailed_activity_label
 from .deps import (
     get_accounts,
     get_injector,
@@ -29,6 +29,7 @@ from .render import (
     activity_label,
     render_assistant,
     render_assistant_session,
+    render_composer_controls,
     render_limit_bars,
     render_session_list,
     render_session_status,
@@ -152,6 +153,7 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
     last_busy = None
     last_subagent_count = None
     last_label = None
+    last_can_interrupt = None
     # The topbar, Deckhand, and desktop session list ride this same stream (see
     # session.html), so the page still holds one socket. Each fragment is
     # re-pushed only when its underlying state changes.
@@ -207,6 +209,12 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
                 last_subagent_count = current.subagent_count
                 snap = replace(current, thinking=busy)
                 yield format_sse("status", render_session_status(templates, snap))
+            can_interrupt = Capability.INTERRUPT in current.capabilities
+            if can_interrupt != last_can_interrupt:
+                last_can_interrupt = can_interrupt
+                yield format_sse(
+                    "composer-controls", render_composer_controls(templates, current)
+                )
             if label != last_label:
                 last_label = label
                 yield format_sse("tools", render_tool_activity(templates, label, age))

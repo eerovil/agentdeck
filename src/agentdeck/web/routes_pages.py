@@ -155,6 +155,7 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
                 )
             ),
             "inject_max_chars": request.app.state.config.inject.max_message_chars,
+            "can_interrupt": Capability.INTERRUPT in session.capabilities,
             "owned_session": owned_session,
             "pending_interaction": provider.pending_interaction(account, session),
             "assistant": assistant,

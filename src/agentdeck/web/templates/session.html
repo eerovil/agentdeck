@@ -105,12 +105,15 @@
          accept="image/png,image/jpeg,image/webp,image/gif" multiple>
   <div class="composer-actions">
     <span>Enter to send · Shift+Enter for newline</span>
-    <button type="submit">Send</button>
+    {% set session_key = session.key %}
+    {% include "partials/composer_controls.html" %}
   </div>
   {% set inject_status = request.app.state.injector.status(session.key) %}
   {% set session_key = session.key %}
   {% include "partials/inject_status.html" %}
 </form>
+<form id="interrupt-form" hx-post="/sessions/{{ session.key }}/interrupt"
+      hx-target="#inject-result" hx-swap="outerHTML"></form>
 {% endif %}
 </section>
 </div>

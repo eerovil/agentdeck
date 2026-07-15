@@ -714,18 +714,24 @@ async def test_mobile_session_composer_is_compact():
     html = f"""
       <style>{css}</style>
       <body class="session-page"><main><section>
-        <form class="inject-form">
+        <form id="message-form" class="inject-form">
           <label for="inject-message">Message</label>
           <textarea id="inject-message" rows="3"></textarea>
           <label class="image-picker">
             ＋ Attach image <span class="paste-hint">or paste screenshot</span>
           </label>
           <input class="image-input" type="file">
-          <div class="composer-actions"><span>Enter to send</span><button>Send</button></div>
+          <div class="composer-actions">
+            <span>Enter to send</span>
+            <div class="composer-controls">
+              <button class="stop-button" type="submit" form="interrupt-form">Stop</button>
+              <button>Send</button>
+            </div>
+          </div>
           <div id="inject-result" class="inject-result running">
             <span class="send-spinner"></span>
           </div>
-        </form>
+        </form><form id="interrupt-form"></form>
       </section></main></body>
     """
     async with async_playwright() as playwright:
@@ -739,6 +745,9 @@ async def test_mobile_session_composer_is_compact():
                 const picker = form.querySelector('.image-picker');
                 const actions = form.querySelector('.composer-actions');
                 const indicator = form.querySelector('#inject-result');
+                const stop = form.querySelector('.stop-button').getBoundingClientRect();
+                const send = form.querySelector('.composer-controls button:last-child')
+                  .getBoundingClientRect();
                 const main = document.querySelector('main');
                 return {
                     formHeight: form.getBoundingClientRect().height,
@@ -749,6 +758,10 @@ async def test_mobile_session_composer_is_compact():
                     hintHidden: getComputedStyle(actions.querySelector('span')).display,
                     pasteHintHidden: getComputedStyle(form.querySelector('.paste-hint')).display,
                     indicatorPosition: getComputedStyle(indicator).position,
+                    stopBesideSend: stop.right < send.left && Math.abs(stop.top - send.top) < 2,
+                    controlsInsideForm: send.right <= form.getBoundingClientRect().right,
+                    stopUsesInterruptForm: form.querySelector('.stop-button').form.id
+                      === 'interrupt-form',
                     keyboardGap: main.getBoundingClientRect().bottom
                         - form.getBoundingClientRect().bottom,
                 };
@@ -762,6 +775,9 @@ async def test_mobile_session_composer_is_compact():
     assert metrics["hintHidden"] == "none"
     assert metrics["pasteHintHidden"] == "none"
     assert metrics["indicatorPosition"] == "absolute"
+    assert metrics["stopBesideSend"]
+    assert metrics["controlsInsideForm"]
+    assert metrics["stopUsesInterruptForm"]
     assert metrics["keyboardGap"] == 0
 
 

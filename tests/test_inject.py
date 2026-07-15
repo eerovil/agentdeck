@@ -664,7 +664,7 @@ async def test_machine_delegation_api_validates_requests(tmp_path):
         assert missing.status_code == 404
 
 
-async def test_owned_session_question_hides_steer_and_stop_controls(tmp_path, monkeypatch):
+async def test_owned_session_question_shows_stop_beside_send(tmp_path, monkeypatch):
     app = _web_app(tmp_path)
     session = app.state.app_state.sessions["codex:test:sid"]
     session.capabilities = frozenset(
@@ -723,8 +723,12 @@ async def test_owned_session_question_hides_steer_and_stop_controls(tmp_path, mo
         assert "Which database should we use?" in page.text
         assert "Postgres" in page.text
         assert "Send now" not in page.text
-        assert 'hx-post="/sessions/codex:test:sid/interrupt"' not in page.text
-        assert "Stop" not in page.text
+        assert 'hx-post="/sessions/codex:test:sid/interrupt"' in page.text
+        assert 'form="interrupt-form"' in page.text
+        assert 'aria-label="Stop active turn">Stop</button>' in page.text
+        controls = page.text[page.text.index('id="composer-controls"') :]
+        controls = controls[: controls.index("</div>")]
+        assert controls.index(">Stop</button>") < controls.index(">Send</button>")
         assert "owned-controls" not in page.text
         response = await client.post(
             "/sessions/codex:test:sid/interaction",
@@ -752,3 +756,18 @@ async def test_owned_session_question_hides_steer_and_stop_controls(tmp_path, mo
             headers={"origin": "http://test"},
         )
         assert stop.status_code == 200
+        assert 'id="inject-result" class="inject-result running"' in stop.text
+        assert 'aria-label="Stopping active turn"' in stop.text
+
+
+async def test_idle_composer_hides_stop_button(tmp_path):
+    app = _web_app(tmp_path)
+    session = app.state.app_state.sessions["codex:test:sid"]
+    session.capabilities = frozenset({Capability.TRANSCRIPT, Capability.INJECT})
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        page = await client.get("/sessions/codex:test:sid")
+
+    assert 'id="composer-controls"' in page.text
+    assert ">Send</button>" in page.text
+    assert 'aria-label="Stop active turn"' not in page.text

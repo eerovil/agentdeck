@@ -207,7 +207,9 @@ async def interrupt_turn(request: Request, session_key: str) -> HTMLResponse:
     if not result.accepted:
         raise HTTPException(status_code=409, detail=result.reason)
     return HTMLResponse(
-        '<div id="steer-result" class="inject-result">Stopping Codex…</div>'
+        '<div id="inject-result" class="inject-result running" aria-live="polite"'
+        ' aria-label="Stopping active turn"><span class="send-spinner"'
+        ' aria-hidden="true"></span></div>'
     )
 
 
