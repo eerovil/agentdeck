@@ -26,6 +26,7 @@
 </aside>
 <section class="session-detail" aria-label="Selected chat">
 {% set s = session %}
+<div class="session-detail-head">
 <div id="session-status" sse-swap="status">{% include "partials/session_status.html" %}</div>
 
 <div class="detail-meta">
@@ -48,6 +49,7 @@
   </a>
   {% endfor %}
   {% endif %}
+</div>
 </div>
 
 <div id="assistant-session-details" sse-swap="assistant-session">

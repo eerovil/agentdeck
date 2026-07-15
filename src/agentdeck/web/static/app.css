@@ -492,6 +492,9 @@ details.ev.tool > .ev-text { margin-top: 6px; max-height: 420px; overflow: auto;
   .session-sidebar { display: block; padding-right: 16px; border-right: 1px solid var(--line); }
   .session-sidebar .assistant-panel { margin-bottom: 10px; }
   .session-detail { padding: 0 4px 20px 0; }
+  .session-detail-head { position: sticky; top: 0; z-index: 4; padding-bottom: 1px;
+    border-bottom: 1px solid var(--line); background: var(--bg); }
+  .session-detail-head .detail-meta { margin-bottom: 7px; }
   body.session-page .back { display: none; }
   .session-sidebar .card-latest { height: 5.65em; }
   .session-sidebar .session.expanded .card-latest { max-height: 45vh; }

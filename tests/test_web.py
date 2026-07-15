@@ -1187,6 +1187,10 @@ async def test_session_detail_uses_responsive_split_view(tmp_path):
         browser = await playwright.chromium.launch()
         page = await browser.new_page(viewport={"width": 1200, "height": 800})
         await page.set_content(html)
+        await page.evaluate(
+            "document.querySelector('.session-detail').scrollTop = "
+            "document.querySelector('.session-detail').scrollHeight"
+        )
         desktop = await page.evaluate(
             """() => ({
                 sidebar: getComputedStyle(document.querySelector('.session-sidebar')).display,
@@ -1199,6 +1203,14 @@ async def test_session_detail_uses_responsive_split_view(tmp_path):
                 assistantAboveSessions:
                     document.querySelector('#assistant-panel').getBoundingClientRect().bottom <=
                     document.querySelector('#sessions').getBoundingClientRect().top,
+                headerPosition: getComputedStyle(document.querySelector('.session-detail-head'))
+                    .position,
+                prLinksVisible: [...document.querySelectorAll('.pr-link')].every(link => {
+                    const linkRect = link.getBoundingClientRect();
+                    const detailRect = document.querySelector('.session-detail')
+                        .getBoundingClientRect();
+                    return linkRect.top >= detailRect.top && linkRect.bottom <= detailRect.bottom;
+                }),
             })"""
         )
         await page.set_viewport_size({"width": 800, "height": 800})
@@ -1210,6 +1222,8 @@ async def test_session_detail_uses_responsive_split_view(tmp_path):
                     .overflowY,
                 back: getComputedStyle(document.querySelector('.back')).display,
                 assistantRects: document.querySelector('#assistant-panel').getClientRects().length,
+                headerPosition: getComputedStyle(document.querySelector('.session-detail-head'))
+                    .position,
             })"""
         )
         await browser.close()
@@ -1220,12 +1234,15 @@ async def test_session_detail_uses_responsive_split_view(tmp_path):
     assert desktop["back"] == "none"
     assert desktop["assistantRects"] == 1
     assert desktop["assistantAboveSessions"] is True
+    assert desktop["headerPosition"] == "sticky"
+    assert desktop["prLinksVisible"] is True
     assert mobile == {
         "sidebar": "none",
         "layout": "block",
         "detailOverflow": "visible",
         "back": "flex",
         "assistantRects": 0,
+        "headerPosition": "static",
     }
 
 
