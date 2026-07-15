@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from unittest.mock import AsyncMock
 
@@ -804,6 +805,137 @@ def test_dirty_worktree_does_not_change_handled_evidence(tmp_path):
     dirty = assistant._snapshot_row(session)
 
     assert assistant._evidence_signature(clean) == assistant._evidence_signature(dirty)
+
+
+def test_analysis_signature_ignores_poll_noise_but_tracks_pr_status():
+    first = {
+        "session_key": "codex:test:thread-1",
+        "title": "Implement search",
+        "cwd": "/code/project",
+        "state": "idle",
+        "activity": "",
+        "question": "",
+        "last_prompt": "Implement search",
+        "last_response": "The PR is ready.",
+        "subagents": 0,
+        "git": {
+            "repository": "eerovil/agentdeck",
+            "branch": "feature/search",
+            "dirty": False,
+            "pull_requests": [
+                {
+                    "number": 255,
+                    "state": "open",
+                    "url": "https://github.com/eerovil/agentdeck/pull/255",
+                }
+            ],
+        },
+        "interaction": None,
+    }
+    second = {
+        **first,
+        "session_key": "codex:test:thread-2",
+        "title": "Review search",
+    }
+    noisy_first = {
+        **first,
+        "state": "thinking",
+        "activity": "Running command",
+        "subagents": 2,
+        "git": {**first["git"], "dirty": True},
+    }
+    noisy_second = {**second, "activity": "Waiting for command output"}
+
+    baseline = AssistantService._analysis_signature([first, second])
+    assert AssistantService._analysis_signature([noisy_second, noisy_first]) == baseline
+
+    merged = {
+        **noisy_first,
+        "git": {
+            **noisy_first["git"],
+            "pull_requests": [
+                {**noisy_first["git"]["pull_requests"][0], "state": "merged"}
+            ],
+        },
+    }
+    assert AssistantService._analysis_signature([noisy_second, merged]) != baseline
+
+
+@pytest.mark.asyncio
+async def test_background_poll_skips_luna_until_material_evidence_changes(tmp_path):
+    state = AppState()
+    session = _session(tmp_path)
+    state.update_session(session)
+    runner_calls = 0
+
+    async def runner(account, config, prompt):
+        nonlocal runner_calls
+        runner_calls += 1
+        return {"summary": "Nothing needs attention.", "insights": []}
+
+    class Resolver:
+        calls = 0
+        pr_status = "open"
+
+        async def resolve(self, sessions):
+            self.calls += 1
+            pull = PullRequestContext(
+                "eerovil/agentdeck",
+                255,
+                "Implement search",
+                "https://github.com/eerovil/agentdeck/pull/255",
+                self.pr_status,
+                head_branch="feature/search",
+                base_branch="master",
+            )
+            return {
+                item.key: GitContext(
+                    "eerovil/agentdeck", "feature/search", False, (pull,)
+                )
+                for item in sessions
+            }
+
+    resolver = Resolver()
+    assistant = AssistantService(
+        _config(tmp_path, refresh_interval_s=0.01),
+        state,
+        runner=runner,
+        context_resolver=resolver,
+    )
+
+    async def wait_until(predicate):
+        for _ in range(100):
+            if predicate():
+                return
+            await asyncio.sleep(0.01)
+        pytest.fail("Deckhand background poll did not complete")
+
+    await assistant.start()
+    try:
+        assistant._wake.set()
+        await wait_until(lambda: runner_calls == 1)
+
+        state.update_session(
+            replace(
+                session,
+                status=SessionStatus.LIVE,
+                thinking=True,
+                activity="Running command",
+                subagent_count=2,
+            )
+        )
+        assistant._last_run = 0
+        assistant._wake.set()
+        await wait_until(lambda: resolver.calls >= 2)
+        await asyncio.sleep(0.02)
+        assert runner_calls == 1
+
+        resolver.pr_status = "merged"
+        assistant._last_run = 0
+        assistant._wake.set()
+        await wait_until(lambda: runner_calls == 2)
+    finally:
+        await assistant.stop()
 
 
 def test_unhandle_does_not_restore_card_after_evidence_changed(tmp_path):

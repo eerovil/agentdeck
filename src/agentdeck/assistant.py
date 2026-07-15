@@ -397,6 +397,21 @@ class AssistantService:
             stable["git"] = {key: value for key, value in git.items() if key != "dirty"}
         return json.dumps(stable, sort_keys=True, default=str, separators=(",", ":"))
 
+    @classmethod
+    def _analysis_signature(cls, snapshot: list[dict[str, Any]]) -> str:
+        """Identity of all material evidence considered by the model.
+
+        Session collection order and transient runtime state can change between
+        polls without giving Deckhand anything new to decide. Keep resolving git
+        context on schedule, but invoke the model only when a chat's durable
+        transcript, question, branch, or PR evidence actually changes.
+        """
+        evidence = {
+            str(row.get("session_key", "")): cls._evidence_signature(row)
+            for row in snapshot
+        }
+        return json.dumps(evidence, sort_keys=True, separators=(",", ":"))
+
     def _stabilize_insights(
         self,
         view: AssistantView,
@@ -998,7 +1013,7 @@ Dashboard snapshot:
             }
             self.contexts.update(resolved)
             snapshot = [self._snapshot_row(session) for session in sessions]
-            signature = json.dumps(snapshot, sort_keys=True, default=str)
+            signature = self._analysis_signature(snapshot)
             if not self._force and signature == self._last_signature:
                 self._last_run = loop.time()
                 continue
