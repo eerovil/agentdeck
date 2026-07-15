@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from httpx import ASGITransport, AsyncClient
+from playwright.async_api import async_playwright
 
 from agentdeck.app import create_app
 from agentdeck.config import AccountConfig, AppConfig, HistoryConfig, InjectConfig
@@ -27,6 +28,7 @@ from agentdeck.providers.codex.inject import (
     start_session,
 )
 from agentdeck.providers.codex.transcripts import last_turn_complete
+from agentdeck.web.render import render_composer_controls
 
 
 def _line(type_, payload):
@@ -771,3 +773,181 @@ async def test_idle_composer_hides_stop_button(tmp_path):
     assert 'id="composer-controls"' in page.text
     assert ">Send</button>" in page.text
     assert 'aria-label="Stop active turn"' not in page.text
+
+
+async def test_composer_controls_survive_repeated_sse_updates_on_desktop_and_mobile(tmp_path):
+    app = _web_app(tmp_path)
+    session = app.state.app_state.sessions["codex:test:sid"]
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/sessions/codex:test:sid")
+
+    idle_controls = render_composer_controls(app.state.templates, session)
+    session.capabilities = frozenset({*session.capabilities, Capability.INTERRUPT})
+    live_controls = render_composer_controls(app.state.templates, session)
+    static_dir = Path(__file__).parents[1] / "src/agentdeck/web/static"
+    scripts = {
+        "/static/htmx.min.js": (static_dir / "htmx.min.js").read_text(),
+        "/static/sse.js": (static_dir / "sse.js").read_text(),
+    }
+    requests = []
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        context = await browser.new_context(
+            viewport={"width": 1200, "height": 800}, service_workers="block"
+        )
+        page = await context.new_page()
+        await page.add_init_script(
+            """
+            window.__eventSources = [];
+            class FakeEventSource extends EventTarget {
+              static CONNECTING = 0;
+              static OPEN = 1;
+              static CLOSED = 2;
+              constructor(url) {
+                super();
+                this.url = url;
+                this.readyState = FakeEventSource.OPEN;
+                this.listenerNames = [];
+                window.__eventSources.push(this);
+                queueMicrotask(() => {
+                  if (this.onopen) this.onopen(new Event('open'));
+                });
+              }
+              addEventListener(name, listener, options) {
+                this.listenerNames.push(name);
+                super.addEventListener(name, listener, options);
+              }
+              close() { this.readyState = FakeEventSource.CLOSED; }
+              emit(name, data) {
+                this.dispatchEvent(new MessageEvent(name, {data: data}));
+              }
+            }
+            window.EventSource = FakeEventSource;
+            """
+        )
+
+        async def serve(route):
+            request = route.request
+            path = request.url.split("?", 1)[0].removeprefix("http://agentdeck.test")
+            if request.method == "POST":
+                requests.append(path)
+                await route.fulfill(
+                    status=200,
+                    content_type="text/html",
+                    body='<div id="inject-result" class="inject-result">ok</div>',
+                )
+            elif path == "/sessions/codex:test:sid":
+                await route.fulfill(status=200, content_type="text/html", body=response.text)
+            elif path in scripts:
+                await route.fulfill(
+                    status=200, content_type="text/javascript", body=scripts[path]
+                )
+            else:
+                await route.fulfill(status=204, body="")
+
+        await page.route("http://agentdeck.test/**", serve)
+        await page.goto("http://agentdeck.test/sessions/codex:test:sid")
+        await page.wait_for_function(
+            "window.__eventSources.length === 1 && "
+            "window.__eventSources[0].listenerNames.includes('composer-controls')"
+        )
+
+        async def emit_controls(fragment):
+            await page.evaluate(
+                "fragment => window.__eventSources[0].emit('composer-controls', fragment)",
+                fragment,
+            )
+
+        # Repeated state notifications must replace the stable target's children,
+        # never nest a second target or duplicate its forms and buttons.
+        await emit_controls(live_controls)
+        await emit_controls(live_controls)
+        assert "Stop active turn" in await page.locator("#composer-controls").inner_html()
+        await page.evaluate(
+            """() => {
+              window.__submits = {send: 0, stop: 0};
+              document.querySelector('form.inject-form').addEventListener('submit', event => {
+                window.__submits.send += 1;
+                event.preventDefault();
+                event.stopImmediatePropagation();
+              }, {capture: true});
+              document.querySelector('form#interrupt-form').addEventListener('submit', event => {
+                window.__submits.stop += 1;
+                event.preventDefault();
+                event.stopImmediatePropagation();
+              }, {capture: true});
+            }"""
+        )
+        await page.locator("#inject-message").fill("send exactly once")
+        await page.locator("#composer-controls .stop-button").click()
+        await page.locator("#composer-controls button", has_text="Send").click()
+        submits = await page.evaluate("window.__submits")
+
+        await emit_controls(idle_controls)
+        await emit_controls(idle_controls)
+        idle = await page.evaluate(
+            """() => ({
+              targets: document.querySelectorAll('#composer-controls').length,
+              sends: document.querySelectorAll('#composer-controls button[type="submit"]').length,
+              stops: document.querySelectorAll('#composer-controls .stop-button').length,
+              injectForms: document.querySelectorAll('form.inject-form').length,
+              interruptForms: document.querySelectorAll('form#interrupt-form').length,
+            })"""
+        )
+
+        await emit_controls(live_controls)
+        layouts = []
+        for width in (1200, 320):
+            await page.set_viewport_size({"width": width, "height": 800})
+            layouts.append(
+                await page.evaluate(
+                    """() => {
+                      const controls = document.querySelector('#composer-controls');
+                      const form = document.querySelector('form.inject-form');
+                      const send = controls.querySelector('button:not(.stop-button)');
+                      const stop = controls.querySelector('.stop-button');
+                      return {
+                        targets: document.querySelectorAll('#composer-controls').length,
+                        buttons: controls.querySelectorAll('button').length,
+                        sendUsesMessageForm: send.form === form,
+                        stopUsesInterruptForm: stop.form.id === 'interrupt-form',
+                        controlsInsideForm:
+                          controls.getBoundingClientRect().right <=
+                          form.getBoundingClientRect().right,
+                        horizontalOverflow:
+                          document.documentElement.scrollWidth >
+                          document.documentElement.clientWidth,
+                      };
+                    }"""
+                )
+            )
+        await browser.close()
+
+    assert requests == []
+    assert submits == {"send": 1, "stop": 1}
+    assert idle == {
+        "targets": 1,
+        "sends": 1,
+        "stops": 0,
+        "injectForms": 1,
+        "interruptForms": 1,
+    }
+    assert layouts == [
+        {
+            "targets": 1,
+            "buttons": 2,
+            "sendUsesMessageForm": True,
+            "stopUsesInterruptForm": True,
+            "controlsInsideForm": True,
+            "horizontalOverflow": False,
+        },
+        {
+            "targets": 1,
+            "buttons": 2,
+            "sendUsesMessageForm": True,
+            "stopUsesInterruptForm": True,
+            "controlsInsideForm": True,
+            "horizontalOverflow": False,
+        },
+    ]

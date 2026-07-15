@@ -106,7 +106,10 @@
   <div class="composer-actions">
     <span>Enter to send · Shift+Enter for newline</span>
     {% set session_key = session.key %}
-    {% include "partials/composer_controls.html" %}
+    <div id="composer-controls" class="composer-controls" sse-swap="composer-controls"
+         hx-target="this" hx-swap="innerHTML">
+      {% include "partials/composer_controls.html" %}
+    </div>
   </div>
   {% set inject_status = request.app.state.injector.status(session.key) %}
   {% set session_key = session.key %}

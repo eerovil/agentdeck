@@ -13,7 +13,7 @@ follow-ups here instead of creating GitHub issues unless external coordination i
   - Done when an unchanged refresh completes quickly without invoking Luna, real transcript or PR
     changes still trigger analysis, and timing plus invocation-count regressions cover both paths.
 
-- [ ] Fix duplicate, unresponsive Send buttons in the chat composer.
+- [x] Fix duplicate, unresponsive Send buttons in the chat composer.
   - Reproduce the duplicate controls after live Stop/Send updates.
   - Check whether the `composer-controls` SSE fragment nests inside its own swap target,
     whether repeated events create duplicate IDs/forms, and whether Send and Stop retain the
