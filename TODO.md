@@ -5,6 +5,16 @@ follow-ups here instead of creating GitHub issues unless external coordination i
 
 ## Open
 
+- [ ] Investigate why visible Tilhi issue chats are absent from Deckhand.
+  - Use the visible `tilhi#1632`, `tilhi#1633`, and `tilhi#1634` ALT/outdoor chats as reproduction
+    cases; they report blocked terminal agent state, remain open for human action, and have no PR.
+  - Trace whether they are excluded during session selection, omitted from the Luna update payload,
+    omitted by Luna, deduplicated, or suppressed by Deckhand's post-processing filters.
+  - Define the expected treatment for open-but-blocked issue chats and whether several similar
+    autofix failures should appear individually or as one coordination item.
+  - Done when the omission is explained, actionable Tilhi chats surface consistently, deliberate
+    suppression is visible and understandable, and regressions cover the responsible stage.
+
 - [x] Check that Luna reads only materially changed chats during Deckhand updates.
   - Audit the incremental prompt payload: the existing debounce may skip fully unchanged polls but
     still send the entire selected chat window when one chat changes.
