@@ -200,6 +200,10 @@ def create_runtime_app(config: AppConfig) -> FastAPI:
     async def wait(label: str, body: ThreadRequest) -> dict[str, Any]:
         return _result(await runtime.client(label).wait_for_thread(body.thread_id))
 
+    @app.post("/accounts/{label}/compact")
+    async def compact(label: str, body: ThreadRequest) -> dict[str, Any]:
+        return _result(await runtime.client(label).compact(body.thread_id))
+
     @app.post("/accounts/{label}/steer")
     async def steer(label: str, body: TurnRequest) -> dict[str, Any]:
         return _result(

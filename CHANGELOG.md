@@ -24,6 +24,9 @@
   live steering, Stop, questions, and approval requests in AgentDeck. The
   bridge permits only read-only or workspace-write sandboxes and always routes
   approval-requiring actions through AgentDeck.
+- AgentDeck-owned Codex chats now support `/compact` from the normal composer.
+  Compaction uses Codex's native app-server operation, waits behind active work,
+  and completes before later FIFO messages are sent.
 - **Post-`/compact` cards no longer misreport.** A completed compaction (and
   other slash-command echoes) is bookkeeping, not a live turn, so cards used to
   read the *pre*-compact tail: a stale huge context size, a false "working"

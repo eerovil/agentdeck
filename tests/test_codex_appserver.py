@@ -382,6 +382,56 @@ async def test_queued_turn_is_acknowledged_when_followup_starts(tmp_path):
     # turn/start is the point where the message has finished sending.
 
 
+async def test_compact_waits_for_current_turn_and_compaction_completion(tmp_path):
+    server = _server(tmp_path)
+    server.start = AsyncMock()
+    server._owned.add("thread-1")
+    server._loaded.add("thread-1")
+    server._active_turn["thread-1"] = "turn-old"
+    requested = asyncio.Event()
+    calls = []
+
+    async def request(method, params, **kwargs):
+        calls.append((method, params))
+        requested.set()
+        return {}
+
+    server._request = request
+    compacting = asyncio.create_task(server.compact("thread-1"))
+    await asyncio.sleep(0)
+    assert calls == []
+
+    server._notification(
+        "turn/completed",
+        {
+            "threadId": "thread-1",
+            "turn": {"id": "turn-old", "status": "completed"},
+        },
+    )
+    await requested.wait()
+    assert calls == [("thread/compact/start", {"threadId": "thread-1"})]
+    assert not compacting.done()
+
+    server._notification(
+        "turn/started",
+        {
+            "threadId": "thread-1",
+            "turn": {"id": "turn-compact", "status": "inProgress"},
+        },
+    )
+    server._notification(
+        "turn/completed",
+        {
+            "threadId": "thread-1",
+            "turn": {"id": "turn-compact", "status": "completed"},
+        },
+    )
+
+    result = await asyncio.wait_for(compacting, timeout=1)
+    assert result.accepted
+    assert server.active_turn("thread-1") is None
+
+
 def test_unsafe_mcp_url_is_not_exposed(tmp_path):
     server = _server(tmp_path)
     server._owned.add("thread-1")

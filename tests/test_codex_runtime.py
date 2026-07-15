@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import asdict
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 
 from agentdeck.config import AccountConfig, AppConfig
-from agentdeck.models import Account, PendingInteraction
+from agentdeck.models import Account, InjectResult, PendingInteraction
 from agentdeck.providers.codex.runtime_client import CodexRuntimeClient
-from agentdeck.runtime import CodexRuntime
+from agentdeck.runtime import CodexRuntime, create_runtime_app
 
 
 def _account(tmp_path: Path) -> Account:
@@ -89,6 +91,45 @@ async def test_cancelled_runtime_request_closes_web_side_socket(tmp_path):
 
     assert isinstance(result[0], asyncio.CancelledError)
     assert client._http.is_closed
+
+
+async def test_runtime_client_sends_compact_action(tmp_path):
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/accounts/local/compact":
+            requests.append(request)
+            return httpx.Response(200, json={"accepted": True})
+        if request.url.path == "/accounts/local/state":
+            return httpx.Response(200, json={"threads": {"thread-1": {}}})
+        raise AssertionError(request.url.path)
+
+    client = CodexRuntimeClient(
+        _account(tmp_path), transport=httpx.MockTransport(handler)
+    )
+    result = await client.compact("thread-1")
+
+    assert result.accepted
+    assert json.loads(requests[0].content) == {"thread_id": "thread-1"}
+    await client.stop()
+
+
+async def test_runtime_exposes_compact_endpoint():
+    app = create_runtime_app(AppConfig())
+    runtime_client = MagicMock()
+    runtime_client.compact = AsyncMock(return_value=InjectResult(True))
+    app.state.runtime.clients["local"] = runtime_client
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://runtime"
+    ) as client:
+        response = await client.post(
+            "/accounts/local/compact", json={"thread_id": "thread-1"}
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"accepted": True, "reason": None, "session_id": None}
+    runtime_client.compact.assert_awaited_once_with("thread-1")
 
 
 def test_runtime_snapshot_serializes_owned_turn_and_interaction(tmp_path):

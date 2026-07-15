@@ -181,6 +181,7 @@ class CodexAppServer:
         self._loaded: set[str] = set()
         self._threads: dict[str, dict[str, Any]] = {}
         self._active_turn: dict[str, str] = {}
+        self._turn_started_waiters: dict[str, asyncio.Future] = {}
         self._turn_waiters: dict[str, asyncio.Future] = {}
         self._completed_turns: dict[str, dict[str, Any]] = {}
         self._interactions: dict[str, _PendingRequest] = {}
@@ -262,10 +263,15 @@ class CodexAppServer:
         self._fail_pending(AppServerError("Codex app-server stopped"))
 
     def _fail_pending(self, exc: Exception) -> None:
-        for future in (*self._responses.values(), *self._turn_waiters.values()):
+        for future in (
+            *self._responses.values(),
+            *self._turn_started_waiters.values(),
+            *self._turn_waiters.values(),
+        ):
             if not future.done():
                 future.set_exception(exc)
         self._responses.clear()
+        self._turn_started_waiters.clear()
         self._turn_waiters.clear()
 
     async def _write(self, message: dict[str, Any]) -> None:
@@ -386,7 +392,11 @@ class CodexAppServer:
         elif method == "turn/started" and isinstance(thread_id, str):
             turn = params.get("turn")
             if isinstance(turn, dict) and isinstance(turn.get("id"), str):
-                self._active_turn[thread_id] = turn["id"]
+                turn_id = turn["id"]
+                self._active_turn[thread_id] = turn_id
+                waiter = self._turn_started_waiters.pop(thread_id, None)
+                if waiter is not None and not waiter.done():
+                    waiter.set_result(turn_id)
         elif method == "turn/completed" and isinstance(thread_id, str):
             turn = params.get("turn")
             if isinstance(turn, dict) and isinstance(turn.get("id"), str):
@@ -601,6 +611,36 @@ class CodexAppServer:
         # The message is sent once turn/start is accepted. Do not make the web
         # queue say "Sending" throughout the assistant's entire response.
         return await self.start_turn(thread_id, message, images=images, wait=False)
+
+    async def compact(self, thread_id: str) -> InjectResult:
+        """Wait for existing work, compact the thread, and wait for completion."""
+        await self.start()
+        if thread_id not in self._owned:
+            return InjectResult(False, "agentdeck does not own this Codex thread")
+        active = self.active_turn(thread_id)
+        if active is not None:
+            await self._wait_for_turn(active)
+        await self._ensure_loaded(thread_id)
+
+        started = asyncio.get_running_loop().create_future()
+        self._turn_started_waiters[thread_id] = started
+        try:
+            await self._request("thread/compact/start", {"threadId": thread_id})
+            try:
+                turn_id = await asyncio.wait_for(started, timeout=REQUEST_TIMEOUT_S)
+            except TimeoutError as exc:
+                raise AppServerError("Codex compaction did not start") from exc
+        finally:
+            if self._turn_started_waiters.get(thread_id) is started:
+                self._turn_started_waiters.pop(thread_id, None)
+
+        completed = await self._wait_for_turn(turn_id)
+        status = completed.get("status") if isinstance(completed, dict) else None
+        if status == "completed":
+            return InjectResult(True)
+        if status == "interrupted":
+            return InjectResult(False, "compaction interrupted")
+        return InjectResult(False, f"Codex compaction ended with status {status or 'unknown'}")
 
     async def wait_for_thread(self, thread_id: str) -> InjectResult:
         turn_id = self.active_turn(thread_id)

@@ -196,6 +196,9 @@ class CodexRuntimeClient:
     async def wait_for_thread(self, thread_id: str) -> InjectResult:
         return await self._post("wait", {"thread_id": thread_id})
 
+    async def compact(self, thread_id: str) -> InjectResult:
+        return await self._post("compact", {"thread_id": thread_id})
+
     async def steer(
         self, thread_id: str, message: str, *, images: list[Path] | None = None
     ) -> InjectResult:

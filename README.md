@@ -114,7 +114,9 @@ page. AgentDeck-created chats run through one persistent Codex app-server per
 account, enabling active-turn steering, Stop, structured questions, approvals,
 and a FIFO follow-up queue. Enter submits and Shift+Enter inserts a newline.
 Existing external `exec` rollouts retain the conservative completed-turn
-fallback described below.
+fallback described below. In AgentDeck-owned chats, send `/compact` as the
+entire message to summarize the conversation and free context space; it waits
+behind any active turn and preserves the follow-up queue order.
 
 The bundled systemd deployment keeps Codex controls in a separate
 `agentdeck-codex.service`. The dashboard talks to it over a Unix socket inside

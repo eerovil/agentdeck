@@ -4,9 +4,10 @@ import json
 import os
 import time
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 from agentdeck.config import AccountConfig
-from agentdeck.models import Account, Capability, SessionStatus
+from agentdeck.models import Account, Capability, Session, SessionStatus
 from agentdeck.providers import PROVIDERS
 from agentdeck.providers.codex import provider as provider_mod
 from agentdeck.providers.codex import transcripts
@@ -632,3 +633,63 @@ def test_codex_usage_poller_and_registration(tmp_path):
     assert PROVIDERS["codex"].provider_id == "codex"
     config = AccountConfig(provider="codex", label="local", config_dir=str(tmp_path))
     assert config.root == tmp_path
+
+
+async def test_codex_compact_command_uses_owned_runtime(tmp_path):
+    provider = CodexProvider()
+    account = _account(tmp_path)
+    session = Session(
+        key=f"{account.key}:thread-1",
+        account_key=account.key,
+        session_id="thread-1",
+        status=SessionStatus.IDLE,
+    )
+    client = MagicMock()
+    client.compact = AsyncMock()
+    client.queue_turn = AsyncMock()
+    client.owns.return_value = True
+    provider._clients[account.key] = client
+
+    result = await provider.inject(
+        account,
+        session,
+        "/compact",
+        timeout_s=30,
+    )
+
+    assert result is client.compact.return_value
+    client.compact.assert_awaited_once_with("thread-1")
+    client.queue_turn.assert_not_awaited()
+
+
+async def test_codex_compact_rejects_args_images_and_unowned_sessions(tmp_path):
+    provider = CodexProvider()
+    account = _account(tmp_path)
+    session = Session(
+        key=f"{account.key}:thread-1",
+        account_key=account.key,
+        session_id="thread-1",
+        status=SessionStatus.IDLE,
+    )
+    client = MagicMock()
+    client.compact = AsyncMock()
+    client.owns.return_value = True
+    provider._clients[account.key] = client
+
+    with_args = await provider.inject(
+        account, session, "/compact now", timeout_s=30
+    )
+    with_image = await provider.inject(
+        account,
+        session,
+        "/compact",
+        timeout_s=30,
+        images=[tmp_path / "screen.png"],
+    )
+    client.owns.return_value = False
+    unowned = await provider.inject(account, session, "/compact", timeout_s=30)
+
+    assert with_args.reason == "usage: /compact"
+    assert with_image.reason == "/compact does not accept image attachments"
+    assert "AgentDeck-owned" in unowned.reason
+    client.compact.assert_not_awaited()

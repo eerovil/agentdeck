@@ -426,6 +426,18 @@ class CodexProvider(SessionProvider):
         images: list[Path] | None = None,
     ) -> InjectResult:
         client = self._clients.get(account.key)
+        command = message.split(maxsplit=1)
+        if command and command[0] == "/compact":
+            if len(command) != 1:
+                return InjectResult(False, "usage: /compact")
+            if images:
+                return InjectResult(False, "/compact does not accept image attachments")
+            if client is None or not client.owns(session.session_id):
+                return InjectResult(
+                    False,
+                    "/compact is available only for AgentDeck-owned Codex chats",
+                )
+            return await client.compact(session.session_id)
         if client is not None and client.owns(session.session_id):
             return await client.queue_turn(session.session_id, message, images=images)
         path = self._transcript_path(account, session)
