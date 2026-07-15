@@ -23,9 +23,26 @@ _MAX_MESSAGE_CHARS = 2_000
 _MAX_TASK_CHARS = 400
 _BLOCKED_ISSUE_RE = re.compile(r"(?<![\w-])claude:blocked(?![\w-])", re.IGNORECASE)
 
-# Card kinds map to CSS (insight-waiting / insight-stalled are warn-coloured).
+# Card kinds map to CSS (insight-waiting / insight-stalled are warn-coloured,
+# insight-finished is the calmer "done" green).
 KIND_WAITING = "waiting"  # explicit, structured: the agent is blocked on you
 KIND_STALLED = "stalled"  # inferred from the final message or a stall heuristic
+KIND_FINISHED = "finished"  # lower-priority: work is done, a PR is waiting on review
+
+# Cards in these kinds are active attention; "finished" sinks below them.
+_PRIORITY = {KIND_WAITING: 0, KIND_STALLED: 0, KIND_FINISHED: 1}
+_ISSUE_REF_RE = re.compile(r"github\.com/[^/]+/([^/]+)/(?:issues|pull)/(\d+)", re.IGNORECASE)
+
+
+def card_priority(insight: AssistantInsight) -> int:
+    """Lower sorts first: active attention above finished/PR-review."""
+    return _PRIORITY.get(insight.kind, 0)
+
+
+def issue_ref(issue_url: str | None) -> str | None:
+    """Short ``repo#number`` for an issue/PR URL, or None."""
+    match = _ISSUE_REF_RE.search(issue_url or "")
+    return f"{match.group(1)}#{match.group(2)}" if match else None
 
 
 @dataclass(frozen=True)
@@ -131,26 +148,30 @@ def structured_trigger(
         and session.issue_status_kind == "open"
         and _BLOCKED_ISSUE_RE.search(session.last_text or "")
     ):
+        ref = issue_ref(session.issue_url)
+        headline = f"{ref} blocked for human action" if ref else "Blocked for human action"
         return AssistantInsight(
             key,
             KIND_WAITING,
-            "Blocked for human action",
+            headline,
             "The kanban agent parked this issue with claude:blocked while it is still open. "
             "Review the diagnosis, then close or retrigger it.",
         )
 
-    # 4. Finished-and-resting with an open PR that no one has reviewed.
+    # 4. Finished-and-resting with an OPEN PR that no one has reviewed. This is
+    #    deterministic and re-evaluated every refresh from live PR status, so a
+    #    merged or closed PR simply stops producing a card (no stale attention).
     if not session.thinking:
         pull = _open_pull(context)
         if pull is not None:
             title = getattr(pull, "title", "") or ""
             detail = (
-                f"{title} is open while its chat is idle."
+                f"{title} — ready for your review."
                 if title
-                else "The PR is open while its chat is idle."
+                else "The pull request is open and ready for your review."
             )
             return AssistantInsight(
-                key, KIND_WAITING, f"PR #{pull.number} awaiting review", detail
+                key, KIND_FINISHED, f"PR #{pull.number} ready for review", detail
             )
 
     # 5. Still "thinking" but the transcript has gone silent — likely hung.
@@ -187,16 +208,21 @@ def classification_prompt(session: Session) -> str:
     """One tiny prompt: does THIS agent's final message need the operator?"""
     task = _head(session.initial_prompt or session.title, _MAX_TASK_CHARS)
     final_message = _tail(session.last_text, _MAX_MESSAGE_CHARS)
-    return f"""You triage one coding agent for a human operator. Decide the single question:
-does this agent need the operator's attention now?
+    return f"""You triage one coding agent for a human operator. Decide one thing:
+does this agent need the operator to do something now?
 
-Set attention=true when the agent's final message indicates it stopped without finishing,
-failed, is blocked, is unsure, hit an error it could not resolve, is asking the operator to
-decide or act, or otherwise handed work back to a human. Set attention=false when it reports
-the task done and resolved with nothing left for the operator.
+Set attention=false when the agent completed what it was asked — INCLUDING when it opened a
+pull request, committed, or pushed. Finishing the task and opening a PR is the normal
+successful outcome; that PR is reviewed elsewhere, so a completed-and-opened-PR message is
+NOT a reason for attention.
 
-Bias toward attention=true when the message is ambiguous or you are unsure — a missed handoff
-is worse than an extra card the operator dismisses. Do not use tools. Judge only the text below.
+Set attention=true only when the agent stopped WITHOUT finishing: it failed, is blocked, hit
+an error it could not resolve, is unsure and wants guidance, or is explicitly asking the
+operator a question or to make a decision.
+
+If you genuinely cannot tell whether it finished or got stuck, set attention=true. But do not
+treat a message that describes completed work plus a PR/commit as uncertain — that is done.
+Do not use tools. Judge only the text below.
 
 Return:
 - attention: boolean

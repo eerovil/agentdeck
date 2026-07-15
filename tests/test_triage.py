@@ -68,18 +68,20 @@ def test_trailing_question_is_a_waiting_card():
     assert "Which database?" in card.detail
 
 
-def test_blocked_kanban_issue_is_a_waiting_card():
+def test_blocked_kanban_issue_names_the_issue():
     session = _session(
         worker_type="kanban",
         issue_status_kind="open",
+        issue_url="https://github.com/ScandinavianOutdoor/store/issues/123",
         last_text="Diagnosis done. claude:blocked pending a human decision.",
     )
     card = _trigger(session)
     assert card is not None
-    assert card.headline == "Blocked for human action"
+    assert card.kind == "waiting"
+    assert card.headline == "store#123 blocked for human action"
 
 
-def test_open_pull_request_on_idle_session_is_a_waiting_card():
+def test_open_pull_request_on_idle_session_is_a_finished_card():
     context = GitContext(
         repository="eerovil/agentdeck",
         branch="feature/x",
@@ -96,7 +98,8 @@ def test_open_pull_request_on_idle_session_is_a_waiting_card():
     )
     card = _trigger(_session(), context=context)
     assert card is not None
-    assert card.headline == "PR #42 awaiting review"
+    assert card.kind == "finished"
+    assert card.headline == "PR #42 ready for review"
     assert "Add the thing" in card.detail
 
 
@@ -178,6 +181,33 @@ def test_classification_prompt_includes_task_and_final_message():
     assert "Port the translator" in prompt
     assert "the API key is missing" in prompt
     assert "attention" in prompt
+
+
+def test_classification_prompt_treats_opened_pr_as_done():
+    prompt = classification_prompt(_session(last_role="agent", last_text="x"))
+    # An opened-PR completion must not be flagged; the prompt must say so explicitly.
+    assert "pull request" in prompt.lower()
+    assert "attention=false" in prompt
+
+
+def test_card_priority_sinks_finished_below_active():
+    from agentdeck.triage import AssistantInsight, card_priority
+
+    assert card_priority(AssistantInsight("k", "waiting", "h", "d")) < card_priority(
+        AssistantInsight("k", "finished", "h", "d")
+    )
+    assert card_priority(AssistantInsight("k", "stalled", "h", "d")) < card_priority(
+        AssistantInsight("k", "finished", "h", "d")
+    )
+
+
+def test_issue_ref_parses_issue_and_pull_urls():
+    from agentdeck.triage import issue_ref
+
+    assert issue_ref("https://github.com/ScandinavianOutdoor/store/issues/12") == "store#12"
+    assert issue_ref("https://github.com/x/tilhi/pull/99") == "tilhi#99"
+    assert issue_ref(None) is None
+    assert issue_ref("not a url") is None
 
 
 def test_verdict_card_is_stalled_kind():

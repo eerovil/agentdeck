@@ -210,6 +210,21 @@ async def test_checkpoint_restores_view_without_reclassifying(tmp_path):
     reloaded_runner.assert_not_awaited()  # cached verdict survived the restart
 
 
+def test_dedupe_and_order_collapses_duplicates_and_sinks_finished():
+    cards = [
+        AssistantInsight("a", "finished", "PR #255 ready for review", "d"),
+        AssistantInsight("b", "waiting", "Asked you a question", "d"),
+        AssistantInsight("c", "finished", "PR #255 ready for review", "d"),  # duplicate PR
+        AssistantInsight("d", "finished", "PR #42 ready for review", "d"),
+    ]
+    ordered = AssistantService._dedupe_and_order(cards)
+    assert [c.headline for c in ordered] == [
+        "Asked you a question",  # active attention first
+        "PR #255 ready for review",  # deduped to one, finished sinks below
+        "PR #42 ready for review",
+    ]
+
+
 def test_run_codex_is_exported():
     assert callable(run_codex)
 

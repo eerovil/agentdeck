@@ -31,6 +31,7 @@ from .triage import (
     AssistantInsight,
     AssistantView,
     Verdict,
+    card_priority,
     classification_prompt,
     needs_llm,
     parse_verdict,
@@ -190,7 +191,7 @@ class AssistantService:
     # --- persistence ---------------------------------------------------
 
     def _restore_checkpoint(self, payload: dict[str, Any] | None) -> None:
-        if not payload or payload.get("version") != 2:
+        if not payload or payload.get("version") != 3:
             return
         try:
             raw_view = payload["view"]
@@ -227,7 +228,7 @@ class AssistantService:
 
     def _checkpoint_payload(self) -> dict[str, Any]:
         return {
-            "version": 2,
+            "version": 3,
             "view": {
                 "summary": self.view.summary,
                 "insights": [
@@ -468,6 +469,7 @@ class AssistantService:
                     cards.append(verdict_card(session.key, verdict))
 
         cards = self._apply_handled(cards, signatures)
+        cards = self._dedupe_and_order(cards)
         view = AssistantView(
             state="ready",
             summary=tracking_summary(len(cards)),
@@ -499,6 +501,25 @@ class AssistantService:
                     self.state.db.delete_assistant_handled(card.session_key)
             visible.append(card)
         return visible
+
+    @staticmethod
+    def _dedupe_and_order(cards: list[AssistantInsight]) -> list[AssistantInsight]:
+        """Collapse identical cards (same PR/issue on two chats) and sink finished ones.
+
+        Headlines carry their identity (``PR #255 ready for review``, ``store#12
+        blocked …``), so equal headlines are genuine duplicates. Active-attention
+        cards keep their incoming (blocking-first, recency) order; ``finished``
+        PR-review cards stably sort to the bottom.
+        """
+        seen: set[str] = set()
+        unique: list[AssistantInsight] = []
+        for card in cards:
+            if card.headline in seen:
+                continue
+            seen.add(card.headline)
+            unique.append(card)
+        unique.sort(key=card_priority)
+        return unique
 
     def _commit_view(
         self, view: AssistantView, signatures: dict[str, str], *, manual: bool
