@@ -152,22 +152,22 @@ def test_needs_llm_only_for_resting_agent_with_final_prose():
     assert needs_llm(_session(last_role="agent", last_text="   ")) is False
 
 
-def test_parse_verdict_fails_open_on_missing_attention():
+def test_parse_verdict_fails_open_on_missing_status():
     verdict = parse_verdict({"summary": "Ran the migration", "reason": ""})
-    assert verdict.attention is True
+    assert verdict.status == "blocked"
     assert verdict.summary == "Ran the migration"
 
 
-def test_parse_verdict_respects_explicit_false():
+def test_parse_verdict_keeps_first_line_of_summary():
     verdict = parse_verdict(
-        {"attention": False, "summary": "Merged the PR\nextra", "reason": "nope"}
+        {"status": "done", "summary": "Merged the PR\nextra", "reason": "nope"}
     )
-    assert verdict.attention is False
+    assert verdict.status == "done"
     assert verdict.summary == "Merged the PR"  # first line only
 
 
 def test_parse_verdict_defaults_summary_when_blank():
-    verdict = parse_verdict({"attention": True, "summary": "", "reason": "stuck"})
+    verdict = parse_verdict({"status": "blocked", "summary": "", "reason": "stuck"})
     assert verdict.summary == "Finished"
 
 
@@ -180,14 +180,16 @@ def test_classification_prompt_includes_task_and_final_message():
     prompt = classification_prompt(session)
     assert "Port the translator" in prompt
     assert "the API key is missing" in prompt
-    assert "attention" in prompt
+    assert "status" in prompt
 
 
-def test_classification_prompt_treats_opened_pr_as_done():
+def test_classification_prompt_offers_three_states_with_pr_review():
     prompt = classification_prompt(_session(last_role="agent", last_text="x"))
-    # An opened-PR completion must not be flagged; the prompt must say so explicitly.
+    # PR-in-review is its own state (needs you, lower priority), not "done".
+    assert '"blocked"' in prompt
+    assert '"review"' in prompt
+    assert '"done"' in prompt
     assert "pull request" in prompt.lower()
-    assert "attention=false" in prompt
 
 
 def test_card_priority_sinks_finished_below_active():
@@ -210,13 +212,19 @@ def test_issue_ref_parses_issue_and_pull_urls():
     assert issue_ref("not a url") is None
 
 
-def test_verdict_card_is_stalled_kind():
+def test_verdict_card_maps_status_to_kind():
     from agentdeck.triage import Verdict
 
-    card = verdict_card("codex:test:thread-1", Verdict(True, "Did the thing", "But failed"))
-    assert card.kind == "stalled"
-    assert card.headline == "Did the thing"
-    assert card.detail == "But failed"
+    blocked = verdict_card("k", Verdict("blocked", "Did the thing", "But failed"))
+    assert blocked.kind == "stalled"
+    assert blocked.headline == "Did the thing"
+    assert blocked.detail == "But failed"
+
+    review = verdict_card("k", Verdict("review", "Opened a PR", ""))
+    assert review.kind == "finished"  # PR-in-review still needs you, lower priority
+    assert review.detail  # a default review nudge is filled in
+
+    assert verdict_card("k", Verdict("done", "All good", "")) is None
 
 
 def test_tracking_summary_phrasing():

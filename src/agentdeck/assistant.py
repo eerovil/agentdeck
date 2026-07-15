@@ -191,7 +191,7 @@ class AssistantService:
     # --- persistence ---------------------------------------------------
 
     def _restore_checkpoint(self, payload: dict[str, Any] | None) -> None:
-        if not payload or payload.get("version") != 4:
+        if not payload or payload.get("version") != 5:
             return
         try:
             raw_view = payload["view"]
@@ -217,7 +217,7 @@ class AssistantService:
             self._verdicts = {
                 str(k): (
                     str(entry[0]),
-                    Verdict(bool(entry[1]), str(entry[2]), str(entry[3])),
+                    Verdict(str(entry[1]), str(entry[2]), str(entry[3])),
                 )
                 for k, entry in payload.get("verdicts", {}).items()
                 if isinstance(entry, list) and len(entry) == 4
@@ -228,7 +228,7 @@ class AssistantService:
 
     def _checkpoint_payload(self) -> dict[str, Any]:
         return {
-            "version": 4,
+            "version": 5,
             "view": {
                 "summary": self.view.summary,
                 "insights": [
@@ -246,7 +246,7 @@ class AssistantService:
             },
             "signatures": self._signatures,
             "verdicts": {
-                key: [sig, verdict.attention, verdict.summary, verdict.reason]
+                key: [sig, verdict.status, verdict.summary, verdict.reason]
                 for key, (sig, verdict) in self._verdicts.items()
             },
         }
@@ -409,7 +409,7 @@ class AssistantService:
             first_line = (session.last_text or "").strip().splitlines()
             summary = first_line[0][:140].rstrip() if first_line else "Finished"
             reason = "Deckhand could not read this agent's final message."
-            return Verdict(True, summary, reason), False
+            return Verdict("blocked", summary, reason), False
 
     async def refresh(self, *, manual: bool = False) -> None:
         sessions = self._triage_sessions()
@@ -442,8 +442,9 @@ class AssistantService:
                 continue
             cached = self._verdicts.get(session.key)
             if cached is not None and cached[0] == signature:
-                if cached[1].attention:
-                    cards.append(verdict_card(session.key, cached[1]))
+                card = verdict_card(session.key, cached[1])
+                if card is not None:
+                    cards.append(card)
             elif account is not None:
                 pending.append((session, signature))
 
@@ -465,8 +466,9 @@ class AssistantService:
                     degraded = True
                     cached = self._verdicts.get(session.key)
                     verdict = cached[1] if cached is not None else verdict
-                if verdict.attention:
-                    cards.append(verdict_card(session.key, verdict))
+                card = verdict_card(session.key, verdict)
+                if card is not None:
+                    cards.append(card)
 
         cards = self._apply_handled(cards, signatures)
         cards = self._dedupe_and_order(cards)

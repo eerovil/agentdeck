@@ -10,8 +10,9 @@ from agentdeck.models import PendingInteraction, Session, SessionStatus
 from agentdeck.providers import PROVIDERS
 from agentdeck.state import AppState
 
-_ATTENTION = {"attention": True, "summary": "Stopped early", "reason": "Needs a decision"}
-_CLEAR = {"attention": False, "summary": "All tests pass", "reason": ""}
+_ATTENTION = {"status": "blocked", "summary": "Stopped early", "reason": "Needs a decision"}
+_REVIEW = {"status": "review", "summary": "Opened a PR", "reason": "Review it"}
+_CLEAR = {"status": "done", "summary": "All tests pass", "reason": ""}
 
 
 class _StubResolver:
@@ -93,6 +94,19 @@ async def test_finished_agent_cleared_by_the_model_shows_no_card(tmp_path):
 
     assert assistant.view.insights == ()
     assert assistant.view.summary == "Nothing needs your attention right now."
+
+
+async def test_finished_agent_with_pr_review_shows_a_finished_card(tmp_path):
+    runner = AsyncMock(return_value=_REVIEW)
+    state = AppState()
+    state.update_session(_finished(tmp_path))
+    assistant = _service(tmp_path, runner, state=state)
+
+    await assistant.refresh()
+
+    (insight,) = assistant.view.insights
+    assert insight.kind == "finished"  # PR-in-review still surfaces, as a review card
+    assert insight.headline == "Opened a PR"
 
 
 async def test_verdict_is_cached_until_the_final_message_changes(tmp_path):

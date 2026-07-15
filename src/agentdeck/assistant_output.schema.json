@@ -2,9 +2,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "required": ["attention", "summary", "reason"],
+  "required": ["status", "summary", "reason"],
   "properties": {
-    "attention": {"type": "boolean"},
+    "status": {"type": "string", "enum": ["blocked", "review", "done"]},
     "summary": {"type": "string"},
     "reason": {"type": "string"}
   }
