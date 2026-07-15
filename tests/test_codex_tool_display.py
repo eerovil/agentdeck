@@ -42,8 +42,8 @@ def test_elevated_shell_call_shows_approval_reason_and_command(tmp_path):
     path.write_text(
         _tool_call(
             'const r = await tools.exec_command({cmd:"git add AGENTS.md",'
-            'sandbox_permissions:"require_escalated",'
-            'justification:"Allow staging the requested guide?"}); text(r.output)'
+            '"sandbox_permissions":"require_escalated",'
+            '"justification":"Allow staging the requested guide?"}); text(r.output)'
         )
         + "\n"
     )

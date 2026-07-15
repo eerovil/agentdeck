@@ -191,9 +191,8 @@ def _tool_string_field(value: object, key: str) -> str | None:
     if isinstance(parsed, dict):
         item = parsed.get(key)
         return item if isinstance(item, str) and item else None
-    match = re.search(
-        rf'\b{re.escape(key)}\s*:\s*"((?:\\.|[^"\\])*)"', text
-    )
+    key_pattern = rf'(?<!\w)(?:"{re.escape(key)}"|{re.escape(key)})'
+    match = re.search(rf'{key_pattern}\s*:\s*"((?:\\.|[^"\\])*)"', text)
     return _decode_js_string(match.group(1)) if match else None
 
 
