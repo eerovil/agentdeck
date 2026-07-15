@@ -399,13 +399,41 @@ def test_codex_summarizes_wrapped_tools_and_keeps_private_reasoning_heartbeat(tm
     tool, edit, heartbeat = transcripts.read_events(path).events
     assert tool.tool_name == "exec"
     assert tool.tool_summary == "cmd: uv run pytest -q"
-    assert tool.tool_detail == "uv run pytest -q"
+    assert tool.tool_detail == (
+        "Command\nuv run pytest -q\n\nWorking directory\n/tmp"
+    )
     assert edit.tool_summary == "path: src/app.py"
     assert edit.tool_detail.startswith("*** Begin Patch\n*** Update File: src/app.py")
     assert heartbeat.role == "system"
     assert heartbeat.tool_name == "reasoning"
     assert heartbeat.tool_summary == "Thinking"
     assert heartbeat.text is None
+
+
+def test_codex_parses_json_quoted_exec_wrapper_fields(tmp_path):
+    path = tmp_path / "rollout.jsonl"
+    call = _line(
+        "response_item",
+        {
+            "type": "custom_tool_call",
+            "name": "exec",
+            "input": (
+                'const r = await tools.exec_command({"cmd":"sed -n \'1,20p\' app.py",'
+                '"workdir":"/srv/app","yield_time_ms":10000,'
+                '"max_output_tokens":12000}); text(r.output);'
+            ),
+        },
+    )
+    path.write_text(json.dumps(call) + "\n")
+
+    (event,) = transcripts.read_events(path).events
+    assert event.tool_summary == "cmd: sed -n '1,20p' app.py"
+    assert event.tool_detail == (
+        "Command\nsed -n '1,20p' app.py\n\n"
+        "Working directory\n/srv/app\n\n"
+        "Wait before update\n10 seconds\n\n"
+        "Output limit\n12,000 tokens"
+    )
 
 
 def test_codex_filters_only_internal_system_preamble(tmp_path):

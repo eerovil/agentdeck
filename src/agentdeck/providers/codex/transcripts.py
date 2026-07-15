@@ -173,10 +173,9 @@ def _decode_js_string(value: str) -> str:
 
 
 def _wrapped_exec_command(text: str) -> str | None:
-    match = re.search(
-        r'\bexec_command\(\s*\{\s*cmd\s*:\s*"((?:\\.|[^"\\])*)"', text
-    )
-    return _decode_js_string(match.group(1)) if match else None
+    if not re.search(r"\b(?:tools\.)?exec_command\s*\(", text):
+        return None
+    return _tool_string_field(text, "cmd")
 
 
 def _tool_string_field(value: object, key: str) -> str | None:
@@ -194,6 +193,38 @@ def _tool_string_field(value: object, key: str) -> str | None:
     key_pattern = rf'(?<!\w)(?:"{re.escape(key)}"|{re.escape(key)})'
     match = re.search(rf'{key_pattern}\s*:\s*"((?:\\.|[^"\\])*)"', text)
     return _decode_js_string(match.group(1)) if match else None
+
+
+def _tool_number_field(value: object, key: str) -> int | None:
+    """Read a non-negative integer from JSON or a wrapped JavaScript call."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, dict):
+        item = parsed.get(key)
+        return item if isinstance(item, int) and not isinstance(item, bool) and item >= 0 else None
+    key_pattern = rf'(?<!\w)(?:"{re.escape(key)}"|{re.escape(key)})'
+    match = re.search(rf"{key_pattern}\s*:\s*(\d+)", text)
+    return int(match.group(1)) if match else None
+
+
+def _wrapped_exec_detail(value: str, command: str) -> str:
+    """Turn the Codex JavaScript shell wrapper into readable labelled fields."""
+    sections = [f"Command\n{command}"]
+    workdir = _tool_string_field(value, "workdir")
+    if workdir:
+        sections.append(f"Working directory\n{workdir}")
+    wait_ms = _tool_number_field(value, "yield_time_ms")
+    if wait_ms is not None:
+        sections.append(f"Wait before update\n{wait_ms / 1000:g} seconds")
+    output_tokens = _tool_number_field(value, "max_output_tokens")
+    if output_tokens is not None:
+        sections.append(f"Output limit\n{output_tokens:,} tokens")
+    return "\n\n".join(sections)[:_MAX_TOOL_DETAIL]
 
 
 def _tool_display_name(native_name: object, value: object) -> str | None:
@@ -265,7 +296,7 @@ def _tool_detail(value: object, display_name: str | None = None) -> str | None:
             sections.append(f"Command\n{command}")
         return "\n\n".join(sections)[:_MAX_TOOL_DETAIL]
     if command:
-        return command[:_MAX_TOOL_DETAIL]
+        return _wrapped_exec_detail(text, command)
     patch = re.search(r'\bconst\s+patch\s*=\s*"((?:\\.|[^"\\])*)"', text)
     if patch:
         return _decode_js_string(patch.group(1))[:_MAX_TOOL_DETAIL]
