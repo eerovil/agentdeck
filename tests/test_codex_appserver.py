@@ -7,7 +7,11 @@ from unittest.mock import AsyncMock
 
 from agentdeck.models import Account
 from agentdeck.providers.codex import WRITABLE_ROOTS_CONFIG_OVERRIDE
-from agentdeck.providers.codex.appserver import CodexAppServer, _turn_input
+from agentdeck.providers.codex.appserver import (
+    AGENTDECK_DEVELOPER_INSTRUCTIONS,
+    CodexAppServer,
+    _turn_input,
+)
 
 
 def _server(tmp_path: Path) -> CodexAppServer:
@@ -298,6 +302,7 @@ async def test_owned_thread_start_steer_and_interrupt(tmp_path):
         "thread/start",
         {
             "cwd": str(tmp_path),
+            "developerInstructions": AGENTDECK_DEVELOPER_INSTRUCTIONS,
             "ephemeral": False,
             "threadSource": "agentdeck",
             "sandbox": "workspace-write",

@@ -30,6 +30,17 @@ log = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT_S = 30.0
 
+AGENTDECK_DEVELOPER_INSTRUCTIONS = """
+Complete the user's whole requested workflow before ending the turn. A successful
+tool call, including a commit or push, is only an intermediate result whenever
+requested, promised, or repository-required work remains, such as tests,
+deployment, or live verification. After every tool result, re-check the user's
+request and your stated commitments. Do not end a turn after a tool call without
+either continuing the remaining work or sending a user-facing final response.
+Every turn must conclude with a final response that summarizes the outcome; if
+blocked, explain the blocker and what is needed to proceed.
+""".strip()
+
 # The app-server emits one JSON-RPC message per stdout line. asyncio's default
 # StreamReader limit is 64 KiB, so a single large event (e.g. a big tool result)
 # raises LimitOverrunError ("Separator is found, but chunk is longer than
@@ -524,6 +535,7 @@ class CodexAppServer:
         await self.start()
         params = {
             "cwd": str(cwd),
+            "developerInstructions": AGENTDECK_DEVELOPER_INSTRUCTIONS,
             "ephemeral": False,
             "threadSource": "agentdeck",
         }
