@@ -5,6 +5,14 @@ follow-ups here instead of creating GitHub issues unless external coordination i
 
 ## Open
 
+- [ ] Make Deckhand refresh fast when chats and PR state are unchanged.
+  - Measure where unchanged refresh time is spent: session collection, Git/PR context resolution,
+    evidence comparison, or an unnecessary Luna invocation.
+  - Verify automatic polling and manual Refresh separately; manual refresh should explain whether
+    it is forcing a model run even when no material evidence changed.
+  - Done when an unchanged refresh completes quickly without invoking Luna, real transcript or PR
+    changes still trigger analysis, and timing plus invocation-count regressions cover both paths.
+
 - [ ] Fix duplicate, unresponsive Send buttons in the chat composer.
   - Reproduce the duplicate controls after live Stop/Send updates.
   - Check whether the `composer-controls` SSE fragment nests inside its own swap target,
