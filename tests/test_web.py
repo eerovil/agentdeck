@@ -103,7 +103,7 @@ async def test_dashboard_renders_usage_and_session(tmp_path):
     # The "hide closed" filter toggle is present.
     assert 'id="hide-closed"' in r.text
     assert 'id="assistant-panel"' in r.text
-    assert "Orchestration assistant" in r.text
+    assert "Attention triage" in r.text
 
 
 async def test_dashboard_collapsed_usage_renders_weekly_only_plan(tmp_path):
@@ -201,8 +201,8 @@ async def test_orchestration_assistant_item_can_be_marked_handled(tmp_path):
         ),
     )
     session = app.state.app_state.sessions["claude_code:test:sid1"]
-    evidence = assistant._evidence_signature(assistant._snapshot_row(session))
-    assistant._evidence_signatures["claude_code:test:sid1"] = evidence
+    evidence = assistant._evidence_signature(session, None, None)
+    assistant._signatures["claude_code:test:sid1"] = evidence
 
     async with _client(app) as client:
         response = await client.post(
@@ -1506,7 +1506,7 @@ async def test_session_sse_primes_desktop_list(tmp_path):
     assert "event: usage" in usage
     assert "event: sessions" in sessions
     assert "event: assistant" in assistant
-    assert "Orchestration assistant" in assistant
+    assert "Attention triage" in assistant
     assert "The database choice is blocking this chat." not in assistant
     assert "event: assistant-session" in assistant_session
     assert "The database choice is blocking this chat." in assistant_session

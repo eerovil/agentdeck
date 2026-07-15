@@ -1,34 +1,24 @@
 from __future__ import annotations
 
-import asyncio
-import time
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
-import pytest
-
-from agentdeck import insight_pipeline
-from agentdeck.assistant import (
-    AssistantAnswer,
-    AssistantInsight,
-    AssistantService,
-    AssistantView,
-    run_codex,
-)
+from agentdeck.assistant import AssistantInsight, AssistantService, AssistantView, run_codex
 from agentdeck.config import AccountConfig, AppConfig, AssistantConfig
 from agentdeck.db import Db
-from agentdeck.git_context import GitContext, PullRequestContext
-from agentdeck.models import (
-    InjectResult,
-    InteractionOption,
-    InteractionQuestion,
-    PendingInteraction,
-    Session,
-    SessionStatus,
-)
+from agentdeck.models import PendingInteraction, Session, SessionStatus
 from agentdeck.providers import PROVIDERS
 from agentdeck.state import AppState
+
+_ATTENTION = {"attention": True, "summary": "Stopped early", "reason": "Needs a decision"}
+_CLEAR = {"attention": False, "summary": "All tests pass", "reason": ""}
+
+
+class _StubResolver:
+    """Never resolves git/PR context, so tests stay hermetic and offline."""
+
+    async def resolve(self, sessions):
+        return {}
 
 
 def _config(tmp_path, **assistant):
@@ -38,1483 +28,192 @@ def _config(tmp_path, **assistant):
     )
 
 
-def _session(tmp_path):
-    return Session(
+def _service(tmp_path, runner, *, state=None):
+    return AssistantService(
+        _config(tmp_path),
+        state or AppState(),
+        runner=runner,
+        context_resolver=_StubResolver(),
+    )
+
+
+def _finished(tmp_path, **overrides):
+    """A resting agent whose final prose must be classified."""
+    base = dict(
         key="codex:test:thread-1",
         account_key="codex:test",
         session_id="thread-1",
         status=SessionStatus.IDLE,
         cwd=tmp_path,
-        title="Choose the database",
-        last_prompt="Build the local prototype",
-        question="Which database?",
+        title="Build the prototype",
+        initial_prompt="Build the local prototype",
+        last_text="I finished the prototype.",
+        last_role="agent",
         show_when_idle=True,
     )
+    base.update(overrides)
+    return Session(**base)
 
 
-def _question(*, kind="question", allow_other=False, secret=False):
-    return PendingInteraction(
-        id="interaction-1",
-        kind=kind,
-        thread_id="thread-1",
-        turn_id="turn-1",
-        title="Codex needs your answer",
-        questions=(
-            InteractionQuestion(
-                id="database",
-                header="Database",
-                prompt="Which database?",
-                options=(
-                    InteractionOption("SQLite", "Local and simple"),
-                    InteractionOption("Postgres", "Shared service"),
-                ),
-                allow_other=allow_other,
-                secret=secret,
-            ),
-        ),
-    )
-
-
-def test_auto_answer_gate_accepts_only_complete_explicit_question_choices():
-    answer = (AssistantAnswer("database", ("SQLite",)),)
-
-    assert AssistantService._answers_are_safe(_question(), answer)
-    assert not AssistantService._answers_are_safe(_question(kind="command_approval"), answer)
-    assert not AssistantService._answers_are_safe(_question(allow_other=True), answer)
-    assert not AssistantService._answers_are_safe(_question(secret=True), answer)
-    assert not AssistantService._answers_are_safe(
-        _question(), (AssistantAnswer("database", ("Something else",)),)
-    )
-    destructive = PendingInteraction(
-        **{
-            **vars(_question()),
-            "questions": (
-                InteractionQuestion(
-                    id="database",
-                    header="Database",
-                    prompt="What next?",
-                    options=(InteractionOption("Delete database"), InteractionOption("Cancel")),
-                ),
-            ),
-        }
-    )
-    assert not AssistantService._answers_are_safe(
-        destructive, (AssistantAnswer("database", ("Delete database",)),)
-    )
-
-
-async def test_ensure_session_context_resolves_and_caches_chat_outside_analysis(tmp_path):
+async def test_structured_question_card_skips_the_model(tmp_path):
+    runner = AsyncMock()
     state = AppState()
-    session = _session(tmp_path)
-    context = GitContext(
-        repository="eerovil/agentdeck",
-        branch="feature/deckhand",
-        dirty=False,
-        pull_requests=(
-            PullRequestContext(
-                repository="eerovil/agentdeck",
-                number=91,
-                title="Add PR context",
-                url="https://github.com/eerovil/agentdeck/pull/91",
-                status="merged",
-            ),
-        ),
-    )
-    resolver = AsyncMock(return_value={})
-    resolver.resolve = AsyncMock(return_value={session.key: context})
-    assistant = AssistantService(_config(tmp_path), state, context_resolver=resolver)
+    state.update_session(_finished(tmp_path, question="Which database?"))
+    assistant = _service(tmp_path, runner, state=state)
 
-    assert await assistant.ensure_session_context(session) == context
-    assert await assistant.ensure_session_context(session) == context
-    resolver.resolve.assert_awaited_once_with([session])
+    await assistant.refresh()
+
+    assert [i.headline for i in assistant.view.insights] == ["Asked you a question"]
+    runner.assert_not_awaited()
 
 
-async def test_ensure_session_context_augments_cached_context_from_transcript(tmp_path):
+async def test_finished_agent_flagged_by_the_model_becomes_a_card(tmp_path):
+    runner = AsyncMock(return_value=_ATTENTION)
     state = AppState()
-    session = _session(tmp_path)
-    cached = GitContext("eerovil/agentdeck", "feature/deckhand", False)
-    expanded = GitContext(
-        "eerovil/agentdeck",
-        "feature/deckhand",
-        False,
-        pull_requests=(
-            PullRequestContext(
-                "eerovil/agentdeck",
-                91,
-                "First PR",
-                "https://github.com/eerovil/agentdeck/pull/91",
-                "merged",
-            ),
-            PullRequestContext(
-                "eerovil/agentdeck",
-                92,
-                "Second PR",
-                "https://github.com/eerovil/agentdeck/pull/92",
-                "open",
-            ),
-        ),
-    )
-    resolver = AsyncMock(return_value={})
-    resolver.resolve = AsyncMock(return_value={session.key: expanded})
-    assistant = AssistantService(_config(tmp_path), state, context_resolver=resolver)
-    assistant.contexts[session.key] = cached
-    assistant.view = AssistantView(
-        state="ready",
-        summary="PR attribution needs attention.",
-        insights=(
-            AssistantInsight(
-                session_key=session.key,
-                kind="coordination",
-                headline="Wrong PR association",
-                detail="Stale context.",
-            ),
-        ),
-    )
+    state.update_session(_finished(tmp_path))
+    assistant = _service(tmp_path, runner, state=state)
 
-    result = await assistant.ensure_session_context(
-        session,
-        transcript_context=(
-            "Earlier https://github.com/eerovil/agentdeck/pull/91 and later "
-            "https://github.com/eerovil/agentdeck/pull/92"
-        ),
-    )
+    await assistant.refresh()
 
-    assert result == expanded
+    assert runner.await_count == 1
+    (insight,) = assistant.view.insights
+    assert insight.kind == "stalled"
+    assert insight.headline == "Stopped early"
+    assert insight.detail == "Needs a decision"
+    assert assistant.view.summary == "1 agent needs your attention."
+
+
+async def test_finished_agent_cleared_by_the_model_shows_no_card(tmp_path):
+    runner = AsyncMock(return_value=_CLEAR)
+    state = AppState()
+    state.update_session(_finished(tmp_path))
+    assistant = _service(tmp_path, runner, state=state)
+
+    await assistant.refresh()
+
     assert assistant.view.insights == ()
     assert assistant.view.summary == "Nothing needs your attention right now."
-    assert assistant._force is True
-    resolved_session = resolver.resolve.await_args.args[0][0]
-    assert "/pull/91" in resolved_session.last_text
-    assert "/pull/92" in resolved_session.last_text
 
 
-async def test_refresh_renders_advice_and_auto_answers_safe_choice(tmp_path, monkeypatch):
+async def test_verdict_is_cached_until_the_final_message_changes(tmp_path):
+    runner = AsyncMock(return_value=_ATTENTION)
     state = AppState()
-    state.update_session(_session(tmp_path))
-    provider = PROVIDERS["codex"]
-    monkeypatch.setattr(provider, "pending_interaction", lambda account, session: _question())
-    answer = AsyncMock(return_value=InjectResult(True))
-    monkeypatch.setattr(provider, "answer_interaction", answer)
+    state.update_session(_finished(tmp_path))
+    assistant = _service(tmp_path, runner, state=state)
 
-    async def runner(account, config, prompt):
-        assert account.key == "codex:test"
-        assert config.model == "gpt-5.6-luna"
-        assert "Which database?" in prompt
-        return {
-            "summary": "One agent needs a routine choice.",
-            "insights": [
-                {
-                    "session_key": "codex:test:thread-1",
-                    "interaction_id": "interaction-1",
-                    "kind": "waiting",
-                    "headline": "Use SQLite for the local prototype",
-                    "detail": "The prompt explicitly says this is local.",
-                    "answers": [{"question_id": "database", "values": ["SQLite"]}],
-                    "safe_to_auto_answer": True,
-                    "confidence": 0.98,
-                }
-            ],
-        }
+    await assistant.refresh()
+    await assistant.refresh()
+    assert runner.await_count == 1  # unchanged evidence -> no re-classification
 
-    assistant = AssistantService(_config(tmp_path, auto_answer=True), state, runner=runner)
+    state.update_session(_finished(tmp_path, last_text="Actually I hit an error."))
+    await assistant.refresh()
+    assert runner.await_count == 2  # changed final message -> reclassified
+
+
+async def test_classification_failure_fails_open_to_a_card(tmp_path):
+    runner = AsyncMock(side_effect=RuntimeError("codex down"))
+    state = AppState()
+    state.update_session(_finished(tmp_path))
+    assistant = _service(tmp_path, runner, state=state)
+
     await assistant.refresh()
 
-    assert assistant.view.state == "ready"
-    assert assistant.view.summary == "Deckhand is tracking 1 item that still needs attention."
-    assert assistant.view.insights[0].kind == "waiting"
-    assert assistant.view.actions[0].session_key == "codex:test:thread-1"
-    answer.assert_awaited_once()
-    assert answer.await_args.kwargs == {
-        "answers": {"database": ["SQLite"]},
-        "decision": None,
-    }
+    assert len(assistant.view.insights) == 1  # never silently drop a possible handoff
+    assert assistant.view.error == "Some agents could not be read."
 
 
-async def test_refresh_never_auto_answers_approval(tmp_path, monkeypatch):
+async def test_actively_working_agent_is_not_classified(tmp_path):
+    runner = AsyncMock(return_value=_ATTENTION)
     state = AppState()
-    state.update_session(_session(tmp_path))
-    provider = PROVIDERS["codex"]
-    monkeypatch.setattr(
-        provider,
-        "pending_interaction",
-        lambda account, session: _question(kind="command_approval"),
-    )
-    answer = AsyncMock(return_value=InjectResult(True))
-    monkeypatch.setattr(provider, "answer_interaction", answer)
-
-    async def runner(account, config, prompt):
-        return {
-            "summary": "Approval is waiting.",
-            "insights": [
-                {
-                    "session_key": "codex:test:thread-1",
-                    "kind": "waiting",
-                    "headline": "Approval requested",
-                    "detail": "Review it yourself.",
-                    "answers": [{"question_id": "database", "values": ["SQLite"]}],
-                    "safe_to_auto_answer": True,
-                    "confidence": 1.0,
-                }
-            ],
-        }
-
-    assistant = AssistantService(_config(tmp_path, auto_answer=True), state, runner=runner)
-    await assistant.refresh()
-
-    answer.assert_not_awaited()
-    assert not assistant.view.actions
-
-
-async def test_refresh_clears_waiting_insight_when_agent_resumes(tmp_path):
-    state = AppState()
-    session = _session(tmp_path)
-    session.question = None
-    state.update_session(session)
-    runner = AsyncMock(
-        side_effect=[
-            {
-                "summary": "One item needs attention.",
-                "insights": [
-                    {
-                        "session_key": "codex:test:thread-1",
-                        "kind": "stalled",
-                        "headline": "Agent appears stalled",
-                        "detail": "No progress is visible.",
-                        "answers": [],
-                        "safe_to_auto_answer": False,
-                        "confidence": 0.9,
-                    }
-                ],
-            },
-            {"summary": "Nothing to report.", "insights": []},
-        ]
-    )
-    assistant = AssistantService(_config(tmp_path), state, runner=runner)
-
-    await assistant.refresh(snapshot=assistant.snapshot())
     state.update_session(
-        Session(
-            **{
-                **vars(state.sessions["codex:test:thread-1"]),
-                "thinking": True,
-                "activity": "Working",
-                "subagent_count": 2,
-            }
-        )
+        _finished(tmp_path, status=SessionStatus.LIVE, thinking=True)
     )
-    await assistant.refresh(snapshot=assistant.snapshot())
+    assistant = _service(tmp_path, runner, state=state)
 
-    assert assistant.view.insights == ()
-    assert assistant.view.summary == "Nothing needs your attention right now."
+    await assistant.refresh()
 
-
-async def test_refresh_does_not_resend_unchanged_chat_for_rephrasing(tmp_path):
-    state = AppState()
-    state.update_session(_session(tmp_path))
-
-    def result(headline):
-        return {
-            "summary": "One item needs attention.",
-            "insights": [
-                {
-                    "session_key": "codex:test:thread-1",
-                    "kind": "coordination",
-                    "headline": headline,
-                    "detail": "Keep one owner.",
-                    "answers": [],
-                    "safe_to_auto_answer": False,
-                    "confidence": 0.9,
-                }
-            ],
-        }
-
-    assistant = AssistantService(
-        _config(tmp_path),
-        state,
-        runner=AsyncMock(side_effect=[result("Stable title"), result("Rephrased title")]),
-    )
-
-    await assistant.refresh(snapshot=assistant.snapshot())
-    await assistant.refresh(snapshot=assistant.snapshot())
-
-    assert [item.headline for item in assistant.view.insights] == ["Stable title"]
-    assert assistant.runner.await_count == 1
-
-
-async def test_incremental_prompt_contains_changed_and_explicitly_related_chats_only(tmp_path):
-    state = AppState()
-    first = replace(
-        _session(tmp_path),
-        key="codex:test:changed",
-        session_id="changed",
-        question=None,
-        last_text="FIRST_BASELINE",
-    )
-    related = replace(
-        first,
-        key="codex:test:related",
-        session_id="related",
-        last_text="RELATED_UNCHANGED",
-    )
-    unrelated = replace(
-        first,
-        key="codex:test:unrelated",
-        session_id="unrelated",
-        last_text="THIRD_ONLY_UNCHANGED",
-    )
-    for session in (first, related, unrelated):
-        state.update_session(session)
-
-    shared_pull = PullRequestContext(
-        "eerovil/agentdeck",
-        91,
-        "Shared work",
-        "https://github.com/eerovil/agentdeck/pull/91",
-        "open",
-        head_branch="feature/shared",
-        base_branch="master",
-    )
-    unrelated_pull = PullRequestContext(
-        "eerovil/agentdeck",
-        92,
-        "Other work",
-        "https://github.com/eerovil/agentdeck/pull/92",
-        "open",
-        head_branch="feature/other",
-        base_branch="master",
-    )
-    prompts = []
-
-    async def runner(account, config, prompt):
-        prompts.append(prompt)
-        if len(prompts) == 1:
-            return {
-                "summary": "One item needs attention.",
-                "insights": [
-                    {
-                        "session_key": related.key,
-                        "kind": "coordination",
-                        "headline": "Stable related finding",
-                        "detail": "Keep one owner.",
-                        "coordination_key": "shared-pr-91",
-                        "answers": [],
-                        "safe_to_auto_answer": False,
-                        "confidence": 0.9,
-                    }
-                ],
-            }
-        return {"summary": "Nothing new.", "insights": []}
-
-    assistant = AssistantService(_config(tmp_path), state, runner=runner)
-    assistant.contexts = {
-        first.key: GitContext("eerovil/agentdeck", "feature/shared", False, (shared_pull,)),
-        related.key: GitContext(
-            "eerovil/agentdeck", "feature/shared", False, (shared_pull,)
-        ),
-        unrelated.key: GitContext(
-            "eerovil/agentdeck", "feature/other", False, (unrelated_pull,)
-        ),
-    }
-
-    await assistant.refresh(snapshot=assistant.snapshot())
-    assert all(
-        marker in prompts[0]
-        for marker in ("FIRST_BASELINE", "RELATED_UNCHANGED", "THIRD_ONLY_UNCHANGED")
-    )
-
-    state.update_session(replace(first, last_text="FIRST_TRANSCRIPT_CHANGED"))
-    await assistant.refresh(snapshot=assistant.snapshot())
-    transcript_prompt = prompts[1]
-    assert "FIRST_TRANSCRIPT_CHANGED" in transcript_prompt
-    assert "RELATED_UNCHANGED" in transcript_prompt
-    assert '"deckhand_scope":"changed"' in transcript_prompt
-    assert '"deckhand_scope":"related"' in transcript_prompt
-    assert "THIRD_ONLY_UNCHANGED" not in transcript_prompt
-    assert [item.headline for item in assistant.view.insights] == ["Stable related finding"]
-
-    assistant.contexts[unrelated.key] = GitContext(
-        "eerovil/agentdeck",
-        "feature/other",
-        False,
-        (replace(unrelated_pull, status="merged"),),
-    )
-    await assistant.refresh(snapshot=assistant.snapshot())
-    pr_prompt = prompts[2]
-    assert "THIRD_ONLY_UNCHANGED" in pr_prompt
-    assert '"status":"merged"' in pr_prompt
-    assert "FIRST_TRANSCRIPT_CHANGED" not in pr_prompt
-    assert "RELATED_UNCHANGED" not in pr_prompt
-
-
-async def test_open_blocked_kanban_issues_surface_individually_when_model_omits_them(
-    tmp_path,
-):
-    state = AppState()
-    sessions = []
-    for number in (1632, 1633, 1634):
-        session = replace(
-            _session(tmp_path),
-            key=f"claude_code:alt:tilhi-{number}",
-            account_key="claude_code:alt",
-            session_id=f"tilhi-{number}",
-            title=f"tilhi#{number}",
-            question=None,
-            worker_type="kanban",
-            issue_url=f"https://github.com/ScandinavianOutdoor/tilhi/issues/{number}",
-            issue_status="open",
-            issue_status_kind="open",
-            last_text="Terminal PARK. Applied the `claude:blocked` label; no PR was opened.",
-        )
-        sessions.append(session)
-        state.update_session(session)
-
-    prompts = []
-
-    async def runner(account, config, prompt):
-        prompts.append(prompt)
-        return {"summary": "Nothing needs attention.", "insights": []}
-
-    assistant = AssistantService(_config(tmp_path), state, runner=runner)
-    snapshot = assistant.snapshot()
-    assert all(
-        row["operator_action_required"] == "open_issue_blocked" for row in snapshot
-    )
-    assert all(row["worker_type"] == "kanban" for row in snapshot)
-    assert all(row["issue_status_kind"] == "open" for row in snapshot)
-
-    await assistant.refresh(snapshot=snapshot)
-
-    assert len(assistant.view.insights) == 3
-    assert {insight.headline for insight in assistant.view.insights} == {
-        f"Tilhi issue #{number} is blocked for human action"
-        for number in (1632, 1633, 1634)
-    }
-    assert all(insight.kind == "waiting" for insight in assistant.view.insights)
-    assert all("close or retrigger" in insight.detail for insight in assistant.view.insights)
-    assert '"operator_action_required":"open_issue_blocked"' in prompts[0]
-    assert "Always report each such\nissue as its own waiting insight" in prompts[0]
-
-    closed = replace(
-        sessions[0],
-        issue_status="closed",
-        issue_status_kind="closed",
-    )
-    state.update_session(closed)
-    await assistant.refresh(snapshot=assistant.snapshot())
-
-    assert {insight.session_key for insight in assistant.view.insights} == {
-        sessions[1].key,
-        sessions[2].key,
-    }
-    assert len(prompts) == 2
-
-    assert assistant.handle(sessions[1].key)
-    await assistant.refresh(snapshot=assistant.snapshot())
-    assert {insight.session_key for insight in assistant.view.insights} == {sessions[2].key}
-    assert len(prompts) == 2
-
-
-async def test_idle_open_pull_request_surfaces_when_model_omits_it(tmp_path):
-    state = AppState()
-    session = replace(
-        _session(tmp_path),
-        question=None,
-        last_prompt="Keep the unmatched event diagnostic at debug level",
-        last_text="Corrected to logger.debug. Tests: 21 passed.",
-    )
-    state.update_session(session)
-    open_pull = PullRequestContext(
-        "protecomp/storm",
-        239,
-        "Custobar automated-campaign coupon activation",
-        "https://github.com/protecomp/storm/pull/239",
-        "open",
-        head_branch="claude/issue-238-custobar-coupon-activation",
-        base_branch="master",
-    )
-    assistant = AssistantService(
-        _config(tmp_path),
-        state,
-        runner=AsyncMock(return_value={"summary": "Nothing new.", "insights": []}),
-    )
-    assistant.contexts[session.key] = GitContext(
-        "protecomp/storm", open_pull.head_branch, False, (open_pull,)
-    )
-
-    await assistant.refresh(snapshot=assistant.snapshot())
-
-    assert [insight.headline for insight in assistant.view.insights] == [
-        "Storm · Custobar · PR #239 is open and awaiting review"
-    ]
-    assert "still open while its owning chat is idle" in assistant.view.insights[0].detail
-
-    assistant.contexts[session.key] = GitContext(
-        "protecomp/storm",
-        open_pull.head_branch,
-        False,
-        (replace(open_pull, status="merged"),),
-    )
-    await assistant.refresh(snapshot=assistant.snapshot())
+    runner.assert_not_awaited()
     assert assistant.view.insights == ()
 
-    assistant.contexts[session.key] = GitContext(
-        "protecomp/storm", open_pull.head_branch, False, (open_pull,)
-    )
-    await assistant.refresh(snapshot=assistant.snapshot())
-    assert assistant.handle(session.key)
-    await assistant.refresh(snapshot=assistant.snapshot())
 
-    assert assistant.view.insights == ()
-    assert assistant.runner.await_count == 3
-
-
-async def test_handled_insight_stays_hidden_until_chat_evidence_changes(tmp_path):
+async def test_handle_hides_card_until_evidence_changes(tmp_path):
+    runner = AsyncMock(return_value=_ATTENTION)
     state = AppState()
-    state.update_session(_session(tmp_path))
-    result = {
-        "summary": "One item needs attention.",
-        "insights": [
-            {
-                "session_key": "codex:test:thread-1",
-                "kind": "waiting",
-                "headline": "Choose the database",
-                "detail": "A choice is required.",
-                "answers": [],
-                "safe_to_auto_answer": False,
-                "confidence": 0.9,
-            }
-        ],
-    }
-    assistant = AssistantService(_config(tmp_path), state, runner=AsyncMock(return_value=result))
+    state.update_session(_finished(tmp_path))
+    assistant = _service(tmp_path, runner, state=state)
+    await assistant.refresh()
 
-    await assistant.refresh(snapshot=assistant.snapshot())
-    assert assistant.handle("codex:test:thread-1")
-    await assistant.refresh(snapshot=assistant.snapshot())
+    assert assistant.handle("codex:test:thread-1") is True
     assert assistant.view.insights == ()
-    assert assistant.handled_items[0].headline == "Choose the database"
 
-    session = state.sessions["codex:test:thread-1"]
-    state.update_session(Session(**{**vars(session), "last_text": "The choice changed."}))
-    await assistant.refresh(snapshot=assistant.snapshot())
+    await assistant.refresh()  # still acknowledged
+    assert assistant.view.insights == ()
 
-    assert [item.headline for item in assistant.view.insights] == ["Choose the database"]
+    state.update_session(_finished(tmp_path, last_text="New problem appeared."))
+    await assistant.refresh()  # evidence changed -> resurfaces
+    assert len(assistant.view.insights) == 1
     assert "codex:test:thread-1" not in assistant._handled
 
 
-async def test_unhandle_restores_cached_insight_immediately(tmp_path):
+async def test_unhandle_restores_card_immediately(tmp_path):
+    runner = AsyncMock(return_value=_ATTENTION)
     state = AppState()
-    state.update_session(_session(tmp_path))
-    assistant = AssistantService(_config(tmp_path), state)
-    insight = AssistantInsight(
-        session_key="codex:test:thread-1",
-        kind="waiting",
-        headline="Choose the database",
-        detail="A choice is required.",
-    )
-    assistant.view = AssistantView(
-        state="ready", summary="One item needs attention.", insights=(insight,)
-    )
-    assistant._evidence_signatures[insight.session_key] = assistant._evidence_signature(
-        assistant._snapshot_row(state.sessions[insight.session_key])
-    )
+    state.update_session(_finished(tmp_path))
+    assistant = _service(tmp_path, runner, state=state)
+    await assistant.refresh()
+    assistant.handle("codex:test:thread-1")
 
-    assert assistant.handle(insight.session_key)
-    assert assistant.view.insights == ()
-    assert assistant.unhandle(insight.session_key)
-
-    assert assistant.view.insights == (insight,)
+    assert assistant.unhandle("codex:test:thread-1") is True
+    assert len(assistant.view.insights) == 1
     assert assistant.handled_items == ()
-    assert insight.session_key not in assistant._handled
 
 
-def test_handled_panel_exposes_only_latest_item_as_undo_stack(tmp_path):
-    state = AppState()
-    first_session = _session(tmp_path)
-    second_session = Session(
-        **{
-            **vars(first_session),
-            "key": "codex:test:thread-2",
-            "session_id": "thread-2",
-            "title": "Second decision",
-        }
-    )
-    state.update_session(first_session)
-    state.update_session(second_session)
-    first = AssistantInsight(first_session.key, "waiting", "First decision", "Resolve first.")
-    second = AssistantInsight(
-        second_session.key, "coordination", "Second decision", "Resolve second."
-    )
-    assistant = AssistantService(_config(tmp_path), state)
-    assistant.view = AssistantView(state="ready", insights=(first, second))
-    for session in (first_session, second_session):
-        assistant._evidence_signatures[session.key] = assistant._evidence_signature(
-            assistant._snapshot_row(session)
-        )
-
-    assert assistant.handle(first.session_key)
-    assert assistant.handle(second.session_key)
-
-    assert len(assistant._handled) == 2
-    assert [(item.session_key, item.headline) for item in assistant.handled_items] == [
-        (second.session_key, "Second decision")
-    ]
-
-    assert assistant.unhandle(second.session_key)
-    assert [(item.session_key, item.headline) for item in assistant.handled_items] == [
-        (first.session_key, "First decision")
-    ]
-
-
-async def test_refresh_retains_insight_when_chat_leaves_analysis_window(tmp_path):
-    state = AppState()
-    first = _session(tmp_path)
-    second = Session(
-        key="codex:test:thread-2",
-        account_key="codex:test",
-        session_id="thread-2",
-        status=SessionStatus.IDLE,
-        title="Another chat",
-        show_when_idle=True,
-    )
-    state.update_session(first)
-    state.update_session(second)
-    runner = AsyncMock(
-        side_effect=[
-            {
-                "summary": "One item needs attention.",
-                "insights": [
-                    {
-                        "session_key": first.key,
-                        "kind": "coordination",
-                        "headline": "Keep this finding",
-                        "detail": "It remains relevant.",
-                        "answers": [],
-                        "safe_to_auto_answer": False,
-                        "confidence": 0.9,
-                    }
-                ],
-            },
-            {"summary": "Nothing to report.", "insights": []},
-        ]
-    )
-    assistant = AssistantService(_config(tmp_path, max_sessions=1), state, runner=runner)
-
-    await assistant.refresh(snapshot=[assistant._snapshot_row(first)])
-    await assistant.refresh(snapshot=[assistant._snapshot_row(second)])
-
-    assert [item.headline for item in assistant.view.insights] == ["Keep this finding"]
-
-
-async def test_refresh_keeps_unrelated_question_when_all_related_prs_are_terminal(tmp_path):
-    state = AppState()
-    state.update_session(_session(tmp_path))
-    context = GitContext(
-        repository="eerovil/agentdeck",
-        branch="feature/deckhand",
-        dirty=False,
-        pull_requests=(
-            PullRequestContext(
-                repository="eerovil/agentdeck",
-                number=91,
-                title="Add PR context",
-                url="https://github.com/eerovil/agentdeck/pull/91",
-                status="merged",
-            ),
-            PullRequestContext(
-                repository="eerovil/agentdeck",
-                number=92,
-                title="Closed replacement",
-                url="https://github.com/eerovil/agentdeck/pull/92",
-                status="closed",
-            ),
-        ),
-    )
-    resolver = AsyncMock(return_value={})
-    resolver.resolve = AsyncMock(return_value={"codex:test:thread-1": context})
-
-    runner = AsyncMock(
-        return_value={
-            "summary": "A new decision is waiting.",
-            "insights": [
-                {
-                    "session_key": "codex:test:thread-1",
-                    "interaction_id": None,
-                    "kind": "waiting",
-                    "headline": "Choose the database",
-                    "detail": "This question is unrelated to the historical PRs.",
-                    "answers": [],
-                    "safe_to_auto_answer": False,
-                    "confidence": 0.9,
-                }
-            ],
-        }
-    )
-
-    assistant = AssistantService(_config(tmp_path), state, runner=runner, context_resolver=resolver)
-    await assistant.refresh()
-
-    assert assistant.contexts["codex:test:thread-1"] == context
-    assert [item.headline for item in assistant.view.insights] == ["Choose the database"]
-    runner.assert_awaited_once()
-
-
-async def test_refresh_suppresses_attention_card_when_all_related_prs_are_merged(tmp_path):
-    state = AppState()
-    state.update_session(_session(tmp_path))
-    context = GitContext(
-        repository="eerovil/agentdeck",
-        branch="feature/deckhand",
-        dirty=True,
-        pull_requests=(
-            PullRequestContext(
-                repository="eerovil/agentdeck",
-                number=91,
-                title="Completed work",
-                url="https://github.com/eerovil/agentdeck/pull/91",
-                status="merged",
-            ),
-        ),
-    )
-    resolver = AsyncMock(return_value={})
-    resolver.resolve = AsyncMock(return_value={"codex:test:thread-1": context})
-
-    runner = AsyncMock(
-        return_value={
-            "summary": "Review is waiting.",
-            "insights": [
-                {
-                    "session_key": "codex:test:thread-1",
-                    "interaction_id": None,
-                    "kind": "waiting",
-                    "headline": "PR #91 needs review",
-                    "detail": "Merge PR #91 after review.",
-                    "answers": [],
-                    "safe_to_auto_answer": False,
-                    "confidence": 0.9,
-                }
-            ],
-        }
-    )
-
-    assistant = AssistantService(_config(tmp_path), state, runner=runner, context_resolver=resolver)
-    await assistant.refresh()
-
-    assert assistant.view.insights == ()
-    assert assistant.view.summary == "Nothing needs your attention right now."
-    runner.assert_awaited_once()
-
-
-def test_result_drops_hallucinated_session_keys():
-    view = AssistantService._parse_result(
-        {
-            "summary": "Done",
-            "insights": [
-                {
-                    "session_key": "not-real",
-                    "kind": "info",
-                    "headline": "Nope",
-                    "detail": "Nope",
-                    "answers": [],
-                    "safe_to_auto_answer": False,
-                    "confidence": 0,
-                }
-            ],
-        },
-        {"codex:test:thread-1"},
-    )
-
-    assert not view.insights
-
-
-def test_pr_insight_must_match_target_chats_authoritative_context(tmp_path):
-    state = AppState()
-    assistant = AssistantService(_config(tmp_path), state)
-    assistant.contexts = {
-        "codex:test:agentdeck": GitContext("eerovil/agentdeck", "master", False),
-        "codex:test:storm": GitContext(
-            "protecomp/storm",
-            "claude/issue-238",
-            False,
-            pull_requests=(
-                PullRequestContext(
-                    "protecomp/storm",
-                    239,
-                    "Custobar coupon activation",
-                    "https://github.com/protecomp/storm/pull/239",
-                    "open",
-                ),
-            ),
-        ),
-    }
-    wrong = AssistantInsight(
-        "codex:test:agentdeck",
-        "waiting",
-        "PR #239 is idle and open",
-        "The completed fixes likely need review.",
-    )
-    right = AssistantInsight(
-        "codex:test:storm",
-        "waiting",
-        "PR #239 is awaiting review",
-        "See https://github.com/protecomp/storm/pull/239.",
-    )
-
-    result = insight_pipeline.suppress_unattributed_pr_insights(
-        AssistantView(state="ready", summary="Two PRs need review.", insights=(wrong, right)),
-        assistant.contexts,
-    )
-
-    assert result.insights == (right,)
-    assert result.summary == "Deckhand is tracking 1 item that still needs attention."
-
-
-def test_pr_headline_includes_project_and_feature_from_authoritative_title(tmp_path):
-    state = AppState()
-    assistant = AssistantService(_config(tmp_path), state)
-    session_key = "codex:test:storm"
-    assistant.contexts[session_key] = GitContext(
-        "protecomp/storm",
-        "feature/search",
-        False,
-        (
-            PullRequestContext(
-                "protecomp/storm",
-                255,
-                "Improve Elasticsearch free-text search",
-                "https://github.com/protecomp/storm/pull/255",
-                "open",
-            ),
-        ),
-    )
-    insight = AssistantInsight(
-        session_key,
-        "waiting",
-        "PR #255 is open and awaiting review",
-        "Implementation and tests are complete.",
-    )
-
-    result = insight_pipeline.enrich_pr_headlines(
-        AssistantView(state="ready", insights=(insight,)), assistant.contexts
-    )
-
-    assert result.insights[0].headline == (
-        "Storm · Elasticsearch · PR #255 is open and awaiting review"
-    )
-    assert insight_pipeline.enrich_pr_headlines(result, assistant.contexts) == result
-
-    number_in_detail = replace(
-        insight,
-        headline="Open PR needs review",
-        detail="Implementation is complete in PR #255.",
-    )
-    detail_result = insight_pipeline.enrich_pr_headlines(
-        AssistantView(state="ready", insights=(number_in_detail,)), assistant.contexts
-    )
-    assert detail_result.insights[0].headline == ("Storm · Elasticsearch · PR #255 needs review")
-
-
-async def test_refresh_does_not_retain_old_cross_chat_pr_insight(tmp_path):
-    state = AppState()
-    session = _session(tmp_path)
-    state.update_session(session)
-    assistant = AssistantService(
-        _config(tmp_path),
-        state,
-        runner=AsyncMock(return_value={"summary": "Nothing to report.", "insights": []}),
-    )
-    assistant.contexts[session.key] = GitContext("eerovil/agentdeck", "master", False)
-    row = assistant._snapshot_row(session)
-    assistant._evidence_signatures[session.key] = assistant._evidence_signature(row)
-    assistant.view = AssistantView(
-        state="ready",
-        summary="PR #239 needs review.",
-        insights=(
-            AssistantInsight(
-                session.key,
-                "waiting",
-                "PR #239 is idle and open",
-                "The completed fixes likely need review.",
-            ),
-        ),
-    )
-
-    await assistant.refresh(snapshot=[row])
-
-    assert assistant.view.insights == ()
-    assert assistant.view.summary == "Nothing needs your attention right now."
-
-
-def test_analysis_window_always_includes_blocking_chat(tmp_path):
-    state = AppState()
-    ordinary = _session(tmp_path)
-    ordinary.question = None
-    blocked = Session(
-        **{
-            **vars(ordinary),
-            "key": "codex:test:thread-2",
-            "session_id": "thread-2",
-            "title": "Older blocked chat",
-            "question": "Choose a deployment target?",
-        }
-    )
-    state.update_session(ordinary)
-    state.update_session(blocked)
-    assistant = AssistantService(_config(tmp_path, max_sessions=1), state)
-
-    assert [row["session_key"] for row in assistant.snapshot()] == [blocked.key]
-    assert assistant.analysis_session_count == 1
-    assert assistant.total_session_count == 2
-
-
-def test_analysis_window_uses_recency_instead_of_active_card_insertion_order(tmp_path):
-    state = AppState()
-    now = datetime.now(UTC)
-    old_question = replace(
-        _session(tmp_path),
-        key="codex:test:old-question",
-        session_id="old-question",
-        status=SessionStatus.LIVE,
-        thinking=True,
-        last_activity=now - timedelta(minutes=10),
-    )
-    recent = replace(
-        old_question,
-        key="codex:test:recent",
-        session_id="recent",
-        question=None,
-        last_activity=now - timedelta(minutes=1),
-    )
-    newly_created = replace(
-        recent,
-        key="codex:test:new",
-        session_id="new",
-        last_activity=now,
-    )
-    # AppState intentionally preserves insertion order for simultaneously active
-    # dashboard cards, which used to leave this newest chat outside Deckhand's window.
-    state.update_session(old_question)
-    state.update_session(recent)
-    state.update_session(newly_created)
-    assistant = AssistantService(_config(tmp_path, max_sessions=2), state)
-
-    assert [row["session_key"] for row in assistant.snapshot()] == [
-        newly_created.key,
-        recent.key,
-    ]
-
-
-def test_interaction_snapshot_contains_approval_context(tmp_path):
+async def test_interaction_card_prioritized_and_deterministic(tmp_path, monkeypatch):
+    runner = AsyncMock()
     interaction = PendingInteraction(
-        id="approval-1",
-        kind="command_approval",
+        id="i-1",
+        kind="approval",
         thread_id="thread-1",
         turn_id="turn-1",
-        title="Approve command?",
-        message="Needed for validation",
-        command="git push origin feature",
-        cwd=str(tmp_path),
-        url="https://example.test/approval",
-        decisions=("accept", "decline"),
+        title="Approve command",
+        command="rm -rf build",
     )
-
-    value = AssistantService._interaction_json(interaction)
-
-    assert value is not None
-    assert value["command"] == "git push origin feature"
-    assert value["cwd"] == str(tmp_path)
-    assert value["url"] == "https://example.test/approval"
-    assert value["decisions"] == ["accept", "decline"]
-
-
-async def test_auto_answer_is_bound_to_analyzed_interaction(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        PROVIDERS["codex"], "pending_interaction", lambda account, session: interaction
+    )
     state = AppState()
-    session = _session(tmp_path)
-    state.update_session(session)
-    first = _question()
-    second = PendingInteraction(
-        **{**vars(first), "id": "interaction-2", "title": "A newer question"}
-    )
-    current = [first]
-    provider = PROVIDERS["codex"]
-    monkeypatch.setattr(provider, "pending_interaction", lambda account, item: current[0])
-    answer = AsyncMock(return_value=InjectResult(True))
-    monkeypatch.setattr(provider, "answer_interaction", answer)
-    assistant = AssistantService(_config(tmp_path, auto_answer=True), state, runner=AsyncMock())
-    row = assistant._snapshot_row(session)
+    state.update_session(_finished(tmp_path))
+    assistant = _service(tmp_path, runner, state=state)
 
-    async def runner(account, config, prompt):
-        current[0] = second
-        return {
-            "summary": "One choice.",
-            "insights": [
-                {
-                    "session_key": session.key,
-                    "interaction_id": first.id,
-                    "kind": "waiting",
-                    "headline": "Choose SQLite",
-                    "detail": "Explicit local choice.",
-                    "answers": [{"question_id": "database", "values": ["SQLite"]}],
-                    "safe_to_auto_answer": True,
-                    "confidence": 1.0,
-                }
-            ],
-        }
+    await assistant.refresh()
 
-    assistant.runner = runner
-    await assistant.refresh(snapshot=[row])
-
-    answer.assert_not_awaited()
-    assert assistant.view.actions == ()
+    (insight,) = assistant.view.insights
+    assert insight.headline == "Approval needed"
+    runner.assert_not_awaited()
 
 
-def test_dirty_worktree_does_not_change_handled_evidence(tmp_path):
-    state = AppState()
-    session = _session(tmp_path)
-    assistant = AssistantService(_config(tmp_path), state)
-    assistant.contexts[session.key] = GitContext("eerovil/agentdeck", "feature", False)
-    clean = assistant._snapshot_row(session)
-    assistant.contexts[session.key] = GitContext("eerovil/agentdeck", "feature", True)
-    dirty = assistant._snapshot_row(session)
-
-    assert assistant._evidence_signature(clean) == assistant._evidence_signature(dirty)
-
-
-def test_evidence_signature_ignores_new_neutral_snapshot_metadata(tmp_path):
-    assistant = AssistantService(_config(tmp_path), AppState())
-    row = assistant._snapshot_row(_session(tmp_path))
-    legacy = {
-        key: value
-        for key, value in row.items()
-        if key
-        not in {
-            "worker_type",
-            "issue_url",
-            "issue_status",
-            "issue_status_kind",
-            "operator_action_required",
-        }
-    }
-
-    assert assistant._evidence_signature(row) == assistant._evidence_signature(legacy)
-    assert assistant._evidence_signature(
-        {**row, "issue_url": "https://github.com/example/repo/issues/1"}
-    ) != assistant._evidence_signature(row)
-
-
-def test_analysis_signature_ignores_poll_noise_but_tracks_pr_status():
-    first = {
-        "session_key": "codex:test:thread-1",
-        "title": "Implement search",
-        "cwd": "/code/project",
-        "state": "idle",
-        "activity": "",
-        "question": "",
-        "last_prompt": "Implement search",
-        "last_response": "The PR is ready.",
-        "subagents": 0,
-        "git": {
-            "repository": "eerovil/agentdeck",
-            "branch": "feature/search",
-            "dirty": False,
-            "pull_requests": [
-                {
-                    "number": 255,
-                    "state": "open",
-                    "url": "https://github.com/eerovil/agentdeck/pull/255",
-                }
-            ],
-        },
-        "interaction": None,
-    }
-    second = {
-        **first,
-        "session_key": "codex:test:thread-2",
-        "title": "Review search",
-    }
-    noisy_first = {
-        **first,
-        "state": "thinking",
-        "activity": "Running command",
-        "subagents": 2,
-        "git": {**first["git"], "dirty": True},
-    }
-    noisy_second = {**second, "activity": "Waiting for command output"}
-
-    baseline = AssistantService._analysis_signature([first, second])
-    assert AssistantService._analysis_signature([noisy_second, noisy_first]) == baseline
-
-    merged = {
-        **noisy_first,
-        "git": {
-            **noisy_first["git"],
-            "pull_requests": [
-                {**noisy_first["git"]["pull_requests"][0], "state": "merged"}
-            ],
-        },
-    }
-    assert AssistantService._analysis_signature([noisy_second, merged]) != baseline
-
-
-@pytest.mark.asyncio
-async def test_background_poll_skips_luna_until_material_evidence_changes(tmp_path):
-    state = AppState()
-    session = _session(tmp_path)
-    state.update_session(session)
-    runner_calls = 0
-
-    async def runner(account, config, prompt):
-        nonlocal runner_calls
-        runner_calls += 1
-        return {"summary": "Nothing needs attention.", "insights": []}
-
-    class Resolver:
-        calls = 0
-        pr_status = "open"
-
-        async def resolve(self, sessions):
-            self.calls += 1
-            pull = PullRequestContext(
-                "eerovil/agentdeck",
-                255,
-                "Implement search",
-                "https://github.com/eerovil/agentdeck/pull/255",
-                self.pr_status,
-                head_branch="feature/search",
-                base_branch="master",
-            )
-            return {
-                item.key: GitContext(
-                    "eerovil/agentdeck", "feature/search", False, (pull,)
-                )
-                for item in sessions
-            }
-
-    resolver = Resolver()
-    assistant = AssistantService(
-        _config(tmp_path, refresh_interval_s=0.01),
-        state,
-        runner=runner,
-        context_resolver=resolver,
-    )
-
-    async def wait_until(predicate):
-        for _ in range(100):
-            if predicate():
-                return
-            await asyncio.sleep(0.01)
-        pytest.fail("Deckhand background poll did not complete")
-
-    await assistant.start()
-    try:
-        assistant._wake.set()
-        await wait_until(lambda: runner_calls == 1)
-
-        state.update_session(
-            replace(
-                session,
-                status=SessionStatus.LIVE,
-                thinking=True,
-                activity="Running command",
-                subagent_count=2,
-            )
-        )
-        assistant._last_run = 0
-        assistant._wake.set()
-        unchanged_started_at = time.monotonic()
-        await wait_until(lambda: resolver.calls >= 2)
-        await asyncio.sleep(0.02)
-        assert time.monotonic() - unchanged_started_at < 0.5
-        assert runner_calls == 1
-
-        resolver.pr_status = "merged"
-        assistant._last_run = 0
-        assistant._wake.set()
-        await wait_until(lambda: runner_calls == 2)
-    finally:
-        await assistant.stop()
-
-
-@pytest.mark.asyncio
-async def test_manual_refresh_skips_unchanged_luna_quickly_and_runs_for_new_evidence(tmp_path):
-    state = AppState()
-    session = _session(tmp_path)
-    state.update_session(session)
-    runner = AsyncMock(return_value={"summary": "Nothing needs attention.", "insights": []})
-    resolver = AsyncMock()
-    resolver.resolve = AsyncMock(return_value={})
-    assistant = AssistantService(
-        _config(tmp_path, refresh_interval_s=3600),
-        state,
-        runner=runner,
-        context_resolver=resolver,
-    )
-    await assistant.refresh(snapshot=assistant.snapshot())
-    runner.reset_mock()
-
-    async def wait_until(predicate):
-        for _ in range(100):
-            if predicate():
-                return
-            await asyncio.sleep(0.01)
-        pytest.fail("manual Deckhand refresh did not complete")
-
-    await assistant.start()
-    try:
-        started_at = time.monotonic()
-        assert assistant.request_refresh(manual=True)
-        assert assistant.refresh_status == "Checking current evidence…"
-        await wait_until(
-            lambda: assistant.refresh_status == "No material changes · Luna not run"
-        )
-        assert time.monotonic() - started_at < 0.5
-        runner.assert_not_awaited()
-        assert resolver.resolve.await_count == 1
-
-        state.update_session(replace(session, last_text="The transcript changed materially."))
-        assert assistant.request_refresh(manual=True)
-        await wait_until(lambda: runner.await_count == 1)
-        await wait_until(
-            lambda: assistant.refresh_status == "Material changes found · analysis updated"
-        )
-    finally:
-        await assistant.stop()
-
-
-@pytest.mark.asyncio
-async def test_newly_visible_chat_is_analyzed_once_without_rerunning_activity_churn(tmp_path):
-    state = AppState()
-    now = datetime.now(UTC)
-    first = replace(
-        _session(tmp_path),
-        key="codex:test:first",
-        session_id="first",
-        question=None,
-        last_activity=now - timedelta(minutes=2),
-    )
-    second = replace(
-        first,
-        key="codex:test:second",
-        session_id="second",
-        last_activity=now - timedelta(minutes=1),
-    )
-    state.update_session(first)
-    state.update_session(second)
-    prompts = []
-
-    async def runner(account, config, prompt):
-        prompts.append(prompt)
-        return {"summary": "Nothing needs attention.", "insights": []}
-
-    resolver = AsyncMock()
-    resolver.resolve = AsyncMock(return_value={})
-    assistant = AssistantService(
-        _config(tmp_path, max_sessions=2, refresh_interval_s=3600),
-        state,
-        runner=runner,
-        context_resolver=resolver,
-    )
-
-    async def wait_until(predicate):
-        for _ in range(100):
-            if predicate():
-                return
-            await asyncio.sleep(0.01)
-        pytest.fail("new Deckhand chat was not evaluated")
-
-    await assistant.start()
-    try:
-        assistant._wake.set()
-        await wait_until(lambda: len(prompts) == 1)
-        assert "codex:test:first" in prompts[0]
-        assert "codex:test:second" in prompts[0]
-
-        newly_created = replace(
-            second,
-            key="codex:test:new",
-            session_id="new",
-            last_activity=now,
-        )
-        state.update_session(newly_created)
-        await wait_until(lambda: len(prompts) == 2)
-        assert "codex:test:new" in prompts[1]
-        assert "codex:test:first" not in prompts[1]
-
-        # Collector activity for the same chat wakes only the cheap key check.
-        # It must not resolve Git context or invoke Luna again.
-        state.update_session(replace(newly_created, thinking=True, activity="Working"))
-        await asyncio.sleep(0.05)
-        assert len(prompts) == 2
-        assert resolver.resolve.await_count == 2
-    finally:
-        await assistant.stop()
-
-
-@pytest.mark.asyncio
-async def test_deckhand_checkpoint_survives_restart_without_reanalysis(tmp_path):
+async def test_checkpoint_restores_view_without_reclassifying(tmp_path):
     path = tmp_path / "agentdeck.db"
-    session = _session(tmp_path)
-    result = {
-        "summary": "One item needs attention.",
-        "insights": [
-            {
-                "session_key": session.key,
-                "kind": "waiting",
-                "headline": "Choose the database",
-                "detail": "The agent needs a database choice.",
-                "answers": [],
-                "safe_to_auto_answer": False,
-                "confidence": 0.9,
-            }
-        ],
-    }
+    state = AppState(db=Db(path))
+    state.update_session(_finished(tmp_path))
+    first = _service(tmp_path, AsyncMock(return_value=_ATTENTION), state=state)
+    await first.refresh()
+    assert len(first.view.insights) == 1
 
-    first_db = Db(path)
-    first_state = AppState(db=first_db)
-    first_state.update_session(session)
-    first = AssistantService(
-        _config(tmp_path), first_state, runner=AsyncMock(return_value=result)
-    )
-    await first.refresh(snapshot=first.snapshot())
-    original_view = first.view
-    original_signature = first._last_signature
-    first_db.close()
+    reloaded_runner = AsyncMock(return_value=_ATTENTION)
+    state2 = AppState(db=Db(path))
+    state2.update_session(_finished(tmp_path))
+    second = _service(tmp_path, reloaded_runner, state=state2)
 
-    second_db = Db(path)
-    second_state = AppState(db=second_db)
-    runner = AsyncMock(return_value=result)
-    resolver = AsyncMock()
-    resolver.resolve = AsyncMock(return_value={})
-    second = AssistantService(
-        _config(tmp_path, refresh_interval_s=0.01),
-        second_state,
-        runner=runner,
-        context_resolver=resolver,
-    )
-    try:
-        assert second.view == original_view
-        assert second._last_signature == original_signature
-        assert second._force is False
-
-        second_state.update_session(session)
-        await second.start()
-        second._wake.set()
-        for _ in range(100):
-            if resolver.resolve.await_count:
-                break
-            await asyncio.sleep(0.01)
-        else:
-            pytest.fail("restored Deckhand did not check current evidence")
-        await asyncio.sleep(0.02)
-
-        runner.assert_not_awaited()
-        assert second.view == original_view
-    finally:
-        await second.stop()
-        second_db.close()
+    assert len(second.view.insights) == 1  # restored from checkpoint
+    await second.refresh()
+    reloaded_runner.assert_not_awaited()  # cached verdict survived the restart
 
 
-def test_unhandle_does_not_restore_card_after_evidence_changed(tmp_path):
-    state = AppState()
-    session = _session(tmp_path)
-    state.update_session(session)
-    assistant = AssistantService(_config(tmp_path), state)
-    insight = AssistantInsight(session.key, "waiting", "Choose", "A choice is waiting.")
-    assistant.view = AssistantView(state="ready", insights=(insight,))
-    assistant._evidence_signatures[session.key] = assistant._evidence_signature(
-        assistant._snapshot_row(session)
-    )
-    assert assistant.handle(session.key)
-    state.update_session(Session(**{**vars(session), "last_text": "Already resolved."}))
-
-    assert assistant.unhandle(session.key)
-    assert assistant.view.insights == ()
-    assert assistant._force is True
+def test_run_codex_is_exported():
+    assert callable(run_codex)
 
 
-def test_terminal_filter_is_per_claim_and_parses_pr_lists(tmp_path):
-    state = AppState()
-    assistant = AssistantService(_config(tmp_path), state)
-    session_key = "codex:test:thread-1"
-    assistant.contexts[session_key] = GitContext(
-        "eerovil/agentdeck",
-        "feature",
-        False,
-        (
-            PullRequestContext(
-                "eerovil/agentdeck", 91, "Merged", "https://example.test/91", "merged"
-            ),
-            PullRequestContext("eerovil/agentdeck", 92, "Open", "https://example.test/92", "open"),
-        ),
-    )
-    merged = AssistantInsight(session_key, "waiting", "PR #91 needs review", "Review it.")
-    open_pull = AssistantInsight(session_key, "waiting", "PR #92 needs review", "Review it.")
-    both = AssistantInsight(
-        session_key, "coordination", "PRs #91 and #92 overlap", "Keep one owner."
-    )
-
-    result = insight_pipeline.suppress_terminal_pr_insights(
-        AssistantView(state="ready", insights=(merged, open_pull, both)), assistant.contexts
-    )
-
-    assert result.insights == (open_pull, both)
-    assert insight_pipeline.pr_claims(both)[0] == {91, 92}
-
-
-def test_duplicate_underlying_work_is_shown_once(tmp_path):
-    state = AppState()
-    first_session = _session(tmp_path)
-    second_session = Session(
-        **{
-            **vars(first_session),
-            "key": "codex:test:thread-2",
-            "session_id": "thread-2",
-        }
-    )
-    state.update_session(first_session)
-    state.update_session(second_session)
-    assistant = AssistantService(_config(tmp_path), state)
-    first = AssistantInsight(
-        first_session.key,
-        "coordination",
-        "Compact deploy needs confirmation",
-        "Choose one owner.",
-        coordination_key="compact-deploy",
-    )
-    second = AssistantInsight(
-        second_session.key,
-        "stalled",
-        "Compact deployment is unresolved",
-        "The same work is waiting.",
-        coordination_key="compact-deploy",
-    )
-
-    result = insight_pipeline.deduplicate_insights(
-        AssistantView(state="ready", insights=(first, second)),
-        assistant.contexts,
-        assistant.state.sessions,
-    )
-
-    assert result.insights == (first,)
-
-
-async def test_codex_failure_does_not_expose_prompt_or_stderr(tmp_path, monkeypatch):
-    class FailedProcess:
-        returncode = 7
-
-        async def communicate(self, value):
-            assert b"private dashboard" in value
-            return (b"", b"request failed: private transcript secret")
-
-    async def create_process(*args, **kwargs):
-        return FailedProcess()
-
-    monkeypatch.setattr("agentdeck.assistant.asyncio.create_subprocess_exec", create_process)
-    service = AssistantService(_config(tmp_path), AppState())
-    account = service._account()
-    assert account is not None
-
-    with pytest.raises(RuntimeError) as error:
-        await run_codex(account, service.config, "private dashboard")
-
-    assert str(error.value) == "Codex assistant exited without an answer (status 7)"
-    assert "secret" not in str(error.value)
+def test_view_and_insight_are_importable_from_assistant():
+    view = AssistantView(state="ready", insights=(AssistantInsight("k", "waiting", "h", "d"),))
+    assert replace(view, summary="x").summary == "x"

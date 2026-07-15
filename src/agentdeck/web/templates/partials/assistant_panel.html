@@ -2,7 +2,7 @@
   <div class="assistant-head">
     <div>
       <span class="assistant-kicker">Deckhand</span>
-      <strong>Orchestration assistant</strong>
+      <strong>Attention triage</strong>
     </div>
     <div class="assistant-controls">
       <span class="assistant-model">{{ assistant.config.model or 'Codex default' }}</span>
@@ -62,15 +62,8 @@
   </div>
   {% endif %}
 
-  {% if assistant.view.actions %}
-  <div class="assistant-actions">
-    {% for action in assistant.view.actions[-3:] %}
-    <a href="/sessions/{{ action.session_key }}">✓ {{ action.text }}</a>
-    {% endfor %}
-  </div>
-  {% endif %}
   <div class="assistant-foot">
-    {% if assistant.config.auto_answer %}Auto-answer on · choices only{% else %}Advice only{% endif %}
+    Attention triage
     {% if assistant.total_session_count > assistant.analysis_session_count %}
     · {{ assistant.analysis_session_count }} selected of {{ assistant.total_session_count }} chats
     {% endif %}

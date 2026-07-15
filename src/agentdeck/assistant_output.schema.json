@@ -2,38 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "required": ["summary", "insights"],
+  "required": ["attention", "summary", "reason"],
   "properties": {
+    "attention": {"type": "boolean"},
     "summary": {"type": "string"},
-    "insights": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["session_key", "interaction_id", "coordination_key", "kind", "headline", "detail", "answers", "safe_to_auto_answer", "confidence"],
-        "properties": {
-          "session_key": {"type": "string"},
-          "interaction_id": {"type": ["string", "null"]},
-          "coordination_key": {"type": ["string", "null"]},
-          "kind": {"type": "string", "enum": ["waiting", "stalled", "coordination", "finished", "info"]},
-          "headline": {"type": "string"},
-          "detail": {"type": "string"},
-          "answers": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["question_id", "values"],
-              "properties": {
-                "question_id": {"type": "string"},
-                "values": {"type": "array", "items": {"type": "string"}}
-              }
-            }
-          },
-          "safe_to_auto_answer": {"type": "boolean"},
-          "confidence": {"type": "number", "minimum": 0, "maximum": 1}
-        }
-      }
-    }
+    "reason": {"type": "string"}
   }
 }

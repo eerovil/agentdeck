@@ -1,4 +1,12 @@
-"""Codex-powered orchestration advice for the dashboard."""
+"""Per-session attention triage for the dashboard.
+
+Deckhand answers one question for the operator: **which agents need me now?**
+Structured signals (a pending prompt, a question, a blocked issue, an open PR,
+a stall) are decided deterministically in ``triage``; only a finished agent
+whose final prose might hide an unresolved problem is sent to a small, cached,
+per-session Codex classifier. The service here orchestrates that loop and owns
+all mutable/persisted state; ``triage`` stays pure.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +14,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 import signal
 import tempfile
 from collections.abc import Awaitable, Callable
@@ -17,36 +24,27 @@ from typing import Any
 
 from .config import AppConfig, AssistantConfig
 from .git_context import GitContext, GitContextResolver
-from .insight_pipeline import (
-    AssistantAction,
-    AssistantAnswer,
-    AssistantInsight,
-    AssistantView,
-    deduplicate_insights,
-    enrich_pr_headlines,
-    suppress_non_actionable_insights,
-    suppress_terminal_pr_insights,
-    suppress_unattributed_pr_insights,
-    surface_open_blocked_issues,
-    surface_unreported_open_pull_requests,
-    tracking_summary,
-)
 from .models import Account, PendingInteraction, Session
 from .providers import PROVIDERS
 from .state import AppState
+from .triage import (
+    AssistantInsight,
+    AssistantView,
+    Verdict,
+    classification_prompt,
+    needs_llm,
+    parse_verdict,
+    structured_trigger,
+    tracking_summary,
+    verdict_card,
+)
 
 log = logging.getLogger(__name__)
 
-# View/insight dataclasses and the pure post-processing filters live in
-# insight_pipeline; they are re-exported above so callers can keep importing
-# them from agentdeck.assistant. Only service-scoped state stays here.
 _SCHEMA_PATH = Path(__file__).with_name("assistant_output.schema.json")
-_MAX_CONTEXT_CHARS = 1_000
-_BLOCKED_ISSUE_RE = re.compile(r"(?<![\w-])claude:blocked(?![\w-])", re.IGNORECASE)
-_UNSAFE_AUTO_ANSWER_RE = re.compile(
-    r"\b(?:delete|destroy|drop|erase|overwrite|force[- ]?push|purchase|pay)\b",
-    re.IGNORECASE,
-)
+_MAX_SIGNATURE_CHARS = 600
+# A session marked active but silent this long is treated as possibly hung.
+_HANG_AFTER_S = 600.0
 
 
 @dataclass(frozen=True)
@@ -61,7 +59,7 @@ Runner = Callable[[Account, AssistantConfig, str], Awaitable[dict[str, Any]]]
 def _trim(value: str | None) -> str | None:
     if not value:
         return None
-    return value[-_MAX_CONTEXT_CHARS:]
+    return value[-_MAX_SIGNATURE_CHARS:]
 
 
 async def _terminate_group(process: asyncio.subprocess.Process) -> None:
@@ -82,7 +80,7 @@ async def _terminate_group(process: asyncio.subprocess.Process) -> None:
 
 
 async def run_codex(account: Account, config: AssistantConfig, prompt: str) -> dict[str, Any]:
-    """Run one read-only, ephemeral Codex analysis and return its JSON result."""
+    """Run one read-only, ephemeral Codex classification and return its JSON result."""
     env = os.environ.copy()
     env["CODEX_HOME"] = str(account.root)
     with tempfile.TemporaryDirectory(prefix="agentdeck-assistant-") as tmp:
@@ -129,8 +127,8 @@ async def run_codex(account: Account, config: AssistantConfig, prompt: str) -> d
             await _terminate_group(process)
             raise
         if process.returncode != 0:
-            # Codex stderr can echo the complete prompt, including transcript excerpts.
-            # Keep operator-visible and journal errors useful without persisting chat data.
+            # Codex stderr can echo the prompt (including transcript excerpts); keep the
+            # operator-visible error generic so chat data never lands in logs.
             raise RuntimeError(
                 f"Codex assistant exited without an answer (status {process.returncode})"
             )
@@ -144,7 +142,9 @@ async def run_codex(account: Account, config: AssistantConfig, prompt: str) -> d
 
 
 class AssistantService:
-    """Debounce session changes into low-cost orchestration analyses."""
+    """Debounce session changes into per-session attention triage."""
+
+    HANG_AFTER_S = _HANG_AFTER_S
 
     def __init__(
         self,
@@ -161,96 +161,74 @@ class AssistantService:
         self.context_resolver = context_resolver or GitContextResolver()
         self.contexts: dict[str, GitContext] = {}
         self.view = AssistantView(
-            summary=("Starting orchestration assistant…" if self.config.enabled else "Disabled")
+            summary=("Starting triage…" if self.config.enabled else "Disabled")
         )
         self._task: asyncio.Task | None = None
         self._session_watch_task: asyncio.Task | None = None
         self._wake = asyncio.Event()
         self._known_visible_session_keys: set[str] = set()
-        self._last_signature: str | None = None
         self._last_run = 0.0
         self.refresh_status: str | None = None
         self._manual_refresh_pending = False
-        self._answered_interactions: set[str] = set()
-        self._evidence_signatures: dict[str, str] = {}
+        # session_key -> (evidence signature, LLM verdict) — re-run only on change.
+        self._verdicts: dict[str, tuple[str, Verdict]] = {}
+        # session_key -> evidence signature backing the currently displayed cards.
+        self._signatures: dict[str, str] = {}
         self.analysis_session_count = 0
         self.total_session_count = 0
+        self._force = True
         checkpoint = state.db.load_assistant_checkpoint() if state.db else None
-        restored = self._restore_checkpoint(checkpoint)
-        if restored is not None:
-            self.view, self._evidence_signatures, self._last_signature = restored
-        self._force = self._last_signature is None
+        self._restore_checkpoint(checkpoint)
         handled = state.db.load_assistant_handled() if state.db else {}
         self._handled = {session_key: record[0] for session_key, record in handled.items()}
         self._handled_insights = {
-            session_key: AssistantInsight(
-                session_key=session_key,
-                kind=kind,
-                headline=headline,
-                detail=detail or "",
-            )
+            session_key: AssistantInsight(session_key, kind, headline, detail or "")
             for session_key, (_, kind, headline, detail) in handled.items()
             if kind is not None and headline is not None
         }
 
-    @staticmethod
-    def _restore_checkpoint(
-        payload: dict[str, Any] | None,
-    ) -> tuple[AssistantView, dict[str, str], str | None] | None:
-        if not payload or payload.get("version") != 1:
-            return None
+    # --- persistence ---------------------------------------------------
+
+    def _restore_checkpoint(self, payload: dict[str, Any] | None) -> None:
+        if not payload or payload.get("version") != 2:
+            return
         try:
             raw_view = payload["view"]
-            insights = []
-            for item in raw_view.get("insights", []):
-                answers = tuple(
-                    AssistantAnswer(str(answer["question_id"]), tuple(answer["values"]))
-                    for answer in item.get("answers", [])
+            insights = tuple(
+                AssistantInsight(
+                    str(item["session_key"]),
+                    str(item["kind"]),
+                    str(item["headline"]),
+                    str(item["detail"]),
                 )
-                insights.append(
-                    AssistantInsight(
-                        session_key=str(item["session_key"]),
-                        kind=str(item["kind"]),
-                        headline=str(item["headline"]),
-                        detail=str(item["detail"]),
-                        interaction_id=item.get("interaction_id"),
-                        coordination_key=item.get("coordination_key"),
-                        answers=answers,
-                        safe_to_auto_answer=bool(item.get("safe_to_auto_answer", False)),
-                        confidence=float(item.get("confidence", 0.0)),
-                    )
-                )
-            actions = tuple(
-                AssistantAction(
-                    session_key=str(item["session_key"]),
-                    text=str(item["text"]),
-                    created_at=datetime.fromisoformat(item["created_at"]),
-                )
-                for item in raw_view.get("actions", [])
+                for item in raw_view.get("insights", [])
             )
             analyzed_at = raw_view.get("analyzed_at")
-            view = AssistantView(
+            self.view = AssistantView(
                 state="ready",
                 summary=str(raw_view["summary"]),
-                insights=tuple(insights),
-                actions=actions,
-                analyzed_at=(datetime.fromisoformat(analyzed_at) if analyzed_at else None),
+                insights=insights,
+                analyzed_at=datetime.fromisoformat(analyzed_at) if analyzed_at else None,
             )
-            evidence = {
-                str(key): str(value)
-                for key, value in payload.get("evidence_signatures", {}).items()
+            self._signatures = {
+                str(k): str(v) for k, v in payload.get("signatures", {}).items()
             }
-            signature = payload.get("analysis_signature")
-            return view, evidence, str(signature) if signature is not None else None
+            self._verdicts = {
+                str(k): (
+                    str(entry[0]),
+                    Verdict(bool(entry[1]), str(entry[2]), str(entry[3])),
+                )
+                for k, entry in payload.get("verdicts", {}).items()
+                if isinstance(entry, list) and len(entry) == 4
+            }
+            self._force = False
         except (KeyError, TypeError, ValueError):
             log.warning("Ignoring invalid Deckhand checkpoint")
-            return None
 
     def _checkpoint_payload(self) -> dict[str, Any]:
         return {
-            "version": 1,
+            "version": 2,
             "view": {
-                "state": "ready",
                 "summary": self.view.summary,
                 "insights": [
                     {
@@ -258,39 +236,25 @@ class AssistantService:
                         "kind": insight.kind,
                         "headline": insight.headline,
                         "detail": insight.detail,
-                        "interaction_id": insight.interaction_id,
-                        "coordination_key": insight.coordination_key,
-                        "answers": [
-                            {
-                                "question_id": answer.question_id,
-                                "values": list(answer.values),
-                            }
-                            for answer in insight.answers
-                        ],
-                        "safe_to_auto_answer": insight.safe_to_auto_answer,
-                        "confidence": insight.confidence,
                     }
                     for insight in self.view.insights
-                ],
-                "actions": [
-                    {
-                        "session_key": action.session_key,
-                        "text": action.text,
-                        "created_at": action.created_at.isoformat(),
-                    }
-                    for action in self.view.actions
                 ],
                 "analyzed_at": (
                     self.view.analyzed_at.isoformat() if self.view.analyzed_at else None
                 ),
             },
-            "evidence_signatures": self._evidence_signatures,
-            "analysis_signature": self._last_signature,
+            "signatures": self._signatures,
+            "verdicts": {
+                key: [sig, verdict.attention, verdict.summary, verdict.reason]
+                for key, (sig, verdict) in self._verdicts.items()
+            },
         }
 
     def _save_checkpoint(self) -> None:
         if self.state.db and self.view.state == "ready":
             self.state.db.record_assistant_checkpoint(self._checkpoint_payload())
+
+    # --- lifecycle -----------------------------------------------------
 
     def _account(self) -> Account | None:
         codex = [account for account in self.accounts if account.provider_id == "codex"]
@@ -299,6 +263,29 @@ class AssistantService:
                 (account for account in codex if account.key == self.config.account_key), None
             )
         return codex[0] if codex else None
+
+    async def start(self) -> None:
+        if self.config.enabled and self._task is None:
+            self._task = asyncio.create_task(self._loop(), name="attention-triage")
+            self._session_watch_task = asyncio.create_task(
+                self._watch_sessions(), name="attention-triage-sessions"
+            )
+
+    async def stop(self) -> None:
+        tasks = tuple(t for t in (self._task, self._session_watch_task) if t is not None)
+        self._task = None
+        self._session_watch_task = None
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _watch_sessions(self) -> None:
+        """Wake the cheap eligibility check as soon as collection changes."""
+        with self.state.bus.subscribe("sessions") as subscription:
+            while True:
+                await subscription.get()
+                self._wake.set()
 
     def request_refresh(self, *, manual: bool = False) -> bool:
         if not self.config.enabled:
@@ -310,10 +297,77 @@ class AssistantService:
         self._wake.set()
         return True
 
+    # --- session selection & evidence ---------------------------------
+
+    def _interaction(self, session: Session) -> PendingInteraction | None:
+        account = next((a for a in self.accounts if a.key == session.account_key), None)
+        if account is None:
+            return None
+        return PROVIDERS[account.provider_id].pending_interaction(account, session)
+
+    def _triage_sessions(self) -> list[Session]:
+        """Blocking chats first, then most-recently-active, capped to max_sessions."""
+        visible = self.state.visible_sessions()
+        blocking = [s for s in visible if s.question or self._interaction(s) is not None]
+        blocking_keys = {s.key for s in blocking}
+        remaining = [s for s in visible if s.key not in blocking_keys]
+        remaining.sort(
+            key=lambda s: -(
+                (s.last_activity or s.started_at).timestamp()
+                if (s.last_activity or s.started_at)
+                else 0.0
+            )
+        )
+        selected = blocking + remaining[: max(0, self.config.max_sessions - len(blocking))]
+        self.analysis_session_count = len(selected)
+        self.total_session_count = len(visible)
+        return selected
+
+    @staticmethod
+    def _interaction_signature(interaction: PendingInteraction | None) -> Any:
+        if interaction is None:
+            return None
+        return [
+            interaction.id,
+            interaction.kind,
+            interaction.message,
+            [question.prompt for question in interaction.questions],
+        ]
+
+    def _evidence_signature(
+        self,
+        session: Session,
+        context: GitContext | None,
+        interaction: PendingInteraction | None,
+    ) -> str:
+        """Stable identity of a session's material state (excludes transient liveness).
+
+        Drives the classifier cache, handled-card validity, and change detection.
+        Thinking/activity/subagent churn is deliberately excluded so cards neither
+        flicker nor get reclassified on poll noise.
+        """
+        stable = {
+            "title": session.title,
+            "cwd": str(session.cwd) if session.cwd else None,
+            "question": session.question,
+            "last_role": session.last_role,
+            "last_prompt": _trim(session.last_prompt),
+            "last_text": _trim(session.last_text),
+            "worker_type": session.worker_type,
+            "issue_status_kind": session.issue_status_kind,
+            "interaction": self._interaction_signature(interaction),
+            "prs": (
+                sorted((p.number, p.status, p.draft) for p in context.pull_requests)
+                if context is not None
+                else []
+            ),
+        }
+        return json.dumps(stable, sort_keys=True, default=str, separators=(",", ":"))
+
     async def ensure_session_context(
         self, session: Session, *, transcript_context: str | None = None
     ) -> GitContext | None:
-        """Resolve git/PR metadata when a chat outside the analysis window opens."""
+        """Resolve git/PR metadata when a chat outside the triage window opens."""
         existing = self.contexts.get(session.key)
         if existing is not None and not transcript_context:
             return existing
@@ -322,7 +376,7 @@ class AssistantService:
             target = replace(
                 session,
                 last_text="\n".join(
-                    value for value in (session.last_text, transcript_context) if value
+                    v for v in (session.last_text, transcript_context) if v
                 ),
             )
         try:
@@ -332,393 +386,175 @@ class AssistantService:
             return None
         if context is not None and context != existing:
             self.contexts[session.key] = context
-            self._discard_session_insights(session.key)
             self.request_refresh()
         return context
 
-    def _discard_session_insights(self, session_key: str) -> None:
-        """Do not retain advice produced from superseded PR attribution."""
-        insights = tuple(
-            insight for insight in self.view.insights if insight.session_key != session_key
-        )
-        if insights == self.view.insights:
-            return
-        self.view = replace(
-            self.view,
-            summary=(self.view.summary if insights else "Nothing needs your attention right now."),
-            insights=insights,
-        )
-        self._save_checkpoint()
-        self.state.bus.publish("assistant")
+    # --- classification ------------------------------------------------
 
-    async def start(self) -> None:
-        if self.config.enabled and self._task is None:
-            self._task = asyncio.create_task(self._loop(), name="orchestration-assistant")
-            self._session_watch_task = asyncio.create_task(
-                self._watch_sessions(), name="orchestration-assistant-sessions"
+    async def _classify(self, account: Account, session: Session) -> tuple[Verdict, bool]:
+        """Classify one finished agent's final message. Returns (verdict, ok).
+
+        Fails open: on any error the verdict is attention=True so a handoff is
+        never silently dropped, and ok=False lets the caller prefer a cached
+        verdict and flag the run as degraded.
+        """
+        try:
+            raw = await self.runner(account, self.config, classification_prompt(session))
+            return parse_verdict(raw), True
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 -- background failure belongs in the panel
+            log.warning("attention triage failed for %s: %s", session.key, exc)
+            first_line = (session.last_text or "").strip().splitlines()
+            summary = first_line[0][:140].rstrip() if first_line else "Finished"
+            reason = "Deckhand could not read this agent's final message."
+            return Verdict(True, summary, reason), False
+
+    async def refresh(self, *, manual: bool = False) -> None:
+        sessions = self._triage_sessions()
+        resolved = await self.context_resolver.resolve(sessions)
+        live_keys = set(self.state.sessions)
+        self.contexts = {k: v for k, v in self.contexts.items() if k in live_keys}
+        self.contexts.update(resolved)
+        self._verdicts = {k: v for k, v in self._verdicts.items() if k in live_keys}
+
+        now = datetime.now(UTC)
+        account = self._account()
+
+        cards: list[AssistantInsight] = []
+        signatures: dict[str, str] = {}
+        pending: list[tuple[Session, str]] = []
+
+        for session in sessions:
+            context = self.contexts.get(session.key)
+            interaction = self._interaction(session)
+            signature = self._evidence_signature(session, context, interaction)
+            signatures[session.key] = signature
+
+            card = structured_trigger(
+                session, context, interaction, now, hang_after_s=self.HANG_AFTER_S
             )
-
-    async def stop(self) -> None:
-        tasks = tuple(
-            task for task in (self._task, self._session_watch_task) if task is not None
-        )
-        self._task = None
-        self._session_watch_task = None
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-
-    async def _watch_sessions(self) -> None:
-        """Wake the cheap eligibility check as soon as collection changes.
-
-        Most session events are transient activity churn and stop before Git or
-        Luna work. Newly visible keys bypass the normal refresh interval once.
-        """
-        with self.state.bus.subscribe("sessions") as subscription:
-            while True:
-                await subscription.get()
-                self._wake.set()
-
-    def _interaction(self, session: Session) -> PendingInteraction | None:
-        account = next((item for item in self.accounts if item.key == session.account_key), None)
-        if account is None:
-            return None
-        return PROVIDERS[account.provider_id].pending_interaction(account, session)
-
-    def _snapshot_row(self, session: Session) -> dict[str, Any]:
-        context = self.contexts.get(session.key)
-        interaction = self._interaction(session)
-        operator_action_required = (
-            "open_issue_blocked" if self._is_open_blocked_issue(session) else None
-        )
-        return {
-            "session_key": session.key,
-            "title": session.title,
-            "cwd": str(session.cwd) if session.cwd else None,
-            "worker_type": session.worker_type,
-            "issue_url": session.issue_url,
-            "issue_status": session.issue_status,
-            "issue_status_kind": session.issue_status_kind,
-            "operator_action_required": operator_action_required,
-            "state": session.display_state,
-            "activity": session.activity,
-            "question": session.question,
-            "last_prompt": _trim(session.last_prompt),
-            "last_response": _trim(session.last_text),
-            "subagents": session.subagent_count,
-            "git": context.as_json() if context is not None else None,
-            "interaction": self._interaction_json(interaction),
-        }
-
-    @staticmethod
-    def _is_open_blocked_issue(session: Session) -> bool:
-        return bool(
-            session.worker_type == "kanban"
-            and session.issue_url
-            and session.issue_status_kind == "open"
-            and _BLOCKED_ISSUE_RE.search(session.last_text or "")
-        )
-
-    def _analysis_sessions(self) -> list[Session]:
-        """Prioritize blocking interactions, then the most recently active chats.
-
-        Dashboard ordering deliberately ties active sessions to prevent card
-        churn. Deckhand must not reuse that insertion-stable order: a new active
-        chat would otherwise sit behind the existing analysis window forever.
-        """
-        visible = self.state.visible_sessions()
-        blocking = [session for session in visible if self._interaction(session) is not None]
-        blocking_keys = {session.key for session in blocking}
-        remaining = [session for session in visible if session.key not in blocking_keys]
-        remaining.sort(
-            key=lambda session: (
-                -(
-                    (session.last_activity or session.started_at).timestamp()
-                    if session.last_activity or session.started_at
-                    else 0.0
-                ),
-                0 if session.question else 1,
-            )
-        )
-        selected = blocking + remaining[: max(0, self.config.max_sessions - len(blocking))]
-        self.analysis_session_count = len(selected)
-        self.total_session_count = len(visible)
-        return selected
-
-    def snapshot(self) -> list[dict[str, Any]]:
-        return [self._snapshot_row(session) for session in self._analysis_sessions()]
-
-    @staticmethod
-    def _interaction_json(interaction: PendingInteraction | None) -> dict | None:
-        if interaction is None:
-            return None
-        return {
-            "id": interaction.id,
-            "kind": interaction.kind,
-            "title": interaction.title,
-            "message": interaction.message,
-            "command": interaction.command,
-            "cwd": interaction.cwd,
-            "url": interaction.url,
-            "decisions": list(interaction.decisions),
-            "questions": [
-                {
-                    "id": question.id,
-                    "prompt": question.prompt,
-                    "secret": question.secret,
-                    "allow_other": question.allow_other,
-                    "options": [option.label for option in question.options],
-                    "option_details": [
-                        {
-                            "label": option.label,
-                            "value": option.value,
-                            "description": option.description,
-                        }
-                        for option in question.options
-                    ],
-                }
-                for question in interaction.questions
-            ],
-        }
-
-    @staticmethod
-    def _evidence_signature(row: dict[str, Any]) -> str:
-        """Identity of the evidence behind advice, excluding transient liveness.
-
-        Poll-only changes such as thinking/activity/subagent counts must not make
-        findings disappear or resurrect handled findings. Use an explicit
-        material-field contract so adding presentation or prompt metadata cannot
-        invalidate every established finding. Transcript, question, issue,
-        branch and PR changes are material and intentionally do.
-        """
-        stable = {
-            key: row[key]
-            for key in (
-                "session_key",
-                "title",
-                "cwd",
-                "question",
-                "last_prompt",
-                "last_response",
-                "git",
-                "interaction",
-            )
-            if key in row
-        }
-        for key in (
-            "issue_url",
-            "issue_status",
-            "issue_status_kind",
-            "operator_action_required",
-        ):
-            if row.get(key) is not None:
-                stable[key] = row[key]
-        git = stable.get("git")
-        if isinstance(git, dict):
-            stable["git"] = {key: value for key, value in git.items() if key != "dirty"}
-        return json.dumps(stable, sort_keys=True, default=str, separators=(",", ":"))
-
-    @classmethod
-    def _analysis_signature(cls, snapshot: list[dict[str, Any]]) -> str:
-        """Identity of all material evidence considered by the model.
-
-        Session collection order and transient runtime state can change between
-        polls without giving Deckhand anything new to decide. Keep resolving git
-        context on schedule, but invoke the model only when a chat's durable
-        transcript, question, branch, or PR evidence actually changes.
-        """
-        evidence = {
-            str(row.get("session_key", "")): cls._evidence_signature(row)
-            for row in snapshot
-        }
-        return json.dumps(evidence, sort_keys=True, separators=(",", ":"))
-
-    @staticmethod
-    def _coordination_identities(row: dict[str, Any]) -> set[str]:
-        """Stable work identities that justify including an unchanged chat."""
-        git = row.get("git")
-        if not isinstance(git, dict):
-            return set()
-        identities = set()
-        repository = git.get("repository")
-        branch = git.get("branch")
-        if isinstance(repository, str) and isinstance(branch, str):
-            identities.add(f"branch:{repository.lower()}:{branch}")
-        for pull in git.get("pull_requests") or ():
-            if not isinstance(pull, dict):
+            if card is not None:
+                cards.append(card)
                 continue
-            pull_repository = pull.get("repository")
-            number = pull.get("number")
-            if isinstance(pull_repository, str) and isinstance(number, int):
-                identities.add(f"pr:{pull_repository.lower()}#{number}")
-        return identities
+            if not needs_llm(session):
+                continue
+            cached = self._verdicts.get(session.key)
+            if cached is not None and cached[0] == signature:
+                if cached[1].attention:
+                    cards.append(verdict_card(session.key, cached[1]))
+            elif account is not None:
+                pending.append((session, signature))
 
-    def _incremental_snapshot(
-        self, snapshot: list[dict[str, Any]], prior: AssistantView
-    ) -> tuple[list[dict[str, Any]], set[str]]:
-        """Return changed rows plus unchanged rows required for coordination.
+        if not signatures and not self.view.insights:
+            self._commit_view(AssistantView(state="ready"), signatures, manual=manual)
+            return
 
-        The full snapshot still drives evidence stabilization and checkpointing.
-        Luna receives only material changes and chats explicitly connected by a
-        shared PR, branch, or established coordination key.
-        """
-        rows = {str(row.get("session_key", "")): row for row in snapshot}
-        signatures = {key: self._evidence_signature(row) for key, row in rows.items()}
-        changed = {
-            key
-            for key, signature in signatures.items()
-            if signature != self._evidence_signatures.get(key)
-        }
-        if not changed:
-            return [], set()
-
-        changed_identities = set()
-        for key in changed:
-            changed_identities.update(self._coordination_identities(rows[key]))
-            previous = self._evidence_signatures.get(key)
-            if previous:
-                # Recovers the prior row's coordination identities (e.g. a PR that
-                # just moved off this chat) so the now-orphaned peer is still pulled
-                # in as related. This depends on _evidence_signature producing JSON;
-                # if that format ever changes, this degrades to "no prior identities"
-                # rather than failing — keep the two in sync.
-                try:
-                    previous_row = json.loads(previous)
-                except ValueError:
-                    previous_row = None
-                if isinstance(previous_row, dict):
-                    changed_identities.update(self._coordination_identities(previous_row))
-
-        related = {
-            key
-            for key, row in rows.items()
-            if key not in changed
-            and changed_identities.intersection(self._coordination_identities(row))
-        }
-        changed_coordination_keys = {
-            insight.coordination_key
-            for insight in prior.insights
-            if insight.session_key in changed and insight.coordination_key
-        }
-        if changed_coordination_keys:
-            related.update(
-                insight.session_key
-                for insight in prior.insights
-                if insight.session_key in rows
-                and insight.session_key not in changed
-                and insight.coordination_key in changed_coordination_keys
+        degraded = False
+        if pending:
+            self.view = replace(self.view, state="analyzing")
+            self.state.bus.publish("assistant")
+            results = await asyncio.gather(
+                *(self._classify(account, session) for session, _ in pending)
             )
+            for (session, signature), (verdict, ok) in zip(pending, results, strict=True):
+                if ok:
+                    self._verdicts[session.key] = (signature, verdict)
+                else:
+                    degraded = True
+                    cached = self._verdicts.get(session.key)
+                    verdict = cached[1] if cached is not None else verdict
+                if verdict.attention:
+                    cards.append(verdict_card(session.key, verdict))
 
-        included = changed | related
-        return [row for row in snapshot if row.get("session_key") in included], changed
+        cards = self._apply_handled(cards, signatures)
+        view = AssistantView(
+            state="ready",
+            summary=tracking_summary(len(cards)),
+            insights=tuple(cards),
+            analyzed_at=now,
+            error="Some agents could not be read." if degraded else None,
+        )
+        self._commit_view(view, signatures, manual=manual)
 
-    def _stabilize_insights(
-        self,
-        view: AssistantView,
-        prior: AssistantView,
-        evidence: dict[str, str],
-    ) -> AssistantView:
-        """Keep advice stable until its session evidence materially changes.
-
-        Side effect: this augments the passed-in ``evidence`` dict in place with
-        signatures for retained chats that fell outside the analysis window. The
-        caller (``refresh``) relies on that: it persists the same dict into
-        ``self._evidence_signatures`` after stabilization so a retained
-        out-of-window finding is not resurrected on the next poll.
-        """
-        # Findings can refer to chats that temporarily fall outside max_sessions.
-        # Compare those chats directly instead of treating window membership as
-        # evidence that the concern was resolved.
-        for old in prior.insights:
-            session = self.state.sessions.get(old.session_key)
-            if old.session_key not in evidence and session is not None:
-                evidence[old.session_key] = self._evidence_signature(self._snapshot_row(session))
-        fresh_by_session = {insight.session_key: insight for insight in view.insights}
-        stabilized: list[AssistantInsight] = []
-        retained = False
-
-        # Preserve established ordering and wording when a stochastic refresh
-        # omits or rephrases an unchanged chat. Fresh advice replaces it only
-        # after the underlying evidence changes.
-        for old in prior.insights:
-            fresh = fresh_by_session.pop(old.session_key, None)
-            current = evidence.get(old.session_key)
-            if current is not None and current == self._evidence_signatures.get(old.session_key):
-                session = self.state.sessions.get(old.session_key)
-                resumed = bool(
-                    session
-                    and session.thinking
-                    and old.kind in {"waiting", "stalled"}
-                    and self._interaction(session) is None
-                    and not session.question
-                )
-                if resumed and fresh is not None:
-                    stabilized.append(fresh)
-                elif not resumed:
-                    stabilized.append(old)
-                    retained = True
-            elif fresh is not None:
-                stabilized.append(fresh)
-        stabilized.extend(fresh_by_session.values())
-
-        visible = []
-        for insight in stabilized:
-            current = evidence.get(insight.session_key)
-            handled = self._handled.get(insight.session_key)
-            if handled is not None and handled == current:
-                self._handled_insights[insight.session_key] = insight
+    def _apply_handled(
+        self, cards: list[AssistantInsight], signatures: dict[str, str]
+    ) -> list[AssistantInsight]:
+        """Hide a card while its session stays acknowledged; auto-restore on change."""
+        visible: list[AssistantInsight] = []
+        for card in cards:
+            handled_sig = self._handled.get(card.session_key)
+            current = signatures.get(card.session_key)
+            if handled_sig is not None and handled_sig == current:
+                self._handled_insights[card.session_key] = card
                 if self.state.db:
                     self.state.db.record_assistant_handled(
-                        insight.session_key,
-                        handled,
-                        insight.kind,
-                        insight.headline,
-                        insight.detail,
+                        card.session_key, handled_sig, card.kind, card.headline, card.detail
                     )
                 continue
-            if handled is not None and current is not None:
-                self._handled.pop(insight.session_key, None)
-                self._handled_insights.pop(insight.session_key, None)
+            if handled_sig is not None:
+                self._handled.pop(card.session_key, None)
+                self._handled_insights.pop(card.session_key, None)
                 if self.state.db:
-                    self.state.db.delete_assistant_handled(insight.session_key)
-            visible.append(insight)
+                    self.state.db.delete_assistant_handled(card.session_key)
+            visible.append(card)
+        return visible
 
-        summary = view.summary
-        if retained:
-            summary = tracking_summary(len(visible))
-        return replace(view, summary=summary, insights=tuple(visible))
+    def _commit_view(
+        self, view: AssistantView, signatures: dict[str, str], *, manual: bool
+    ) -> None:
+        self._signatures = signatures
+        changed = view != self.view
+        self.view = view
+        self._save_checkpoint()
+        if manual:
+            self.refresh_status = (
+                "Updated" if not view.error else "Some agents could not be read"
+            )
+        if changed or manual:
+            self.state.bus.publish("assistant")
+
+    # --- handled / undo ------------------------------------------------
 
     def handle(self, session_key: str) -> bool:
-        """Acknowledge advice until material evidence for its chat changes."""
         insight = next(
-            (insight for insight in self.view.insights if insight.session_key == session_key),
-            None,
+            (i for i in self.view.insights if i.session_key == session_key), None
         )
-        if insight is None:
-            return False
-        signature = self._evidence_signatures.get(session_key)
-        if signature is None:
+        signature = self._signatures.get(session_key)
+        if insight is None or signature is None:
             return False
         self._handled[session_key] = signature
         self._handled_insights[session_key] = insight
         if self.state.db:
             self.state.db.record_assistant_handled(
-                session_key,
-                signature,
-                insight.kind,
-                insight.headline,
-                insight.detail,
+                session_key, signature, insight.kind, insight.headline, insight.detail
             )
-        insights = tuple(
-            insight for insight in self.view.insights if insight.session_key != session_key
-        )
+        insights = tuple(i for i in self.view.insights if i.session_key != session_key)
         self.view = replace(
-            self.view,
-            summary=tracking_summary(len(insights)),
-            insights=insights,
+            self.view, summary=tracking_summary(len(insights)), insights=insights
         )
         self._save_checkpoint()
+        self.state.bus.publish("assistant")
+        return True
+
+    def unhandle(self, session_key: str) -> bool:
+        if session_key not in self._handled:
+            return False
+        handled_sig = self._handled.pop(session_key)
+        insight = self._handled_insights.pop(session_key, None)
+        if self.state.db:
+            self.state.db.delete_assistant_handled(session_key)
+        # Restore the card immediately when its evidence is still current, so the
+        # undo is visible without waiting for the next triage tick.
+        current = self._signatures.get(session_key)
+        already_shown = any(i.session_key == session_key for i in self.view.insights)
+        if insight is not None and current == handled_sig and not already_shown:
+            insights = self.view.insights + (insight,)
+            self.view = replace(
+                self.view, summary=tracking_summary(len(insights)), insights=insights
+            )
+        self._save_checkpoint()
+        self.request_refresh()
         self.state.bus.publish("assistant")
         return True
 
@@ -731,7 +567,7 @@ class AssistantService:
             headline = (
                 insight.headline
                 if insight is not None
-                else (session.title if session is not None and session.title else "Handled item")
+                else (session.title if session and session.title else "Handled item")
             )
             return (AssistantHandledItem(session_key, headline),)
         return ()
@@ -741,345 +577,7 @@ class AssistantService:
             return None
         return self._handled_insights.get(session_key)
 
-    def unhandle(self, session_key: str) -> bool:
-        """Restore a handled card only while its authoritative evidence is current."""
-        if session_key not in self._handled:
-            return False
-        self._handled.pop(session_key, None)
-        if self.state.db:
-            self.state.db.delete_assistant_handled(session_key)
-        insight = self._handled_insights.pop(session_key, None)
-        session = self.state.sessions.get(session_key)
-        current = (
-            self._evidence_signature(self._snapshot_row(session)) if session is not None else None
-        )
-        candidate = AssistantView(
-            state="ready",
-            insights=(insight,) if insight is not None and current is not None else (),
-        )
-        candidate = self._normalize_insights(candidate)
-        if (
-            current == self._evidence_signatures.get(session_key)
-            and candidate.insights
-            and not any(item.session_key == session_key for item in self.view.insights)
-        ):
-            insights = self.view.insights + candidate.insights
-            self.view = replace(
-                self.view,
-                summary=tracking_summary(len(insights)),
-                insights=insights,
-            )
-        self._save_checkpoint()
-        self.request_refresh()
-        self.state.bus.publish("assistant")
-        return True
-
-    @staticmethod
-    def _prompt(
-        snapshot: list[dict[str, Any]],
-        total_sessions: int | None = None,
-        *,
-        changed_keys: set[str] | None = None,
-        selected_sessions: int | None = None,
-    ) -> str:
-        changed = changed_keys or {str(row.get("session_key", "")) for row in snapshot}
-        scoped_snapshot = [
-            {
-                **row,
-                "deckhand_scope": (
-                    "changed" if str(row.get("session_key", "")) in changed else "related"
-                ),
-            }
-            for row in snapshot
-        ]
-        payload = json.dumps(scoped_snapshot, ensure_ascii=False, separators=(",", ":"))
-        total = total_sessions if total_sessions is not None else len(snapshot)
-        selected = selected_sessions if selected_sessions is not None else len(snapshot)
-        related = len(snapshot) - len(changed)
-        return f"""You are the orchestration assistant inside AgentDeck.
-Analyze the supplied coding-agent dashboard snapshot. Do not use tools. Give concise,
-specific advice about agents that are waiting, stuck, duplicating work, newly finished,
-or need coordination. Prefer silence over generic advice.
-
-The git and pull-request context was resolved authoritatively by AgentDeck. Treat each
-pull request's status as ground truth. A merged or closed-unmerged PR is terminal: never
-treat it as active work or suggest review, merge, or coordination for it. Distinguish
-open and draft PRs. A chat may contain new work after an older PR became terminal, so
-evaluate the current question and transcript independently from historical PRs.
-Never attach a pull request from one session's git context to another session.
-Rows whose operator_action_required is open_issue_blocked are authoritative open
-issues parked by a terminal kanban agent for human action. Always report each such
-issue as its own waiting insight; do not group separate issue numbers merely because
-their failures look similar, and do not treat the absence of a PR as resolution.
-
-For an ordinary question interaction, you may suggest answers. Mark safe_to_auto_answer
-true only when all answers are unambiguous choices explicitly present in the question,
-reversible, low-impact, and confidently inferable from the visible context. Never mark
-approvals, permissions, secrets, open-ended product choices, or destructive actions safe.
-Use session_key, interaction_id, and question_id exactly as supplied. Set interaction_id
-to the current interaction id only when proposing answers; otherwise set it to null. Set
-coordination_key to the same short stable identifier for insights about the same underlying
-PR, issue, branch, or task; use null when there is no shared coordination identity.
-Return at most one insight per session. Polling is frequent, so omit an existing concern
-only when the supplied evidence shows that it was resolved.
-When multiple sessions concern the same underlying PR, issue, branch, or task, emit one
-coordination insight anchored to the chat that should own the work, not one card per chat.
-Do not report an agent merely because it is actively progressing or validating work.
-
-This is an incremental update. Evaluate the {len(changed)} rows marked changed. The
-{related} rows marked related are unchanged and supplied only when a shared PR, branch,
-or established coordination identity requires cross-chat context. Preserve existing
-findings for related rows unless the changed evidence proves they were resolved.
-
-Coverage: {selected} selected sessions out of {total}; {len(snapshot)} are included in
-this update payload. Do not make claims about sessions outside this snapshot.
-
-Dashboard snapshot:
-{payload}
-"""
-
-    @staticmethod
-    def _parse_result(raw: dict[str, Any], valid_keys: set[str]) -> AssistantView:
-        summary = raw.get("summary")
-        insights = []
-        for item in raw.get("insights") or []:
-            if not isinstance(item, dict) or item.get("session_key") not in valid_keys:
-                continue
-            answers = []
-            for answer in item.get("answers") or []:
-                if not isinstance(answer, dict) or not isinstance(answer.get("question_id"), str):
-                    continue
-                values = tuple(
-                    value for value in answer.get("values") or [] if isinstance(value, str)
-                )
-                if values:
-                    answers.append(AssistantAnswer(answer["question_id"], values))
-            confidence = item.get("confidence")
-            insights.append(
-                AssistantInsight(
-                    session_key=item["session_key"],
-                    kind=item.get("kind") if isinstance(item.get("kind"), str) else "info",
-                    headline=(
-                        item.get("headline")
-                        if isinstance(item.get("headline"), str)
-                        else "Agent update"
-                    ),
-                    detail=item.get("detail") if isinstance(item.get("detail"), str) else "",
-                    interaction_id=(
-                        item.get("interaction_id")
-                        if isinstance(item.get("interaction_id"), str)
-                        else None
-                    ),
-                    coordination_key=(
-                        item.get("coordination_key")
-                        if isinstance(item.get("coordination_key"), str)
-                        else None
-                    ),
-                    answers=tuple(answers),
-                    safe_to_auto_answer=bool(item.get("safe_to_auto_answer")),
-                    confidence=(float(confidence) if isinstance(confidence, (int, float)) else 0.0),
-                )
-            )
-        return AssistantView(
-            state="ready",
-            summary=summary if isinstance(summary, str) else "Analysis complete.",
-            insights=tuple(insights),
-            analyzed_at=datetime.now(UTC),
-        )
-
-    def _normalize_insights(
-        self,
-        view: AssistantView,
-        *,
-        snapshot: list[dict[str, Any]] | None = None,
-        stabilize: tuple[AssistantView, dict[str, str]] | None = None,
-    ) -> AssistantView:
-        """Apply the insight post-processing pipeline in one authoritative order.
-
-        Every path (prior re-normalization, post-model reconciliation, unhandle)
-        runs the same suppress -> surface -> enrich -> deduplicate spine so the
-        shared ordering cannot drift between call sites. ``snapshot`` enables the
-        surface stages, which need authoritative per-row evidence to add cards the
-        model omitted. ``stabilize`` runs the handled/evidence stabilization
-        against prior advice followed by a final dedup; the caller owns the final
-        summary once stabilization has reconciled retained findings.
-        """
-        sessions = self.state.sessions
-        view = suppress_unattributed_pr_insights(view, self.contexts)
-        view = suppress_terminal_pr_insights(view, self.contexts)
-        view = suppress_non_actionable_insights(view, sessions, self._interaction)
-        if snapshot is not None:
-            view = surface_open_blocked_issues(view, snapshot)
-            view = surface_unreported_open_pull_requests(view, snapshot)
-        view = enrich_pr_headlines(view, self.contexts)
-        view = deduplicate_insights(view, self.contexts, sessions)
-        if stabilize is not None:
-            prior, evidence = stabilize
-            view = self._stabilize_insights(view, prior, evidence)
-            view = deduplicate_insights(view, self.contexts, sessions)
-        return view
-
-    async def _auto_answer(self, view: AssistantView) -> tuple[AssistantAction, ...]:
-        if not self.config.auto_answer:
-            return ()
-        actions = []
-        for insight in view.insights:
-            if (
-                not insight.safe_to_auto_answer
-                or insight.confidence < self.config.auto_answer_confidence
-            ):
-                continue
-            session = self.state.sessions.get(insight.session_key)
-            if session is None:
-                continue
-            interaction = self._interaction(session)
-            if (
-                interaction is None
-                or insight.interaction_id != interaction.id
-                or not self._answers_are_safe(interaction, insight.answers)
-            ):
-                continue
-            if interaction.id in self._answered_interactions:
-                continue
-            account = next(item for item in self.accounts if item.key == session.account_key)
-            answers = {answer.question_id: list(answer.values) for answer in insight.answers}
-            result = await PROVIDERS[account.provider_id].answer_interaction(
-                account,
-                session,
-                interaction.id,
-                answers=answers,
-                decision=None,
-            )
-            self._answered_interactions.add(interaction.id)
-            if result.accepted:
-                actions.append(AssistantAction(session.key, f"Answered: {insight.headline}"))
-        return tuple(actions)
-
-    @staticmethod
-    def _answers_are_safe(
-        interaction: PendingInteraction | None, answers: tuple[AssistantAnswer, ...]
-    ) -> bool:
-        if interaction is None or interaction.kind != "question" or not interaction.questions:
-            return False
-        supplied = {answer.question_id: answer.values for answer in answers}
-        if set(supplied) != {question.id for question in interaction.questions}:
-            return False
-        for question in interaction.questions:
-            if question.secret or question.allow_other or not question.options:
-                return False
-            safety_text = "\n".join(
-                (
-                    question.header,
-                    question.prompt,
-                    *(option.label for option in question.options),
-                    *(option.description for option in question.options),
-                )
-            )
-            if _UNSAFE_AUTO_ANSWER_RE.search(safety_text):
-                return False
-            allowed = {
-                value
-                for option in question.options
-                for value in (option.label, option.value)
-                if value
-            }
-            if not supplied[question.id] or any(
-                value not in allowed for value in supplied[question.id]
-            ):
-                return False
-        return True
-
-    async def refresh(self, snapshot: list[dict[str, Any]] | None = None) -> None:
-        if snapshot is None:
-            sessions = self._analysis_sessions()
-            resolved = await self.context_resolver.resolve(sessions)
-            live_keys = set(self.state.sessions)
-            self.contexts = {
-                key: context for key, context in self.contexts.items() if key in live_keys
-            }
-            self.contexts.update(resolved)
-            snapshot = [self._snapshot_row(session) for session in sessions]
-        else:
-            self.analysis_session_count = len(snapshot)
-            self.total_session_count = len(self.state.visible_sessions())
-        analysis_signature = self._analysis_signature(snapshot)
-        if not snapshot:
-            self.view = AssistantView(
-                state="ready", summary="Nothing needs your attention right now."
-            )
-            self._last_signature = analysis_signature
-            self._save_checkpoint()
-            self.state.bus.publish("assistant")
-            return
-        account = self._account()
-        if account is None:
-            self.view = AssistantView(
-                state="error",
-                summary="Assistant unavailable.",
-                error="No Codex account is configured.",
-            )
-            self.state.bus.publish("assistant")
-            return
-        prior = self._normalize_insights(self.view)
-        analysis_snapshot, changed_keys = self._incremental_snapshot(snapshot, prior)
-        if not analysis_snapshot:
-            if prior != self.view:
-                self.view = prior
-                self.state.bus.publish("assistant")
-            self._last_signature = analysis_signature
-            self._save_checkpoint()
-            return
-        self.view = AssistantView(
-            state="analyzing",
-            summary=prior.summary,
-            insights=prior.insights,
-            actions=prior.actions,
-            analyzed_at=prior.analyzed_at,
-        )
-        self.state.bus.publish("assistant")
-        try:
-            raw = await self.runner(
-                account,
-                self.config,
-                self._prompt(
-                    analysis_snapshot,
-                    self.total_session_count,
-                    changed_keys=changed_keys,
-                    selected_sessions=len(snapshot),
-                ),
-            )
-            view = self._parse_result(
-                raw, {row["session_key"] for row in analysis_snapshot}
-            )
-            evidence = {row["session_key"]: self._evidence_signature(row) for row in snapshot}
-            view = self._normalize_insights(
-                view, snapshot=snapshot, stabilize=(prior, evidence)
-            )
-            view = replace(view, summary=tracking_summary(len(view.insights)))
-            actions = await self._auto_answer(view)
-            self.view = AssistantView(
-                state=view.state,
-                summary=view.summary,
-                insights=view.insights,
-                actions=tuple((prior.actions + actions)[-6:]),
-                analyzed_at=view.analyzed_at,
-            )
-            self._evidence_signatures.update(evidence)
-            self._last_signature = analysis_signature
-            self._save_checkpoint()
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 -- background failure belongs in the panel
-            log.warning("orchestration assistant failed: %s", exc)
-            self.view = AssistantView(
-                state="error",
-                summary=prior.summary,
-                insights=prior.insights,
-                actions=prior.actions,
-                analyzed_at=prior.analyzed_at,
-                error=str(exc),
-            )
-        self.state.bus.publish("assistant")
+    # --- loop ----------------------------------------------------------
 
     async def _loop(self) -> None:
         loop = asyncio.get_running_loop()
@@ -1090,62 +588,18 @@ Dashboard snapshot:
                 pass
             self._wake.clear()
             due = loop.time() - self._last_run >= self.config.refresh_interval_s
-            visible_keys = {session.key for session in self.state.visible_sessions()}
+            visible_keys = {s.key for s in self.state.visible_sessions()}
             newly_visible = bool(visible_keys - self._known_visible_session_keys)
             self._known_visible_session_keys = visible_keys
             if not self._force and not due and not newly_visible:
                 continue
-            # Consume only the request that caused this check. A second request
-            # arriving while context is resolved must remain armed for the next
-            # loop iteration.
             self._force = False
-            started_at = loop.time()
-            sessions = self._analysis_sessions()
-            collected_at = loop.time()
-            resolved = await self.context_resolver.resolve(sessions)
-            resolved_at = loop.time()
-            session_keys = set(self.state.sessions)
-            self.contexts = {
-                key: context for key, context in self.contexts.items() if key in session_keys
-            }
-            self.contexts.update(resolved)
-            snapshot = [self._snapshot_row(session) for session in sessions]
-            signature = self._analysis_signature(snapshot)
-            compared_at = loop.time()
             manual = self._manual_refresh_pending
             self._manual_refresh_pending = False
-            if signature == self._last_signature:
-                self._last_run = loop.time()
-                if manual:
-                    self.refresh_status = "No material changes · Luna not run"
-                    self.state.bus.publish("assistant")
-                log.debug(
-                    "Deckhand refresh unchanged in %.3fs (collect %.3fs, context %.3fs, "
-                    "compare %.3fs, manual=%s)",
-                    self._last_run - started_at,
-                    collected_at - started_at,
-                    resolved_at - collected_at,
-                    compared_at - resolved_at,
-                    manual,
-                )
-                continue
             self._last_run = loop.time()
-            if manual:
-                self.refresh_status = "Material changes found · running Luna…"
-            await self.refresh(snapshot)
-            if manual:
-                self.refresh_status = (
-                    "Material changes found · analysis updated"
-                    if self.view.state == "ready"
-                    else "Material changes found · analysis failed"
-                )
-                self.state.bus.publish("assistant")
-            log.debug(
-                "Deckhand refresh analyzed in %.3fs (collect %.3fs, context %.3fs, "
-                "compare %.3fs, manual=%s)",
-                loop.time() - started_at,
-                collected_at - started_at,
-                resolved_at - collected_at,
-                compared_at - resolved_at,
-                manual,
-            )
+            try:
+                await self.refresh(manual=manual)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 -- keep the loop alive
+                log.warning("attention triage loop error: %s", exc)
