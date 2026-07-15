@@ -172,6 +172,8 @@ class AssistantService:
         self._last_signature: str | None = None
         self._last_run = 0.0
         self._answered_interactions: set[str] = set()
+        self._evidence_signatures: dict[str, str] = {}
+        self._handled: dict[str, str] = state.db.load_assistant_handled() if state.db else {}
 
     def _account(self) -> Account | None:
         codex = [account for account in self.accounts if account.provider_id == "codex"]
@@ -254,6 +256,23 @@ class AssistantService:
             return None
         return PROVIDERS[account.provider_id].pending_interaction(account, session)
 
+    def _snapshot_row(self, session: Session) -> dict[str, Any]:
+        context = self.contexts.get(session.key)
+        interaction = self._interaction(session)
+        return {
+            "session_key": session.key,
+            "title": session.title,
+            "cwd": str(session.cwd) if session.cwd else None,
+            "state": session.display_state,
+            "activity": session.activity,
+            "question": session.question,
+            "last_prompt": _trim(session.last_prompt),
+            "last_response": _trim(session.last_text),
+            "subagents": session.subagent_count,
+            "git": context.as_json() if context is not None else None,
+            "interaction": self._interaction_json(interaction),
+        }
+
     def snapshot(self) -> list[dict[str, Any]]:
         rows = []
         for session in self.state.visible_sessions()[: self.config.max_sessions]:
@@ -264,24 +283,7 @@ class AssistantService:
                 and all(pull.status in {"closed", "merged"} for pull in context.pull_requests)
             ):
                 continue
-            interaction = self._interaction(session)
-            rows.append(
-                {
-                    "session_key": session.key,
-                    "title": session.title,
-                    "cwd": str(session.cwd) if session.cwd else None,
-                    "state": session.display_state,
-                    "activity": session.activity,
-                    "question": session.question,
-                    "last_prompt": _trim(session.last_prompt),
-                    "last_response": _trim(session.last_text),
-                    "subagents": session.subagent_count,
-                    "git": (
-                        context.as_json() if context is not None else None
-                    ),
-                    "interaction": self._interaction_json(interaction),
-                }
-            )
+            rows.append(self._snapshot_row(session))
         return rows
 
     @staticmethod
@@ -306,6 +308,101 @@ class AssistantService:
         }
 
     @staticmethod
+    def _evidence_signature(row: dict[str, Any]) -> str:
+        """Identity of the evidence behind advice, excluding transient liveness.
+
+        Poll-only changes such as thinking/activity/subagent counts must not make
+        findings disappear or resurrect handled findings. Transcript, question,
+        branch and PR changes are material and intentionally do.
+        """
+        stable = {
+            key: value
+            for key, value in row.items()
+            if key not in {"state", "activity", "subagents"}
+        }
+        return json.dumps(stable, sort_keys=True, default=str, separators=(",", ":"))
+
+    def _stabilize_insights(
+        self,
+        view: AssistantView,
+        prior: AssistantView,
+        evidence: dict[str, str],
+    ) -> AssistantView:
+        """Keep advice stable until its session evidence materially changes."""
+        # Findings can refer to chats that temporarily fall outside max_sessions.
+        # Compare those chats directly instead of treating window membership as
+        # evidence that the concern was resolved.
+        for old in prior.insights:
+            session = self.state.sessions.get(old.session_key)
+            if old.session_key not in evidence and session is not None:
+                evidence[old.session_key] = self._evidence_signature(
+                    self._snapshot_row(session)
+                )
+        fresh_by_session = {insight.session_key: insight for insight in view.insights}
+        stabilized: list[AssistantInsight] = []
+        retained = False
+
+        # Preserve established ordering and wording when a stochastic refresh
+        # merely omits an unchanged chat. A fresh result for that chat replaces
+        # the old one in place.
+        for old in prior.insights:
+            fresh = fresh_by_session.pop(old.session_key, None)
+            if fresh is not None:
+                stabilized.append(fresh)
+                continue
+            current = evidence.get(old.session_key)
+            if current is not None and current == self._evidence_signatures.get(old.session_key):
+                stabilized.append(old)
+                retained = True
+        stabilized.extend(fresh_by_session.values())
+
+        visible = []
+        for insight in stabilized:
+            current = evidence.get(insight.session_key)
+            handled = self._handled.get(insight.session_key)
+            if handled is not None and handled == current:
+                continue
+            if handled is not None and current is not None:
+                self._handled.pop(insight.session_key, None)
+                if self.state.db:
+                    self.state.db.delete_assistant_handled(insight.session_key)
+            visible.append(insight)
+
+        summary = view.summary
+        if retained:
+            summary = self._tracking_summary(len(visible))
+        return replace(view, summary=summary, insights=tuple(visible))
+
+    @staticmethod
+    def _tracking_summary(count: int) -> str:
+        if count == 0:
+            return "Nothing needs your attention right now."
+        if count == 1:
+            return "Deckhand is tracking 1 item that still needs attention."
+        return f"Deckhand is tracking {count} items that still need attention."
+
+    def handle(self, session_key: str) -> bool:
+        """Acknowledge advice until material evidence for its chat changes."""
+        if not any(insight.session_key == session_key for insight in self.view.insights):
+            return False
+        signature = self._evidence_signatures.get(session_key)
+        if signature is None:
+            return False
+        self._handled[session_key] = signature
+        if self.state.db:
+            self.state.db.record_assistant_handled(session_key, signature)
+        insights = tuple(
+            insight for insight in self.view.insights if insight.session_key != session_key
+        )
+        self.view = replace(
+            self.view,
+            summary=self._tracking_summary(len(insights)),
+            insights=insights,
+        )
+        self.state.bus.publish("assistant")
+        return True
+
+    @staticmethod
     def _prompt(snapshot: list[dict[str, Any]]) -> str:
         payload = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
         return f"""You are the orchestration assistant inside AgentDeck.
@@ -323,6 +420,8 @@ true only when all answers are unambiguous choices explicitly present in the que
 reversible, low-impact, and confidently inferable from the visible context. Never mark
 approvals, permissions, secrets, open-ended product choices, or destructive actions safe.
 Use session_key and question_id exactly as supplied.
+Return at most one insight per session. Polling is frequent, so omit an existing concern
+only when the supplied evidence shows that it was resolved.
 
 Dashboard snapshot:
 {payload}
@@ -456,7 +555,12 @@ Dashboard snapshot:
     async def refresh(self, snapshot: list[dict[str, Any]] | None = None) -> None:
         if snapshot is None:
             sessions = self.state.visible_sessions()[: self.config.max_sessions]
-            self.contexts = await self.context_resolver.resolve(sessions)
+            resolved = await self.context_resolver.resolve(sessions)
+            live_keys = set(self.state.sessions)
+            self.contexts = {
+                key: context for key, context in self.contexts.items() if key in live_keys
+            }
+            self.contexts.update(resolved)
             snapshot = self.snapshot()
         if not snapshot:
             self.view = AssistantView(
@@ -486,6 +590,10 @@ Dashboard snapshot:
             raw = await self.runner(account, self.config, self._prompt(snapshot))
             view = self._parse_result(raw, {row["session_key"] for row in snapshot})
             view = self._suppress_terminal_pr_insights(view)
+            evidence = {
+                row["session_key"]: self._evidence_signature(row) for row in snapshot
+            }
+            view = self._stabilize_insights(view, prior, evidence)
             actions = await self._auto_answer(view)
             self.view = AssistantView(
                 state=view.state,
@@ -494,6 +602,7 @@ Dashboard snapshot:
                 actions=tuple((prior.actions + actions)[-6:]),
                 analyzed_at=view.analyzed_at,
             )
+            self._evidence_signatures.update(evidence)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 -- background failure belongs in the panel
@@ -521,7 +630,12 @@ Dashboard snapshot:
             if not self._force and not due:
                 continue
             sessions = self.state.visible_sessions()[: self.config.max_sessions]
-            self.contexts = await self.context_resolver.resolve(sessions)
+            resolved = await self.context_resolver.resolve(sessions)
+            session_keys = set(self.state.sessions)
+            self.contexts = {
+                key: context for key, context in self.contexts.items() if key in session_keys
+            }
+            self.contexts.update(resolved)
             snapshot = self.snapshot()
             signature = json.dumps(snapshot, sort_keys=True, default=str)
             if not self._force and signature == self._last_signature:
@@ -530,4 +644,4 @@ Dashboard snapshot:
             self._force = False
             self._last_signature = signature
             self._last_run = loop.time()
-            await self.refresh()
+            await self.refresh(snapshot)

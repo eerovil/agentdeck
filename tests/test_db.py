@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from agentdeck.db import NullDb, make_db
+from agentdeck.db import Db, NullDb, make_db
 from agentdeck.models import Session, SessionStatus, UsageSnapshot
 
 
@@ -38,6 +38,21 @@ def test_sessions_seen_upsert(tmp_path):
         )
         db.upsert_sessions_seen([s])
         db.upsert_sessions_seen([s])  # second time updates, no duplicate row / no error
+    finally:
+        db.close()
+
+
+def test_assistant_handled_round_trip(tmp_path):
+    db = Db(tmp_path / "history.db")
+    try:
+        db.record_assistant_handled("codex:test:one", "evidence-1")
+        assert db.load_assistant_handled() == {"codex:test:one": "evidence-1"}
+
+        db.record_assistant_handled("codex:test:one", "evidence-2")
+        assert db.load_assistant_handled() == {"codex:test:one": "evidence-2"}
+
+        db.delete_assistant_handled("codex:test:one")
+        assert db.load_assistant_handled() == {}
     finally:
         db.close()
 

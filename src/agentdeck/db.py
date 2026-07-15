@@ -30,6 +30,11 @@ class NullDb:
         return []
 
     def upsert_sessions_seen(self, sessions: list[Session]) -> None: ...
+    def load_assistant_handled(self) -> dict[str, str]:
+        return {}
+
+    def record_assistant_handled(self, session_key: str, evidence_signature: str) -> None: ...
+    def delete_assistant_handled(self, session_key: str) -> None: ...
     def close(self) -> None: ...
 
 
@@ -64,6 +69,11 @@ class Db:
                     cwd TEXT,
                     first_seen TEXT,
                     last_seen TEXT
+                );
+                CREATE TABLE IF NOT EXISTS assistant_handled (
+                    session_key TEXT PRIMARY KEY,
+                    evidence_signature TEXT NOT NULL,
+                    handled_at TEXT NOT NULL
                 );
                 """
             )
@@ -118,6 +128,39 @@ class Db:
                     )
         except sqlite3.Error as exc:
             log.debug("upsert_sessions_seen failed: %s", exc)
+
+    def load_assistant_handled(self) -> dict[str, str]:
+        try:
+            with self._lock:
+                rows = self._conn.execute(
+                    "SELECT session_key, evidence_signature FROM assistant_handled"
+                ).fetchall()
+            return {str(session_key): str(signature) for session_key, signature in rows}
+        except sqlite3.Error as exc:
+            log.debug("load_assistant_handled failed: %s", exc)
+            return {}
+
+    def record_assistant_handled(self, session_key: str, evidence_signature: str) -> None:
+        try:
+            with self._lock, self._conn:
+                self._conn.execute(
+                    "INSERT INTO assistant_handled(session_key, evidence_signature, handled_at)"
+                    " VALUES (?, ?, ?) ON CONFLICT(session_key) DO UPDATE SET"
+                    " evidence_signature=excluded.evidence_signature,"
+                    " handled_at=excluded.handled_at",
+                    (session_key, evidence_signature, datetime.now(UTC).isoformat()),
+                )
+        except sqlite3.Error as exc:
+            log.debug("record_assistant_handled failed: %s", exc)
+
+    def delete_assistant_handled(self, session_key: str) -> None:
+        try:
+            with self._lock, self._conn:
+                self._conn.execute(
+                    "DELETE FROM assistant_handled WHERE session_key = ?", (session_key,)
+                )
+        except sqlite3.Error as exc:
+            log.debug("delete_assistant_handled failed: %s", exc)
 
     def close(self) -> None:
         with self._lock:

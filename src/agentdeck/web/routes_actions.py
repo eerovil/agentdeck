@@ -84,6 +84,23 @@ async def refresh_assistant(request: Request) -> HTMLResponse:
     )
 
 
+@router.post("/assistant/handle", response_class=HTMLResponse)
+async def handle_assistant_insight(request: Request) -> HTMLResponse:
+    _require_same_origin(request)
+    form = await request.form()
+    session_key = form.get("session_key")
+    if not isinstance(session_key, str) or not session_key:
+        raise HTTPException(status_code=422, detail="session key required")
+    assistant = request.app.state.assistant
+    if not assistant.handle(session_key):
+        raise HTTPException(status_code=404, detail="Deckhand item not found")
+    from .render import render_assistant
+
+    return HTMLResponse(
+        render_assistant(get_templates(request), assistant, request.app.state.app_state)
+    )
+
+
 async def _turn_form(request: Request) -> tuple[str, list[Path]]:
     content_type = request.headers.get("content-type", "").lower()
     if not content_type.startswith(("application/x-www-form-urlencoded", "multipart/form-data")):

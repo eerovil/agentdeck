@@ -53,10 +53,16 @@ main { padding: 12px; max-width: 760px; margin: 0 auto; }
 .assistant-spinner { width: 11px; height: 11px; border: 2px solid var(--line);
   border-top-color: var(--remote); border-radius: 50%; animation: send-spin .7s linear infinite; }
 .assistant-insights { display: grid; gap: 6px; margin-top: 9px; }
-.assistant-insight { display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 9px;
-  color: inherit; background: color-mix(in srgb, var(--panel2) 70%, transparent);
+.assistant-insight { display: grid; grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch; border: 1px solid var(--line); border-radius: 9px;
+  color: inherit; background: color-mix(in srgb, var(--panel2) 70%, transparent); }
+.assistant-insight-link { display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center; gap: 8px; min-width: 0; padding: 6px 8px; color: inherit;
   text-decoration: none; }
+.assistant-insight form { display: flex; align-items: stretch; margin: 0; border-left: 1px solid var(--line); }
+.assistant-insight form button { min-width: 32px; padding: 0 8px; border: 0; border-radius: 0 8px 8px 0;
+  color: var(--muted); background: transparent; font: inherit; cursor: pointer; }
+.assistant-insight form button:hover { color: var(--live); background: color-mix(in srgb, var(--live) 8%, transparent); }
 .assistant-kind { margin-top: 1px; padding: 1px 5px; border: 1px solid currentColor;
   border-radius: 999px; color: var(--remote); font-size: 9px; font-weight: 700;
   letter-spacing: .04em; text-transform: uppercase; }

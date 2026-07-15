@@ -179,6 +179,35 @@ async def test_orchestration_assistant_fits_mobile_and_desktop(tmp_path):
         assert size["insights"] == 2
 
 
+async def test_orchestration_assistant_item_can_be_marked_handled(tmp_path):
+    app = _app_with_state(tmp_path)
+    assistant = app.state.assistant
+    assistant.config.enabled = True
+    assistant.view = AssistantView(
+        state="ready",
+        summary="One item needs attention.",
+        insights=(
+            AssistantInsight(
+                session_key="claude_code:test:sid1",
+                kind="coordination",
+                headline="Choose one owner",
+                detail="Two chats overlap.",
+            ),
+        ),
+    )
+    assistant._evidence_signatures["claude_code:test:sid1"] = "same-evidence"
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/assistant/handle", data={"session_key": "claude_code:test:sid1"}
+        )
+
+    assert response.status_code == 200
+    assert "Choose one owner" not in response.text
+    assert "Nothing needs your attention right now." in response.text
+    assert assistant._handled == {"claude_code:test:sid1": "same-evidence"}
+
+
 async def test_host_usage_fits_collapsed_mobile_header(tmp_path):
     app = _app_with_state(tmp_path)
     app.state.accounts.extend(

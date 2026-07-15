@@ -27,14 +27,19 @@
   {% if assistant.view.insights %}
   <div class="assistant-insights">
     {% for insight in assistant.view.insights %}
-    <a class="assistant-insight insight-{{ insight.kind }}"
-       href="/sessions/{{ insight.session_key }}">
-      <span class="assistant-kind">{{ insight.kind }}</span>
-      <span class="assistant-copy">
-        <strong>{{ insight.headline }}</strong>
-      </span>
-      <span class="assistant-arrow">›</span>
-    </a>
+    <div class="assistant-insight insight-{{ insight.kind }}">
+      <a class="assistant-insight-link" href="/sessions/{{ insight.session_key }}">
+        <span class="assistant-kind">{{ insight.kind }}</span>
+        <span class="assistant-copy">
+          <strong>{{ insight.headline }}</strong>
+        </span>
+        <span class="assistant-arrow">›</span>
+      </a>
+      <form hx-post="/assistant/handle" hx-target="#assistant-panel" hx-swap="outerHTML">
+        <input type="hidden" name="session_key" value="{{ insight.session_key }}">
+        <button type="submit" title="Mark handled" aria-label="Mark {{ insight.headline }} handled">✓</button>
+      </form>
+    </div>
     {% endfor %}
   </div>
   {% elif assistant.view.state == 'ready' %}

@@ -238,6 +238,123 @@ async def test_refresh_never_auto_answers_approval(tmp_path, monkeypatch):
     assert not assistant.view.actions
 
 
+async def test_refresh_retains_unchanged_insight_when_next_analysis_omits_it(tmp_path):
+    state = AppState()
+    state.update_session(_session(tmp_path))
+    runner = AsyncMock(
+        side_effect=[
+            {
+                "summary": "One item needs attention.",
+                "insights": [
+                    {
+                        "session_key": "codex:test:thread-1",
+                        "kind": "coordination",
+                        "headline": "Consolidate duplicate work",
+                        "detail": "Keep one owner.",
+                        "answers": [],
+                        "safe_to_auto_answer": False,
+                        "confidence": 0.9,
+                    }
+                ],
+            },
+            {"summary": "Nothing to report.", "insights": []},
+        ]
+    )
+    assistant = AssistantService(_config(tmp_path), state, runner=runner)
+
+    await assistant.refresh(snapshot=assistant.snapshot())
+    state.update_session(
+        Session(
+            **{
+                **vars(state.sessions["codex:test:thread-1"]),
+                "thinking": True,
+                "activity": "Working",
+                "subagent_count": 2,
+            }
+        )
+    )
+    await assistant.refresh(snapshot=assistant.snapshot())
+
+    assert [item.headline for item in assistant.view.insights] == [
+        "Consolidate duplicate work"
+    ]
+    assert assistant.view.summary == "Deckhand is tracking 1 item that still needs attention."
+
+
+async def test_handled_insight_stays_hidden_until_chat_evidence_changes(tmp_path):
+    state = AppState()
+    state.update_session(_session(tmp_path))
+    result = {
+        "summary": "One item needs attention.",
+        "insights": [
+            {
+                "session_key": "codex:test:thread-1",
+                "kind": "waiting",
+                "headline": "Choose the database",
+                "detail": "A choice is required.",
+                "answers": [],
+                "safe_to_auto_answer": False,
+                "confidence": 0.9,
+            }
+        ],
+    }
+    assistant = AssistantService(
+        _config(tmp_path), state, runner=AsyncMock(return_value=result)
+    )
+
+    await assistant.refresh(snapshot=assistant.snapshot())
+    assert assistant.handle("codex:test:thread-1")
+    await assistant.refresh(snapshot=assistant.snapshot())
+    assert assistant.view.insights == ()
+
+    session = state.sessions["codex:test:thread-1"]
+    state.update_session(Session(**{**vars(session), "last_text": "The choice changed."}))
+    await assistant.refresh(snapshot=assistant.snapshot())
+
+    assert [item.headline for item in assistant.view.insights] == ["Choose the database"]
+    assert "codex:test:thread-1" not in assistant._handled
+
+
+async def test_refresh_retains_insight_when_chat_leaves_analysis_window(tmp_path):
+    state = AppState()
+    first = _session(tmp_path)
+    second = Session(
+        key="codex:test:thread-2",
+        account_key="codex:test",
+        session_id="thread-2",
+        status=SessionStatus.IDLE,
+        title="Another chat",
+        show_when_idle=True,
+    )
+    state.update_session(first)
+    state.update_session(second)
+    runner = AsyncMock(
+        side_effect=[
+            {
+                "summary": "One item needs attention.",
+                "insights": [
+                    {
+                        "session_key": first.key,
+                        "kind": "coordination",
+                        "headline": "Keep this finding",
+                        "detail": "It remains relevant.",
+                        "answers": [],
+                        "safe_to_auto_answer": False,
+                        "confidence": 0.9,
+                    }
+                ],
+            },
+            {"summary": "Nothing to report.", "insights": []},
+        ]
+    )
+    assistant = AssistantService(_config(tmp_path, max_sessions=1), state, runner=runner)
+
+    await assistant.refresh(snapshot=[assistant._snapshot_row(first)])
+    await assistant.refresh(snapshot=[assistant._snapshot_row(second)])
+
+    assert [item.headline for item in assistant.view.insights] == ["Keep this finding"]
+
+
 async def test_refresh_omits_sessions_when_all_related_prs_are_terminal(tmp_path):
     state = AppState()
     state.update_session(_session(tmp_path))
