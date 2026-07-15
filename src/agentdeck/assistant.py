@@ -51,6 +51,12 @@ class AssistantAction:
 
 
 @dataclass(frozen=True)
+class AssistantHandledItem:
+    session_key: str
+    headline: str
+
+
+@dataclass(frozen=True)
 class AssistantView:
     state: str = "idle"
     summary: str = "Waiting for session activity."
@@ -173,7 +179,20 @@ class AssistantService:
         self._last_run = 0.0
         self._answered_interactions: set[str] = set()
         self._evidence_signatures: dict[str, str] = {}
-        self._handled: dict[str, str] = state.db.load_assistant_handled() if state.db else {}
+        handled = state.db.load_assistant_handled() if state.db else {}
+        self._handled = {
+            session_key: record[0] for session_key, record in handled.items()
+        }
+        self._handled_insights = {
+            session_key: AssistantInsight(
+                session_key=session_key,
+                kind=kind,
+                headline=headline,
+                detail=detail or "",
+            )
+            for session_key, (_, kind, headline, detail) in handled.items()
+            if kind is not None and headline is not None
+        }
 
     def _account(self) -> Account | None:
         codex = [account for account in self.accounts if account.provider_id == "codex"]
@@ -360,9 +379,19 @@ class AssistantService:
             current = evidence.get(insight.session_key)
             handled = self._handled.get(insight.session_key)
             if handled is not None and handled == current:
+                self._handled_insights[insight.session_key] = insight
+                if self.state.db:
+                    self.state.db.record_assistant_handled(
+                        insight.session_key,
+                        handled,
+                        insight.kind,
+                        insight.headline,
+                        insight.detail,
+                    )
                 continue
             if handled is not None and current is not None:
                 self._handled.pop(insight.session_key, None)
+                self._handled_insights.pop(insight.session_key, None)
                 if self.state.db:
                     self.state.db.delete_assistant_handled(insight.session_key)
             visible.append(insight)
@@ -382,14 +411,29 @@ class AssistantService:
 
     def handle(self, session_key: str) -> bool:
         """Acknowledge advice until material evidence for its chat changes."""
-        if not any(insight.session_key == session_key for insight in self.view.insights):
+        insight = next(
+            (
+                insight
+                for insight in self.view.insights
+                if insight.session_key == session_key
+            ),
+            None,
+        )
+        if insight is None:
             return False
         signature = self._evidence_signatures.get(session_key)
         if signature is None:
             return False
         self._handled[session_key] = signature
+        self._handled_insights[session_key] = insight
         if self.state.db:
-            self.state.db.record_assistant_handled(session_key, signature)
+            self.state.db.record_assistant_handled(
+                session_key,
+                signature,
+                insight.kind,
+                insight.headline,
+                insight.detail,
+            )
         insights = tuple(
             insight for insight in self.view.insights if insight.session_key != session_key
         )
@@ -398,6 +442,43 @@ class AssistantService:
             summary=self._tracking_summary(len(insights)),
             insights=insights,
         )
+        self.state.bus.publish("assistant")
+        return True
+
+    @property
+    def handled_items(self) -> tuple[AssistantHandledItem, ...]:
+        """Handled cards, including persisted entries not yet seen this run."""
+        items = []
+        for session_key in reversed(self._handled):
+            insight = self._handled_insights.get(session_key)
+            session = self.state.sessions.get(session_key)
+            headline = (
+                insight.headline
+                if insight is not None
+                else (session.title if session is not None and session.title else "Handled item")
+            )
+            items.append(AssistantHandledItem(session_key, headline))
+        return tuple(items)
+
+    def unhandle(self, session_key: str) -> bool:
+        """Restore a handled card and allow future analyses to show it."""
+        if session_key not in self._handled:
+            return False
+        self._handled.pop(session_key, None)
+        if self.state.db:
+            self.state.db.delete_assistant_handled(session_key)
+        insight = self._handled_insights.pop(session_key, None)
+        if insight is not None and not any(
+            item.session_key == session_key for item in self.view.insights
+        ):
+            insights = self.view.insights + (insight,)
+            self.view = replace(
+                self.view,
+                summary=self._tracking_summary(len(insights)),
+                insights=insights,
+            )
+        else:
+            self.request_refresh()
         self.state.bus.publish("assistant")
         return True
 

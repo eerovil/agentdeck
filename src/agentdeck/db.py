@@ -30,10 +30,19 @@ class NullDb:
         return []
 
     def upsert_sessions_seen(self, sessions: list[Session]) -> None: ...
-    def load_assistant_handled(self) -> dict[str, str]:
+    def load_assistant_handled(
+        self,
+    ) -> dict[str, tuple[str, str | None, str | None, str | None]]:
         return {}
 
-    def record_assistant_handled(self, session_key: str, evidence_signature: str) -> None: ...
+    def record_assistant_handled(
+        self,
+        session_key: str,
+        evidence_signature: str,
+        kind: str | None = None,
+        headline: str | None = None,
+        detail: str | None = None,
+    ) -> None: ...
     def delete_assistant_handled(self, session_key: str) -> None: ...
     def close(self) -> None: ...
 
@@ -73,10 +82,20 @@ class Db:
                 CREATE TABLE IF NOT EXISTS assistant_handled (
                     session_key TEXT PRIMARY KEY,
                     evidence_signature TEXT NOT NULL,
+                    kind TEXT,
+                    headline TEXT,
+                    detail TEXT,
                     handled_at TEXT NOT NULL
                 );
                 """
             )
+            columns = {
+                row[1]
+                for row in self._conn.execute("PRAGMA table_info(assistant_handled)")
+            }
+            for column in ("kind", "headline", "detail"):
+                if column not in columns:
+                    self._conn.execute(f"ALTER TABLE assistant_handled ADD COLUMN {column} TEXT")
 
     def record_usage(self, snapshot: UsageSnapshot) -> None:
         try:
@@ -129,26 +148,53 @@ class Db:
         except sqlite3.Error as exc:
             log.debug("upsert_sessions_seen failed: %s", exc)
 
-    def load_assistant_handled(self) -> dict[str, str]:
+    def load_assistant_handled(
+        self,
+    ) -> dict[str, tuple[str, str | None, str | None, str | None]]:
         try:
             with self._lock:
                 rows = self._conn.execute(
-                    "SELECT session_key, evidence_signature FROM assistant_handled"
+                    "SELECT session_key, evidence_signature, kind, headline, detail"
+                    " FROM assistant_handled ORDER BY handled_at"
                 ).fetchall()
-            return {str(session_key): str(signature) for session_key, signature in rows}
+            return {
+                str(session_key): (
+                    str(signature),
+                    str(kind) if kind is not None else None,
+                    str(headline) if headline is not None else None,
+                    str(detail) if detail is not None else None,
+                )
+                for session_key, signature, kind, headline, detail in rows
+            }
         except sqlite3.Error as exc:
             log.debug("load_assistant_handled failed: %s", exc)
             return {}
 
-    def record_assistant_handled(self, session_key: str, evidence_signature: str) -> None:
+    def record_assistant_handled(
+        self,
+        session_key: str,
+        evidence_signature: str,
+        kind: str | None = None,
+        headline: str | None = None,
+        detail: str | None = None,
+    ) -> None:
         try:
             with self._lock, self._conn:
                 self._conn.execute(
-                    "INSERT INTO assistant_handled(session_key, evidence_signature, handled_at)"
-                    " VALUES (?, ?, ?) ON CONFLICT(session_key) DO UPDATE SET"
+                    "INSERT INTO assistant_handled(session_key, evidence_signature, kind,"
+                    " headline, detail, handled_at) VALUES (?, ?, ?, ?, ?, ?)"
+                    " ON CONFLICT(session_key) DO UPDATE SET"
                     " evidence_signature=excluded.evidence_signature,"
+                    " kind=excluded.kind, headline=excluded.headline, detail=excluded.detail,"
                     " handled_at=excluded.handled_at",
-                    (session_key, evidence_signature, datetime.now(UTC).isoformat()),
+                    (
+                        session_key,
+                        evidence_signature,
+                        kind,
+                        headline,
+                        detail,
+                        datetime.now(UTC).isoformat(),
+                    ),
                 )
         except sqlite3.Error as exc:
             log.debug("record_assistant_handled failed: %s", exc)

@@ -63,6 +63,16 @@ main { padding: 12px; max-width: 760px; margin: 0 auto; }
 .assistant-insight form button { min-width: 32px; padding: 0 8px; border: 0; border-radius: 0 8px 8px 0;
   color: var(--muted); background: transparent; font: inherit; cursor: pointer; }
 .assistant-insight form button:hover { color: var(--live); background: color-mix(in srgb, var(--live) 8%, transparent); }
+.assistant-handled { display: grid; gap: 4px; margin-top: 8px; }
+.assistant-handled-item { display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center; gap: 7px; min-width: 0; color: var(--muted); font-size: 11px; }
+.assistant-handled-label { color: var(--live); font-size: 9px; font-weight: 700;
+  letter-spacing: .04em; text-transform: uppercase; }
+.assistant-handled-item a { min-width: 0; overflow: hidden; color: var(--muted);
+  text-decoration: none; text-overflow: ellipsis; white-space: nowrap; }
+.assistant-handled-item form { margin: 0; }
+.assistant-handled-item button { padding: 1px 5px; border: 0; color: var(--remote);
+  background: transparent; font: inherit; font-weight: 650; cursor: pointer; }
 .assistant-kind { margin-top: 1px; padding: 1px 5px; border: 1px solid currentColor;
   border-radius: 999px; color: var(--remote); font-size: 9px; font-weight: 700;
   letter-spacing: .04em; text-transform: uppercase; }

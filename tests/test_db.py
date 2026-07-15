@@ -1,3 +1,4 @@
+import sqlite3
 from datetime import UTC, datetime
 
 from agentdeck.db import Db, NullDb, make_db
@@ -45,14 +46,52 @@ def test_sessions_seen_upsert(tmp_path):
 def test_assistant_handled_round_trip(tmp_path):
     db = Db(tmp_path / "history.db")
     try:
-        db.record_assistant_handled("codex:test:one", "evidence-1")
-        assert db.load_assistant_handled() == {"codex:test:one": "evidence-1"}
+        db.record_assistant_handled(
+            "codex:test:one", "evidence-1", "waiting", "Needs input", "Pick one."
+        )
+        assert db.load_assistant_handled() == {
+            "codex:test:one": ("evidence-1", "waiting", "Needs input", "Pick one.")
+        }
 
         db.record_assistant_handled("codex:test:one", "evidence-2")
-        assert db.load_assistant_handled() == {"codex:test:one": "evidence-2"}
+        assert db.load_assistant_handled() == {
+            "codex:test:one": ("evidence-2", None, None, None)
+        }
 
         db.delete_assistant_handled("codex:test:one")
         assert db.load_assistant_handled() == {}
+    finally:
+        db.close()
+
+
+def test_assistant_handled_schema_adds_restore_metadata_to_existing_db(tmp_path):
+    path = tmp_path / "history.db"
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "CREATE TABLE assistant_handled (session_key TEXT PRIMARY KEY,"
+        " evidence_signature TEXT NOT NULL, handled_at TEXT NOT NULL)"
+    )
+    connection.execute(
+        "INSERT INTO assistant_handled VALUES (?, ?, ?)",
+        ("codex:test:old", "old-evidence", datetime.now(UTC).isoformat()),
+    )
+    connection.commit()
+    connection.close()
+
+    db = Db(path)
+    try:
+        assert db.load_assistant_handled() == {
+            "codex:test:old": ("old-evidence", None, None, None)
+        }
+        db.record_assistant_handled(
+            "codex:test:old", "old-evidence", "waiting", "Restorable", "Details"
+        )
+        assert db.load_assistant_handled()["codex:test:old"] == (
+            "old-evidence",
+            "waiting",
+            "Restorable",
+            "Details",
+        )
     finally:
         db.close()
 

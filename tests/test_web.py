@@ -208,9 +208,35 @@ async def test_orchestration_assistant_item_can_be_marked_handled(tmp_path):
         )
 
     assert response.status_code == 200
-    assert "Choose one owner" not in response.text
+    assert 'class="assistant-insight-link"' not in response.text
+    assert 'aria-label="Handled Deckhand items"' in response.text
+    assert "Choose one owner" in response.text
+    assert "Undo" in response.text
     assert "Nothing needs your attention right now." in response.text
     assert assistant._handled == {"claude_code:test:sid1": "same-evidence"}
+
+    css = (Path(__file__).parents[1] / "src/agentdeck/web/static/app.css").read_text()
+    html = response.text.replace("</head>", f"<style>{css}</style></head>")
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        page = await browser.new_page(viewport={"width": 320, "height": 800})
+        await page.set_content(html)
+        handled = await page.locator(".assistant-handled-item").bounding_box()
+        panel = await page.locator("#assistant-panel").bounding_box()
+        await browser.close()
+    assert handled is not None and panel is not None
+    assert handled["x"] >= panel["x"]
+    assert handled["x"] + handled["width"] <= panel["x"] + panel["width"]
+
+    async with _client(app) as client:
+        restored = await client.post(
+            "/assistant/unhandle", data={"session_key": "claude_code:test:sid1"}
+        )
+
+    assert restored.status_code == 200
+    assert 'class="assistant-insight-link"' in restored.text
+    assert 'aria-label="Handled Deckhand items"' not in restored.text
+    assert assistant._handled == {}
 
 
 async def test_host_usage_fits_collapsed_mobile_header(tmp_path):

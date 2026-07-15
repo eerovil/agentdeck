@@ -338,6 +338,7 @@ async def test_handled_insight_stays_hidden_until_chat_evidence_changes(tmp_path
     assert assistant.handle("codex:test:thread-1")
     await assistant.refresh(snapshot=assistant.snapshot())
     assert assistant.view.insights == ()
+    assert assistant.handled_items[0].headline == "Choose the database"
 
     session = state.sessions["codex:test:thread-1"]
     state.update_session(Session(**{**vars(session), "last_text": "The choice changed."}))
@@ -345,6 +346,30 @@ async def test_handled_insight_stays_hidden_until_chat_evidence_changes(tmp_path
 
     assert [item.headline for item in assistant.view.insights] == ["Choose the database"]
     assert "codex:test:thread-1" not in assistant._handled
+
+
+async def test_unhandle_restores_cached_insight_immediately(tmp_path):
+    state = AppState()
+    state.update_session(_session(tmp_path))
+    assistant = AssistantService(_config(tmp_path), state)
+    insight = AssistantInsight(
+        session_key="codex:test:thread-1",
+        kind="waiting",
+        headline="Choose the database",
+        detail="A choice is required.",
+    )
+    assistant.view = AssistantView(
+        state="ready", summary="One item needs attention.", insights=(insight,)
+    )
+    assistant._evidence_signatures[insight.session_key] = "same-evidence"
+
+    assert assistant.handle(insight.session_key)
+    assert assistant.view.insights == ()
+    assert assistant.unhandle(insight.session_key)
+
+    assert assistant.view.insights == (insight,)
+    assert assistant.handled_items == ()
+    assert insight.session_key not in assistant._handled
 
 
 async def test_refresh_retains_insight_when_chat_leaves_analysis_window(tmp_path):

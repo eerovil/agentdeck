@@ -46,6 +46,21 @@
   <div class="assistant-clear">Nothing needs your attention right now.</div>
   {% endif %}
 
+  {% if assistant.handled_items %}
+  <div class="assistant-handled" aria-label="Handled Deckhand items">
+    {% for item in assistant.handled_items %}
+    <div class="assistant-handled-item">
+      <span class="assistant-handled-label">Handled</span>
+      <a href="/sessions/{{ item.session_key }}" title="{{ item.headline }}">{{ item.headline }}</a>
+      <form hx-post="/assistant/unhandle" hx-target="#assistant-panel" hx-swap="outerHTML">
+        <input type="hidden" name="session_key" value="{{ item.session_key }}">
+        <button type="submit" aria-label="Undo handling {{ item.headline }}">Undo</button>
+      </form>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
   {% if assistant.view.actions %}
   <div class="assistant-actions">
     {% for action in assistant.view.actions[-3:] %}
