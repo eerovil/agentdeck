@@ -16,6 +16,20 @@ from .deps import (
 router = APIRouter()
 
 
+def _pr_reference_text(events) -> str | None:
+    """PR-bearing transcript fragments used to find every PR in the visible history."""
+    fragments = []
+    for event in events:
+        for value in (event.text, event.tool_summary, event.tool_detail, event.question):
+            if value and (
+                "github.com/" in value.lower()
+                or "pr #" in value.lower()
+                or "pull request" in value.lower()
+            ):
+                fragments.append(value)
+    return "\n".join(fragments) or None
+
+
 @router.get("/healthz")
 async def healthz(request: Request) -> JSONResponse:
     state = get_state(request)
@@ -108,7 +122,9 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
     account_label = labels.get(session.account_key)
     owned_session = provider.owns_session(account, session)
     assistant = request.app.state.assistant
-    git_context = await assistant.ensure_session_context(session)
+    git_context = await assistant.ensure_session_context(
+        session, transcript_context=_pr_reference_text(detail.events)
+    )
 
     resp = templates.TemplateResponse(
         request,

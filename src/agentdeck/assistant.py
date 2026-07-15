@@ -9,7 +9,7 @@ import os
 import signal
 import tempfile
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -188,13 +188,23 @@ class AssistantService:
         self._wake.set()
         return True
 
-    async def ensure_session_context(self, session: Session) -> GitContext | None:
+    async def ensure_session_context(
+        self, session: Session, *, transcript_context: str | None = None
+    ) -> GitContext | None:
         """Resolve git/PR metadata when a chat outside the analysis window opens."""
         existing = self.contexts.get(session.key)
-        if existing is not None:
+        if existing is not None and not transcript_context:
             return existing
+        target = session
+        if transcript_context:
+            target = replace(
+                session,
+                last_text="\n".join(
+                    value for value in (session.last_text, transcript_context) if value
+                ),
+            )
         try:
-            context = (await self.context_resolver.resolve([session])).get(session.key)
+            context = (await self.context_resolver.resolve([target])).get(session.key)
         except Exception as exc:  # noqa: BLE001 -- metadata must not break chat pages
             log.debug("Deckhand context resolve failed for %s: %s", session.key, exc)
             return None

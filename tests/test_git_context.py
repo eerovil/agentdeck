@@ -155,6 +155,51 @@ async def test_explicit_merged_pr_outranks_unrelated_shared_checkout_branch(
     assert branch_lookups == 0
 
 
+async def test_resolves_multiple_explicit_prs_for_one_chat(tmp_path, monkeypatch):
+    resolver = GitContextResolver()
+    resolver._git = "git"
+    resolver._gh = "gh"
+
+    async def fake_run(*args):
+        if "status" in args:
+            return (0, "## shared...origin/shared\n")
+        if "remote" in args:
+            return (0, "git@github.com:protecomp/storm.git\n")
+        if args[1:3] == ("pr", "view"):
+            number = int(args[3])
+            return (
+                0,
+                json.dumps(
+                    {
+                        "number": number,
+                        "title": f"PR {number}",
+                        "url": f"https://github.com/protecomp/storm/pull/{number}",
+                        "state": "MERGED" if number == 247 else "OPEN",
+                        "isDraft": False,
+                        "mergedAt": "2026-07-14T13:17:40Z" if number == 247 else None,
+                        "headRefName": f"work-{number}",
+                        "baseRefName": "master",
+                    }
+                ),
+            )
+        raise AssertionError(args)
+
+    monkeypatch.setattr(resolver, "_run", fake_run)
+    session = _session(
+        tmp_path,
+        last_text=(
+            "First https://github.com/protecomp/storm/pull/247 then "
+            "https://github.com/protecomp/storm/pull/250"
+        ),
+    )
+    context = (await resolver.resolve([session]))[session.key]
+
+    assert [(pull.number, pull.status) for pull in context.pull_requests] == [
+        (250, "open"),
+        (247, "merged"),
+    ]
+
+
 async def test_resolves_merged_pr_after_worktree_was_removed(tmp_path, monkeypatch):
     resolver = GitContextResolver()
     resolver._git = "git"

@@ -99,6 +99,50 @@ async def test_ensure_session_context_resolves_and_caches_chat_outside_analysis(
     resolver.resolve.assert_awaited_once_with([session])
 
 
+async def test_ensure_session_context_augments_cached_context_from_transcript(tmp_path):
+    state = AppState()
+    session = _session(tmp_path)
+    cached = GitContext("eerovil/agentdeck", "feature/deckhand", False)
+    expanded = GitContext(
+        "eerovil/agentdeck",
+        "feature/deckhand",
+        False,
+        pull_requests=(
+            PullRequestContext(
+                "eerovil/agentdeck",
+                91,
+                "First PR",
+                "https://github.com/eerovil/agentdeck/pull/91",
+                "merged",
+            ),
+            PullRequestContext(
+                "eerovil/agentdeck",
+                92,
+                "Second PR",
+                "https://github.com/eerovil/agentdeck/pull/92",
+                "open",
+            ),
+        ),
+    )
+    resolver = AsyncMock(return_value={})
+    resolver.resolve = AsyncMock(return_value={session.key: expanded})
+    assistant = AssistantService(_config(tmp_path), state, context_resolver=resolver)
+    assistant.contexts[session.key] = cached
+
+    result = await assistant.ensure_session_context(
+        session,
+        transcript_context=(
+            "Earlier https://github.com/eerovil/agentdeck/pull/91 and later "
+            "https://github.com/eerovil/agentdeck/pull/92"
+        ),
+    )
+
+    assert result == expanded
+    resolved_session = resolver.resolve.await_args.args[0][0]
+    assert "/pull/91" in resolved_session.last_text
+    assert "/pull/92" in resolved_session.last_text
+
+
 async def test_refresh_renders_advice_and_auto_answers_safe_choice(tmp_path, monkeypatch):
     state = AppState()
     state.update_session(_session(tmp_path))
