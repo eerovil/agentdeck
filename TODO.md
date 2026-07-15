@@ -5,6 +5,12 @@ follow-ups here instead of creating GitHub issues unless external coordination i
 
 ## Open
 
+- [ ] Execute the [AgentDeck interaction latency UX plan](docs/UX_LATENCY_PLAN.md).
+  - Prioritize measurable interaction feedback: Send, queued follow-ups, Stop, approvals/questions,
+    transcript updates, and control-state reconciliation.
+  - Deliver it in independently deployable stages, starting with timing instrumentation and
+    immediate optimistic feedback before replacing runtime and fragment polling with pushed state.
+
 - [x] Investigate why visible Tilhi issue chats are absent from Deckhand.
   - Use the visible `tilhi#1632`, `tilhi#1633`, and `tilhi#1634` ALT/outdoor chats as reproduction
     cases; they report blocked terminal agent state, remain open for human action, and have no PR.
