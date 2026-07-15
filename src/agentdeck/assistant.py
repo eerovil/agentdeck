@@ -25,11 +25,17 @@ log = logging.getLogger(__name__)
 
 _SCHEMA_PATH = Path(__file__).with_name("assistant_output.schema.json")
 _MAX_CONTEXT_CHARS = 1_000
-_INSIGHT_PR_NUMBER_RE = re.compile(
-    r"\b(?:PR|PRs|pull request|pull requests)\s*#?\s*(\d+)\b", re.IGNORECASE
+_INSIGHT_PR_SEQUENCE_RE = re.compile(
+    r"\b(?:PR|PRs|pull request|pull requests)\s+"
+    r"((?:#?\d+)(?:\s*(?:,|and|&)\s*#?\d+)*)",
+    re.IGNORECASE,
 )
 _INSIGHT_PR_URL_RE = re.compile(
     r"https?://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/(\d+)",
+    re.IGNORECASE,
+)
+_UNSAFE_AUTO_ANSWER_RE = re.compile(
+    r"\b(?:delete|destroy|drop|erase|overwrite|force[- ]?push|purchase|pay)\b",
     re.IGNORECASE,
 )
 
@@ -46,6 +52,8 @@ class AssistantInsight:
     kind: str
     headline: str
     detail: str
+    interaction_id: str | None = None
+    coordination_key: str | None = None
     answers: tuple[AssistantAnswer, ...] = ()
     safe_to_auto_answer: bool = False
     confidence: float = 0.0
@@ -138,7 +146,7 @@ async def run_codex(account: Account, config: AssistantConfig, prompt: str) -> d
         except OSError as exc:
             raise RuntimeError(f"could not start Codex: {exc}") from exc
         try:
-            _, stderr = await asyncio.wait_for(
+            await asyncio.wait_for(
                 process.communicate((prompt + "\n").encode()), timeout=config.timeout_s
             )
         except TimeoutError as exc:
@@ -148,9 +156,11 @@ async def run_codex(account: Account, config: AssistantConfig, prompt: str) -> d
             await _terminate_group(process)
             raise
         if process.returncode != 0:
-            detail = stderr.decode(errors="replace").strip()[-1_000:]
-            suffix = f": {detail}" if detail else ""
-            raise RuntimeError(f"Codex assistant exited without an answer{suffix}")
+            # Codex stderr can echo the complete prompt, including transcript excerpts.
+            # Keep operator-visible and journal errors useful without persisting chat data.
+            raise RuntimeError(
+                f"Codex assistant exited without an answer (status {process.returncode})"
+            )
         try:
             value = json.loads(output.read_text())
         except (OSError, json.JSONDecodeError) as exc:
@@ -187,10 +197,10 @@ class AssistantService:
         self._last_run = 0.0
         self._answered_interactions: set[str] = set()
         self._evidence_signatures: dict[str, str] = {}
+        self.analysis_session_count = 0
+        self.total_session_count = 0
         handled = state.db.load_assistant_handled() if state.db else {}
-        self._handled = {
-            session_key: record[0] for session_key, record in handled.items()
-        }
+        self._handled = {session_key: record[0] for session_key, record in handled.items()}
         self._handled_insights = {
             session_key: AssistantInsight(
                 session_key=session_key,
@@ -252,11 +262,7 @@ class AssistantService:
             return
         self.view = AssistantView(
             state=self.view.state,
-            summary=(
-                self.view.summary
-                if insights
-                else "Nothing needs your attention right now."
-            ),
+            summary=(self.view.summary if insights else "Nothing needs your attention right now."),
             insights=insights,
             actions=self.view.actions,
             analyzed_at=self.view.analyzed_at,
@@ -276,9 +282,7 @@ class AssistantService:
             await asyncio.gather(task, return_exceptions=True)
 
     def _interaction(self, session: Session) -> PendingInteraction | None:
-        account = next(
-            (item for item in self.accounts if item.key == session.account_key), None
-        )
+        account = next((item for item in self.accounts if item.key == session.account_key), None)
         if account is None:
             return None
         return PROVIDERS[account.provider_id].pending_interaction(account, session)
@@ -300,18 +304,24 @@ class AssistantService:
             "interaction": self._interaction_json(interaction),
         }
 
+    def _analysis_sessions(self) -> list[Session]:
+        """Prioritize blocking interactions, then fill the configured recent window."""
+        visible = self.state.visible_sessions()
+        blocking = [session for session in visible if self._interaction(session) is not None]
+        blocking_keys = {session.key for session in blocking}
+        remaining = [session for session in visible if session.key not in blocking_keys]
+        questions = [session for session in remaining if session.question]
+        question_keys = {session.key for session in questions}
+        ordinary = [session for session in remaining if session.key not in question_keys]
+        selected = (
+            blocking + (questions + ordinary)[: max(0, self.config.max_sessions - len(blocking))]
+        )
+        self.analysis_session_count = len(selected)
+        self.total_session_count = len(visible)
+        return selected
+
     def snapshot(self) -> list[dict[str, Any]]:
-        rows = []
-        for session in self.state.visible_sessions()[: self.config.max_sessions]:
-            context = self.contexts.get(session.key)
-            if (
-                context
-                and context.pull_requests
-                and all(pull.status in {"closed", "merged"} for pull in context.pull_requests)
-            ):
-                continue
-            rows.append(self._snapshot_row(session))
-        return rows
+        return [self._snapshot_row(session) for session in self._analysis_sessions()]
 
     @staticmethod
     def _interaction_json(interaction: PendingInteraction | None) -> dict | None:
@@ -322,6 +332,10 @@ class AssistantService:
             "kind": interaction.kind,
             "title": interaction.title,
             "message": interaction.message,
+            "command": interaction.command,
+            "cwd": interaction.cwd,
+            "url": interaction.url,
+            "decisions": list(interaction.decisions),
             "questions": [
                 {
                     "id": question.id,
@@ -329,6 +343,14 @@ class AssistantService:
                     "secret": question.secret,
                     "allow_other": question.allow_other,
                     "options": [option.label for option in question.options],
+                    "option_details": [
+                        {
+                            "label": option.label,
+                            "value": option.value,
+                            "description": option.description,
+                        }
+                        for option in question.options
+                    ],
                 }
                 for question in interaction.questions
             ],
@@ -347,6 +369,9 @@ class AssistantService:
             for key, value in row.items()
             if key not in {"state", "activity", "subagents"}
         }
+        git = stable.get("git")
+        if isinstance(git, dict):
+            stable["git"] = {key: value for key, value in git.items() if key != "dirty"}
         return json.dumps(stable, sort_keys=True, default=str, separators=(",", ":"))
 
     def _stabilize_insights(
@@ -362,9 +387,7 @@ class AssistantService:
         for old in prior.insights:
             session = self.state.sessions.get(old.session_key)
             if old.session_key not in evidence and session is not None:
-                evidence[old.session_key] = self._evidence_signature(
-                    self._snapshot_row(session)
-                )
+                evidence[old.session_key] = self._evidence_signature(self._snapshot_row(session))
         fresh_by_session = {insight.session_key: insight for insight in view.insights}
         stabilized: list[AssistantInsight] = []
         retained = False
@@ -376,8 +399,19 @@ class AssistantService:
             fresh = fresh_by_session.pop(old.session_key, None)
             current = evidence.get(old.session_key)
             if current is not None and current == self._evidence_signatures.get(old.session_key):
-                stabilized.append(old)
-                retained = True
+                session = self.state.sessions.get(old.session_key)
+                resumed = bool(
+                    session
+                    and session.thinking
+                    and old.kind in {"waiting", "stalled"}
+                    and self._interaction(session) is None
+                    and not session.question
+                )
+                if resumed and fresh is not None:
+                    stabilized.append(fresh)
+                elif not resumed:
+                    stabilized.append(old)
+                    retained = True
             elif fresh is not None:
                 stabilized.append(fresh)
         stabilized.extend(fresh_by_session.values())
@@ -420,11 +454,7 @@ class AssistantService:
     def handle(self, session_key: str) -> bool:
         """Acknowledge advice until material evidence for its chat changes."""
         insight = next(
-            (
-                insight
-                for insight in self.view.insights
-                if insight.session_key == session_key
-            ),
+            (insight for insight in self.view.insights if insight.session_key == session_key),
             None,
         )
         if insight is None:
@@ -468,31 +498,49 @@ class AssistantService:
             items.append(AssistantHandledItem(session_key, headline))
         return tuple(items)
 
+    def handled_insight(self, session_key: str) -> AssistantInsight | None:
+        if session_key not in self._handled:
+            return None
+        return self._handled_insights.get(session_key)
+
     def unhandle(self, session_key: str) -> bool:
-        """Restore a handled card and allow future analyses to show it."""
+        """Restore a handled card only while its authoritative evidence is current."""
         if session_key not in self._handled:
             return False
         self._handled.pop(session_key, None)
         if self.state.db:
             self.state.db.delete_assistant_handled(session_key)
         insight = self._handled_insights.pop(session_key, None)
-        if insight is not None and not any(
-            item.session_key == session_key for item in self.view.insights
+        session = self.state.sessions.get(session_key)
+        current = (
+            self._evidence_signature(self._snapshot_row(session)) if session is not None else None
+        )
+        candidate = AssistantView(
+            state="ready",
+            insights=(insight,) if insight is not None and current is not None else (),
+        )
+        candidate = self._suppress_unattributed_pr_insights(candidate)
+        candidate = self._suppress_terminal_pr_insights(candidate)
+        candidate = self._suppress_non_actionable_insights(candidate)
+        if (
+            current == self._evidence_signatures.get(session_key)
+            and candidate.insights
+            and not any(item.session_key == session_key for item in self.view.insights)
         ):
-            insights = self.view.insights + (insight,)
+            insights = self.view.insights + candidate.insights
             self.view = replace(
                 self.view,
                 summary=self._tracking_summary(len(insights)),
                 insights=insights,
             )
-        else:
-            self.request_refresh()
+        self.request_refresh()
         self.state.bus.publish("assistant")
         return True
 
     @staticmethod
-    def _prompt(snapshot: list[dict[str, Any]]) -> str:
+    def _prompt(snapshot: list[dict[str, Any]], total_sessions: int | None = None) -> str:
         payload = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
+        total = total_sessions if total_sessions is not None else len(snapshot)
         return f"""You are the orchestration assistant inside AgentDeck.
 Analyze the supplied coding-agent dashboard snapshot. Do not use tools. Give concise,
 specific advice about agents that are waiting, stuck, duplicating work, newly finished,
@@ -501,16 +549,26 @@ or need coordination. Prefer silence over generic advice.
 The git and pull-request context was resolved authoritatively by AgentDeck. Treat each
 pull request's status as ground truth. A merged or closed-unmerged PR is terminal: never
 treat it as active work or suggest review, merge, or coordination for it. Distinguish
-open and draft PRs. Sessions whose related PRs are all terminal are omitted entirely.
+open and draft PRs. A chat may contain new work after an older PR became terminal, so
+evaluate the current question and transcript independently from historical PRs.
 Never attach a pull request from one session's git context to another session.
 
 For an ordinary question interaction, you may suggest answers. Mark safe_to_auto_answer
 true only when all answers are unambiguous choices explicitly present in the question,
 reversible, low-impact, and confidently inferable from the visible context. Never mark
 approvals, permissions, secrets, open-ended product choices, or destructive actions safe.
-Use session_key and question_id exactly as supplied.
+Use session_key, interaction_id, and question_id exactly as supplied. Set interaction_id
+to the current interaction id only when proposing answers; otherwise set it to null. Set
+coordination_key to the same short stable identifier for insights about the same underlying
+PR, issue, branch, or task; use null when there is no shared coordination identity.
 Return at most one insight per session. Polling is frequent, so omit an existing concern
 only when the supplied evidence shows that it was resolved.
+When multiple sessions concern the same underlying PR, issue, branch, or task, emit one
+coordination insight anchored to the chat that should own the work, not one card per chat.
+Do not report an agent merely because it is actively progressing or validating work.
+
+Coverage: {len(snapshot)} selected sessions out of {total}. Do not make claims about
+sessions outside this snapshot.
 
 Dashboard snapshot:
 {payload}
@@ -543,11 +601,19 @@ Dashboard snapshot:
                         else "Agent update"
                     ),
                     detail=item.get("detail") if isinstance(item.get("detail"), str) else "",
+                    interaction_id=(
+                        item.get("interaction_id")
+                        if isinstance(item.get("interaction_id"), str)
+                        else None
+                    ),
+                    coordination_key=(
+                        item.get("coordination_key")
+                        if isinstance(item.get("coordination_key"), str)
+                        else None
+                    ),
                     answers=tuple(answers),
                     safe_to_auto_answer=bool(item.get("safe_to_auto_answer")),
-                    confidence=(
-                        float(confidence) if isinstance(confidence, (int, float)) else 0.0
-                    ),
+                    confidence=(float(confidence) if isinstance(confidence, (int, float)) else 0.0),
                 )
             )
         return AssistantView(
@@ -557,27 +623,45 @@ Dashboard snapshot:
             analyzed_at=datetime.now(UTC),
         )
 
+    @staticmethod
+    def _pr_claims(insight: AssistantInsight) -> tuple[set[int], set[tuple[str, int]]]:
+        text = f"{insight.headline}\n{insight.detail}"
+        numbers = {
+            int(number)
+            for match in _INSIGHT_PR_SEQUENCE_RE.finditer(text)
+            for number in re.findall(r"\d+", match.group(1))
+        }
+        repositories = {
+            (repository.casefold(), int(number))
+            for repository, number in _INSIGHT_PR_URL_RE.findall(text)
+        }
+        return numbers, repositories
+
     def _suppress_terminal_pr_insights(self, view: AssistantView) -> AssistantView:
-        """Closed and merged work is context, not an item requiring attention."""
-        insights = tuple(
-            insight
-            for insight in view.insights
-            if not (
-                (context := self.contexts.get(insight.session_key))
-                and context.pull_requests
-                and all(
-                    pull.status in {"closed", "merged"}
-                    for pull in context.pull_requests
-                )
-            )
-        )
+        """Suppress only advice whose claimed PR work is entirely terminal."""
+        insights = []
+        for insight in view.insights:
+            numbers, repositories = self._pr_claims(insight)
+            if not numbers and not repositories:
+                insights.append(insight)
+                continue
+            context = self.contexts.get(insight.session_key)
+            pulls = context.pull_requests if context is not None else ()
+            claimed = [
+                pull
+                for pull in pulls
+                if pull.number in numbers
+                or (pull.repository.casefold(), pull.number) in repositories
+            ]
+            if claimed and all(pull.status in {"closed", "merged"} for pull in claimed):
+                continue
+            insights.append(insight)
+        insights = tuple(insights)
         if insights == view.insights:
             return view
         return AssistantView(
             state=view.state,
-            summary=(
-                view.summary if insights else "Nothing needs your attention right now."
-            ),
+            summary=(view.summary if insights else "Nothing needs your attention right now."),
             insights=insights,
             actions=view.actions,
             analyzed_at=view.analyzed_at,
@@ -588,21 +672,14 @@ Dashboard snapshot:
         """Reject PR claims copied from another chat in the shared snapshot."""
         insights = []
         for insight in view.insights:
-            text = f"{insight.headline}\n{insight.detail}"
-            numbers = {int(value) for value in _INSIGHT_PR_NUMBER_RE.findall(text)}
-            repositories = {
-                (repository.casefold(), int(number))
-                for repository, number in _INSIGHT_PR_URL_RE.findall(text)
-            }
+            numbers, repositories = self._pr_claims(insight)
             if not numbers and not repositories:
                 insights.append(insight)
                 continue
             context = self.contexts.get(insight.session_key)
             pulls = context.pull_requests if context is not None else ()
             valid_numbers = {pull.number for pull in pulls}
-            valid_repositories = {
-                (pull.repository.casefold(), pull.number) for pull in pulls
-            }
+            valid_repositories = {(pull.repository.casefold(), pull.number) for pull in pulls}
             if numbers <= valid_numbers and repositories <= valid_repositories:
                 insights.append(insight)
                 continue
@@ -620,6 +697,70 @@ Dashboard snapshot:
             insights=result,
         )
 
+    def _suppress_non_actionable_insights(self, view: AssistantView) -> AssistantView:
+        """Active progress alone is not an item that needs the operator's attention."""
+        insights = tuple(
+            insight
+            for insight in view.insights
+            if not (
+                insight.kind == "info"
+                and (session := self.state.sessions.get(insight.session_key)) is not None
+                and session.thinking
+                and self._interaction(session) is None
+                and not session.question
+            )
+        )
+        if insights == view.insights:
+            return view
+        return replace(view, summary=self._tracking_summary(len(insights)), insights=insights)
+
+    def _deduplicate_insights(self, view: AssistantView) -> AssistantView:
+        """Keep one operator action per underlying PR, issue, branch, or model group."""
+        seen: set[str] = set()
+        insights = []
+        for insight in view.insights:
+            context = self.contexts.get(insight.session_key)
+            numbers, repositories = self._pr_claims(insight)
+            pulls = context.pull_requests if context is not None else ()
+            claimed = sorted(
+                f"{pull.repository.casefold()}#{pull.number}"
+                for pull in pulls
+                if pull.number in numbers
+                or (pull.repository.casefold(), pull.number) in repositories
+            )
+            session = self.state.sessions.get(insight.session_key)
+            if claimed:
+                key = "prs:" + ",".join(claimed)
+            elif session is not None and session.issue_url:
+                key = f"issue:{session.issue_url.casefold()}"
+            elif (
+                context is not None
+                and context.repository
+                and context.branch
+                and context.branch not in {"main", "master"}
+            ):
+                key = f"branch:{context.repository.casefold()}:{context.branch.casefold()}"
+            elif insight.coordination_key:
+                namespace = (
+                    context.repository.casefold()
+                    if context is not None and context.repository
+                    else str(session.cwd)
+                    if session is not None and session.cwd
+                    else "global"
+                )
+                key = f"model:{namespace}:{insight.coordination_key.strip().casefold()}"
+            else:
+                key = ""
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            insights.append(insight)
+        result = tuple(insights)
+        if result == view.insights:
+            return view
+        return replace(view, summary=self._tracking_summary(len(result)), insights=result)
+
     async def _auto_answer(self, view: AssistantView) -> tuple[AssistantAction, ...]:
         if not self.config.auto_answer:
             return ()
@@ -634,9 +775,12 @@ Dashboard snapshot:
             if session is None:
                 continue
             interaction = self._interaction(session)
-            if not self._answers_are_safe(interaction, insight.answers):
+            if (
+                interaction is None
+                or insight.interaction_id != interaction.id
+                or not self._answers_are_safe(interaction, insight.answers)
+            ):
                 continue
-            assert interaction is not None
             if interaction.id in self._answered_interactions:
                 continue
             account = next(item for item in self.accounts if item.key == session.account_key)
@@ -665,6 +809,16 @@ Dashboard snapshot:
         for question in interaction.questions:
             if question.secret or question.allow_other or not question.options:
                 return False
+            safety_text = "\n".join(
+                (
+                    question.header,
+                    question.prompt,
+                    *(option.label for option in question.options),
+                    *(option.description for option in question.options),
+                )
+            )
+            if _UNSAFE_AUTO_ANSWER_RE.search(safety_text):
+                return False
             allowed = {
                 value
                 for option in question.options
@@ -679,14 +833,17 @@ Dashboard snapshot:
 
     async def refresh(self, snapshot: list[dict[str, Any]] | None = None) -> None:
         if snapshot is None:
-            sessions = self.state.visible_sessions()[: self.config.max_sessions]
+            sessions = self._analysis_sessions()
             resolved = await self.context_resolver.resolve(sessions)
             live_keys = set(self.state.sessions)
             self.contexts = {
                 key: context for key, context in self.contexts.items() if key in live_keys
             }
             self.contexts.update(resolved)
-            snapshot = self.snapshot()
+            snapshot = [self._snapshot_row(session) for session in sessions]
+        else:
+            self.analysis_session_count = len(snapshot)
+            self.total_session_count = len(self.state.visible_sessions())
         if not snapshot:
             self.view = AssistantView(
                 state="ready", summary="Nothing needs your attention right now."
@@ -703,6 +860,9 @@ Dashboard snapshot:
             self.state.bus.publish("assistant")
             return
         prior = self._suppress_unattributed_pr_insights(self.view)
+        prior = self._suppress_terminal_pr_insights(prior)
+        prior = self._suppress_non_actionable_insights(prior)
+        prior = self._deduplicate_insights(prior)
         self.view = AssistantView(
             state="analyzing",
             summary=prior.summary,
@@ -712,14 +872,18 @@ Dashboard snapshot:
         )
         self.state.bus.publish("assistant")
         try:
-            raw = await self.runner(account, self.config, self._prompt(snapshot))
+            raw = await self.runner(
+                account, self.config, self._prompt(snapshot, self.total_session_count)
+            )
             view = self._parse_result(raw, {row["session_key"] for row in snapshot})
             view = self._suppress_unattributed_pr_insights(view)
             view = self._suppress_terminal_pr_insights(view)
-            evidence = {
-                row["session_key"]: self._evidence_signature(row) for row in snapshot
-            }
+            view = self._suppress_non_actionable_insights(view)
+            view = self._deduplicate_insights(view)
+            evidence = {row["session_key"]: self._evidence_signature(row) for row in snapshot}
             view = self._stabilize_insights(view, prior, evidence)
+            view = self._deduplicate_insights(view)
+            view = replace(view, summary=self._tracking_summary(len(view.insights)))
             actions = await self._auto_answer(view)
             self.view = AssistantView(
                 state=view.state,
@@ -755,14 +919,14 @@ Dashboard snapshot:
             due = loop.time() - self._last_run >= self.config.refresh_interval_s
             if not self._force and not due:
                 continue
-            sessions = self.state.visible_sessions()[: self.config.max_sessions]
+            sessions = self._analysis_sessions()
             resolved = await self.context_resolver.resolve(sessions)
             session_keys = set(self.state.sessions)
             self.contexts = {
                 key: context for key, context in self.contexts.items() if key in session_keys
             }
             self.contexts.update(resolved)
-            snapshot = self.snapshot()
+            snapshot = [self._snapshot_row(session) for session in sessions]
             signature = json.dumps(snapshot, sort_keys=True, default=str)
             if not self._force and signature == self._last_signature:
                 self._last_run = loop.time()

@@ -10,9 +10,11 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["session_key", "kind", "headline", "detail", "answers", "safe_to_auto_answer", "confidence"],
+        "required": ["session_key", "interaction_id", "coordination_key", "kind", "headline", "detail", "answers", "safe_to_auto_answer", "confidence"],
         "properties": {
           "session_key": {"type": "string"},
+          "interaction_id": {"type": ["string", "null"]},
+          "coordination_key": {"type": ["string", "null"]},
           "kind": {"type": "string", "enum": ["waiting", "stalled", "coordination", "finished", "info"]},
           "headline": {"type": "string"},
           "detail": {"type": "string"},

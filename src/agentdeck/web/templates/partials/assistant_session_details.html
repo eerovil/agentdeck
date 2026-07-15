@@ -1,4 +1,4 @@
-{% if assistant_insights or git_context %}
+{% if assistant_insights or assistant_handled or git_context %}
 <section class="assistant-chat-details" aria-label="Deckhand details for this chat">
   <div class="assistant-chat-head">
     <span class="assistant-kicker">Deckhand</span>
@@ -20,9 +20,25 @@
     <div class="assistant-chat-title">
       <span class="assistant-kind">{{ insight.kind }}</span>
       <strong>{{ insight.headline }}</strong>
+      <form hx-post="/assistant/handle" hx-swap="none" hx-disabled-elt="find button">
+        <input type="hidden" name="session_key" value="{{ insight.session_key }}">
+        <button type="submit" aria-label="Mark {{ insight.headline }} handled">Mark handled</button>
+      </form>
     </div>
     <p>{{ insight.detail }}</p>
   </article>
   {% endfor %}
+  {% if assistant_handled %}
+  <article class="assistant-chat-detail assistant-chat-handled">
+    <div class="assistant-chat-title">
+      <span class="assistant-kind">handled</span>
+      <strong>{{ assistant_handled.headline }}</strong>
+      <form hx-post="/assistant/unhandle" hx-swap="none" hx-disabled-elt="find button">
+        <input type="hidden" name="session_key" value="{{ assistant_handled.session_key }}">
+        <button type="submit" aria-label="Undo handling {{ assistant_handled.headline }}">Undo</button>
+      </form>
+    </div>
+  </article>
+  {% endif %}
 </section>
 {% endif %}

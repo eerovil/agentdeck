@@ -35,7 +35,6 @@ def test_explicit_refs_recognize_markdown_formatted_pr_number(tmp_path):
     )
 
     assert GitContextResolver._explicit_refs(session, "protecomp/storm") == [
-        ("protecomp/storm", 253),
         ("protecomp/storm", 254),
     ]
 
@@ -122,9 +121,7 @@ async def test_resolves_explicit_pr_number_when_branch_has_no_pr(tmp_path, monke
     assert (pull.number, pull.status, pull.draft) == (92, "open", True)
 
 
-async def test_explicit_merged_pr_outranks_unrelated_shared_checkout_branch(
-    tmp_path, monkeypatch
-):
+async def test_explicit_merged_pr_outranks_unrelated_shared_checkout_branch(tmp_path, monkeypatch):
     resolver = GitContextResolver()
     resolver._git = "git"
     resolver._gh = "gh"
@@ -169,9 +166,7 @@ async def test_explicit_merged_pr_outranks_unrelated_shared_checkout_branch(
     assert branch_lookups == 0
 
 
-async def test_initial_prompt_pr_outranks_unrelated_shared_checkout_branch(
-    tmp_path, monkeypatch
-):
+async def test_initial_prompt_pr_outranks_unrelated_shared_checkout_branch(tmp_path, monkeypatch):
     resolver = GitContextResolver()
     resolver._git = "git"
     resolver._gh = "gh"

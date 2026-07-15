@@ -28,7 +28,6 @@ _GITHUB_REPO_URL_RE = re.compile(
     r"https?://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)(?:/|$)",
     re.IGNORECASE,
 )
-_REPO_REF_RE = re.compile(r"\b([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)#(\d+)\b")
 _PR_NUMBER_RE = re.compile(
     r"\b(?:PR|pull request)\s*(?:[*_`]+\s*)*#?(\d+)\b",
     re.IGNORECASE,
@@ -118,7 +117,7 @@ class GitContextResolver:
     TERMINAL_TTL_S = 3600.0
     NEGATIVE_TTL_S = 300.0
     COMMAND_TIMEOUT_S = 6.0
-    MAX_EXPLICIT_REFS = 4
+    MAX_EXPLICIT_REFS = 10
 
     def __init__(self) -> None:
         self._git = shutil.which("git")
@@ -143,8 +142,10 @@ class GitContextResolver:
         try:
             async with self._command_limit:
                 code, stdout = await invoke()
-                if code != 0 and args[0] == self._gh and (
-                    "GH_TOKEN" in os.environ or "GITHUB_TOKEN" in os.environ
+                if (
+                    code != 0
+                    and args[0] == self._gh
+                    and ("GH_TOKEN" in os.environ or "GITHUB_TOKEN" in os.environ)
                 ):
                     # A stale service token overrides gh's working hosts.yml login.
                     # Fall back to that login only after the explicit environment
@@ -201,8 +202,10 @@ class GitContextResolver:
             # A shared checkout may have moved to another chat's branch. Once
             # this chat names its own PR, expose local branch/dirty state only
             # when that checkout still matches one of the PR head branches.
-            if explicit_pulls and branch and not any(
-                pull.head_branch == branch for pull in explicit_pulls
+            if (
+                explicit_pulls
+                and branch
+                and not any(pull.head_branch == branch for pull in explicit_pulls)
             ):
                 branch = None
                 dirty = False
@@ -251,12 +254,7 @@ class GitContextResolver:
         )
         refs: list[tuple[str, int]] = []
         refs.extend(
-            (f"{m.group(1)}/{m.group(2)}", int(m.group(3)))
-            for m in _PR_URL_RE.finditer(text)
-        )
-        refs.extend(
-            (f"{m.group(1)}/{m.group(2)}", int(m.group(3)))
-            for m in _REPO_REF_RE.finditer(text)
+            (f"{m.group(1)}/{m.group(2)}", int(m.group(3))) for m in _PR_URL_RE.finditer(text)
         )
         if repository:
             refs.extend((repository, int(m.group(1))) for m in _PR_NUMBER_RE.finditer(text))
@@ -277,7 +275,7 @@ class GitContextResolver:
                 fetched_at, pulls = cached
                 ttl = (
                     self.TERMINAL_TTL_S
-                    if pulls and all(pull.status == "merged" for pull in pulls)
+                    if pulls and all(pull.status in {"closed", "merged"} for pull in pulls)
                     else self.OPEN_TTL_S
                 )
                 if now - fetched_at < ttl:
@@ -326,7 +324,7 @@ class GitContextResolver:
                     self.NEGATIVE_TTL_S
                     if pull is None
                     else self.TERMINAL_TTL_S
-                    if pull.status == "merged"
+                    if pull.status in {"closed", "merged"}
                     else self.OPEN_TTL_S
                 )
                 if now - fetched_at < ttl:

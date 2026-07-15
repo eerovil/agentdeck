@@ -194,11 +194,10 @@ def assistant_insights_for_session(assistant, session_key: str) -> tuple:
     )
 
 
-def render_assistant_session(
-    templates: Jinja2Templates, assistant, session_key: str
-) -> str:
+def render_assistant_session(templates: Jinja2Templates, assistant, session_key: str) -> str:
     return templates.get_template("partials/assistant_session_details.html").render(
         assistant_insights=assistant_insights_for_session(assistant, session_key),
+        assistant_handled=assistant.handled_insight(session_key),
         git_context=assistant.contexts.get(session_key),
     )
 

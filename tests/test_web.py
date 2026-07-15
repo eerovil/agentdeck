@@ -200,7 +200,9 @@ async def test_orchestration_assistant_item_can_be_marked_handled(tmp_path):
             ),
         ),
     )
-    assistant._evidence_signatures["claude_code:test:sid1"] = "same-evidence"
+    session = app.state.app_state.sessions["claude_code:test:sid1"]
+    evidence = assistant._evidence_signature(assistant._snapshot_row(session))
+    assistant._evidence_signatures["claude_code:test:sid1"] = evidence
 
     async with _client(app) as client:
         response = await client.post(
@@ -213,7 +215,12 @@ async def test_orchestration_assistant_item_can_be_marked_handled(tmp_path):
     assert "Choose one owner" in response.text
     assert "Undo" in response.text
     assert "Nothing needs your attention right now." in response.text
-    assert assistant._handled == {"claude_code:test:sid1": "same-evidence"}
+    assert assistant._handled == {"claude_code:test:sid1": evidence}
+
+    async with _client(app) as client:
+        handled_page = await client.get("/sessions/claude_code:test:sid1")
+    assert "Two chats overlap." not in handled_page.text
+    assert "Undo handling Choose one owner" in handled_page.text
 
     css = (Path(__file__).parents[1] / "src/agentdeck/web/static/app.css").read_text()
     html = response.text.replace("</head>", f"<style>{css}</style></head>")
@@ -238,6 +245,11 @@ async def test_orchestration_assistant_item_can_be_marked_handled(tmp_path):
     assert 'aria-label="Handled Deckhand items"' not in restored.text
     assert assistant._handled == {}
 
+    async with _client(app) as client:
+        restored_page = await client.get("/sessions/claude_code:test:sid1")
+    assert "Two chats overlap." in restored_page.text
+    assert "Mark Choose one owner handled" in restored_page.text
+
 
 async def test_host_usage_fits_collapsed_mobile_header(tmp_path):
     app = _app_with_state(tmp_path)
@@ -259,9 +271,7 @@ async def test_host_usage_fits_collapsed_mobile_header(tmp_path):
     async with _client(app) as client:
         response = await client.get("/")
 
-    css = (
-        Path(__file__).parents[1] / "src/agentdeck/web/static/app.css"
-    ).read_text()
+    css = (Path(__file__).parents[1] / "src/agentdeck/web/static/app.css").read_text()
     html = response.text.replace("</head>", f"<style>{css}</style></head>")
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()
@@ -404,7 +414,7 @@ async def test_markdown_links_reject_unsafe_schemes_and_attribute_breakout(tmp_p
                 "[x](javascript:alert(1))",
                 "[x](data:text/html,&lt;script&gt;alert(1)&lt;/script&gt;)",
                 "[x](vbscript:msgbox(1))",
-                "[x](https://e.com/\"onmouseover=alert(1))",
+                '[x](https://e.com/"onmouseover=alert(1))',
                 "[x](https://e.com)",
             ],
         )
@@ -607,7 +617,7 @@ async def test_message_draft_survives_reload_and_newer_text_is_not_cleared(tmp_p
 
         await page.route("http://agentdeck.test/**", serve)
         await page.goto("http://agentdeck.test/sessions/claude_code:test:sid1")
-        prompt = page.locator('#inject-message')
+        prompt = page.locator("#inject-message")
         await prompt.fill("unfinished draft")
         await page.reload()
         restored = await prompt.input_value()
@@ -660,9 +670,7 @@ async def test_working_marker_is_an_overlay_that_does_not_change_page_height(tmp
     async with _client(app) as client:
         response = await client.get("/sessions/claude_code:test:sid1")
 
-    css = (
-        Path(__file__).parents[1] / "src/agentdeck/web/static/app.css"
-    ).read_text()
+    css = (Path(__file__).parents[1] / "src/agentdeck/web/static/app.css").read_text()
     html = response.text.replace("</head>", f"<style>{css}</style></head>")
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()
@@ -691,7 +699,7 @@ async def test_working_marker_is_an_overlay_that_does_not_change_page_height(tmp
             }"""
         )
         await page.wait_for_timeout(1100)
-        elapsed = await page.locator('.tool-wait-elapsed').text_content()
+        elapsed = await page.locator(".tool-wait-elapsed").text_content()
         await browser.close()
 
     assert result["before"] == result["after"]
@@ -702,9 +710,7 @@ async def test_working_marker_is_an_overlay_that_does_not_change_page_height(tmp
 
 
 async def test_mobile_session_composer_is_compact():
-    css = (
-        Path(__file__).parents[1] / "src/agentdeck/web/static/app.css"
-    ).read_text()
+    css = (Path(__file__).parents[1] / "src/agentdeck/web/static/app.css").read_text()
     html = f"""
       <style>{css}</style>
       <body class="session-page"><main><section>
@@ -1246,9 +1252,7 @@ async def test_session_detail_uses_responsive_split_view(tmp_path):
     assert 'href="https://github.com/eerovil/agentdeck/pull/92"' in response.text
     assert "PR #92 · draft" in response.text
 
-    css = (
-        Path(__file__).parents[1] / "src/agentdeck/web/static/app.css"
-    ).read_text()
+    css = (Path(__file__).parents[1] / "src/agentdeck/web/static/app.css").read_text()
     html = response.text.replace("</head>", f"<style>{css}</style></head>")
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()

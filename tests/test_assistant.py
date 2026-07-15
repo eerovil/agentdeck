@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock
 
-from agentdeck.assistant import AssistantAnswer, AssistantInsight, AssistantService, AssistantView
+import pytest
+
+from agentdeck.assistant import (
+    AssistantAnswer,
+    AssistantInsight,
+    AssistantService,
+    AssistantView,
+    run_codex,
+)
 from agentdeck.config import AccountConfig, AppConfig, AssistantConfig
 from agentdeck.git_context import GitContext, PullRequestContext
 from agentdeck.models import (
@@ -70,6 +78,22 @@ def test_auto_answer_gate_accepts_only_complete_explicit_question_choices():
     assert not AssistantService._answers_are_safe(_question(secret=True), answer)
     assert not AssistantService._answers_are_safe(
         _question(), (AssistantAnswer("database", ("Something else",)),)
+    )
+    destructive = PendingInteraction(
+        **{
+            **vars(_question()),
+            "questions": (
+                InteractionQuestion(
+                    id="database",
+                    header="Database",
+                    prompt="What next?",
+                    options=(InteractionOption("Delete database"), InteractionOption("Cancel")),
+                ),
+            ),
+        }
+    )
+    assert not AssistantService._answers_are_safe(
+        destructive, (AssistantAnswer("database", ("Delete database",)),)
     )
 
 
@@ -175,6 +199,7 @@ async def test_refresh_renders_advice_and_auto_answers_safe_choice(tmp_path, mon
             "insights": [
                 {
                     "session_key": "codex:test:thread-1",
+                    "interaction_id": "interaction-1",
                     "kind": "waiting",
                     "headline": "Use SQLite for the local prototype",
                     "detail": "The prompt explicitly says this is local.",
@@ -185,13 +210,11 @@ async def test_refresh_renders_advice_and_auto_answers_safe_choice(tmp_path, mon
             ],
         }
 
-    assistant = AssistantService(
-        _config(tmp_path, auto_answer=True), state, runner=runner
-    )
+    assistant = AssistantService(_config(tmp_path, auto_answer=True), state, runner=runner)
     await assistant.refresh()
 
     assert assistant.view.state == "ready"
-    assert assistant.view.summary == "One agent needs a routine choice."
+    assert assistant.view.summary == "Deckhand is tracking 1 item that still needs attention."
     assert assistant.view.insights[0].kind == "waiting"
     assert assistant.view.actions[0].session_key == "codex:test:thread-1"
     answer.assert_awaited_once()
@@ -229,18 +252,18 @@ async def test_refresh_never_auto_answers_approval(tmp_path, monkeypatch):
             ],
         }
 
-    assistant = AssistantService(
-        _config(tmp_path, auto_answer=True), state, runner=runner
-    )
+    assistant = AssistantService(_config(tmp_path, auto_answer=True), state, runner=runner)
     await assistant.refresh()
 
     answer.assert_not_awaited()
     assert not assistant.view.actions
 
 
-async def test_refresh_retains_unchanged_insight_when_next_analysis_omits_it(tmp_path):
+async def test_refresh_clears_waiting_insight_when_agent_resumes(tmp_path):
     state = AppState()
-    state.update_session(_session(tmp_path))
+    session = _session(tmp_path)
+    session.question = None
+    state.update_session(session)
     runner = AsyncMock(
         side_effect=[
             {
@@ -248,9 +271,9 @@ async def test_refresh_retains_unchanged_insight_when_next_analysis_omits_it(tmp
                 "insights": [
                     {
                         "session_key": "codex:test:thread-1",
-                        "kind": "coordination",
-                        "headline": "Consolidate duplicate work",
-                        "detail": "Keep one owner.",
+                        "kind": "stalled",
+                        "headline": "Agent appears stalled",
+                        "detail": "No progress is visible.",
                         "answers": [],
                         "safe_to_auto_answer": False,
                         "confidence": 0.9,
@@ -275,10 +298,8 @@ async def test_refresh_retains_unchanged_insight_when_next_analysis_omits_it(tmp
     )
     await assistant.refresh(snapshot=assistant.snapshot())
 
-    assert [item.headline for item in assistant.view.insights] == [
-        "Consolidate duplicate work"
-    ]
-    assert assistant.view.summary == "Deckhand is tracking 1 item that still needs attention."
+    assert assistant.view.insights == ()
+    assert assistant.view.summary == "Nothing needs your attention right now."
 
 
 async def test_refresh_keeps_wording_when_model_rephrases_unchanged_chat(tmp_path):
@@ -330,9 +351,7 @@ async def test_handled_insight_stays_hidden_until_chat_evidence_changes(tmp_path
             }
         ],
     }
-    assistant = AssistantService(
-        _config(tmp_path), state, runner=AsyncMock(return_value=result)
-    )
+    assistant = AssistantService(_config(tmp_path), state, runner=AsyncMock(return_value=result))
 
     await assistant.refresh(snapshot=assistant.snapshot())
     assert assistant.handle("codex:test:thread-1")
@@ -361,7 +380,9 @@ async def test_unhandle_restores_cached_insight_immediately(tmp_path):
     assistant.view = AssistantView(
         state="ready", summary="One item needs attention.", insights=(insight,)
     )
-    assistant._evidence_signatures[insight.session_key] = "same-evidence"
+    assistant._evidence_signatures[insight.session_key] = assistant._evidence_signature(
+        assistant._snapshot_row(state.sessions[insight.session_key])
+    )
 
     assert assistant.handle(insight.session_key)
     assert assistant.view.insights == ()
@@ -412,7 +433,7 @@ async def test_refresh_retains_insight_when_chat_leaves_analysis_window(tmp_path
     assert [item.headline for item in assistant.view.insights] == ["Keep this finding"]
 
 
-async def test_refresh_omits_sessions_when_all_related_prs_are_terminal(tmp_path):
+async def test_refresh_keeps_unrelated_question_when_all_related_prs_are_terminal(tmp_path):
     state = AppState()
     state.update_session(_session(tmp_path))
     context = GitContext(
@@ -439,16 +460,30 @@ async def test_refresh_omits_sessions_when_all_related_prs_are_terminal(tmp_path
     resolver = AsyncMock(return_value={})
     resolver.resolve = AsyncMock(return_value={"codex:test:thread-1": context})
 
-    runner = AsyncMock()
-
-    assistant = AssistantService(
-        _config(tmp_path), state, runner=runner, context_resolver=resolver
+    runner = AsyncMock(
+        return_value={
+            "summary": "A new decision is waiting.",
+            "insights": [
+                {
+                    "session_key": "codex:test:thread-1",
+                    "interaction_id": None,
+                    "kind": "waiting",
+                    "headline": "Choose the database",
+                    "detail": "This question is unrelated to the historical PRs.",
+                    "answers": [],
+                    "safe_to_auto_answer": False,
+                    "confidence": 0.9,
+                }
+            ],
+        }
     )
+
+    assistant = AssistantService(_config(tmp_path), state, runner=runner, context_resolver=resolver)
     await assistant.refresh()
 
     assert assistant.contexts["codex:test:thread-1"] == context
-    assert assistant.view.summary == "Nothing needs your attention right now."
-    runner.assert_not_awaited()
+    assert [item.headline for item in assistant.view.insights] == ["Choose the database"]
+    runner.assert_awaited_once()
 
 
 async def test_refresh_suppresses_attention_card_when_all_related_prs_are_merged(tmp_path):
@@ -471,16 +506,30 @@ async def test_refresh_suppresses_attention_card_when_all_related_prs_are_merged
     resolver = AsyncMock(return_value={})
     resolver.resolve = AsyncMock(return_value={"codex:test:thread-1": context})
 
-    runner = AsyncMock()
-
-    assistant = AssistantService(
-        _config(tmp_path), state, runner=runner, context_resolver=resolver
+    runner = AsyncMock(
+        return_value={
+            "summary": "Review is waiting.",
+            "insights": [
+                {
+                    "session_key": "codex:test:thread-1",
+                    "interaction_id": None,
+                    "kind": "waiting",
+                    "headline": "PR #91 needs review",
+                    "detail": "Merge PR #91 after review.",
+                    "answers": [],
+                    "safe_to_auto_answer": False,
+                    "confidence": 0.9,
+                }
+            ],
+        }
     )
+
+    assistant = AssistantService(_config(tmp_path), state, runner=runner, context_resolver=resolver)
     await assistant.refresh()
 
     assert assistant.view.insights == ()
     assert assistant.view.summary == "Nothing needs your attention right now."
-    runner.assert_not_awaited()
+    runner.assert_awaited_once()
 
 
 def test_result_drops_hallucinated_session_keys():
@@ -574,4 +623,205 @@ async def test_refresh_does_not_retain_old_cross_chat_pr_insight(tmp_path):
     await assistant.refresh(snapshot=[row])
 
     assert assistant.view.insights == ()
-    assert assistant.view.summary == "Nothing to report."
+    assert assistant.view.summary == "Nothing needs your attention right now."
+
+
+def test_analysis_window_always_includes_blocking_chat(tmp_path):
+    state = AppState()
+    ordinary = _session(tmp_path)
+    ordinary.question = None
+    blocked = Session(
+        **{
+            **vars(ordinary),
+            "key": "codex:test:thread-2",
+            "session_id": "thread-2",
+            "title": "Older blocked chat",
+            "question": "Choose a deployment target?",
+        }
+    )
+    state.update_session(ordinary)
+    state.update_session(blocked)
+    assistant = AssistantService(_config(tmp_path, max_sessions=1), state)
+
+    assert [row["session_key"] for row in assistant.snapshot()] == [blocked.key]
+    assert assistant.analysis_session_count == 1
+    assert assistant.total_session_count == 2
+
+
+def test_interaction_snapshot_contains_approval_context(tmp_path):
+    interaction = PendingInteraction(
+        id="approval-1",
+        kind="command_approval",
+        thread_id="thread-1",
+        turn_id="turn-1",
+        title="Approve command?",
+        message="Needed for validation",
+        command="git push origin feature",
+        cwd=str(tmp_path),
+        url="https://example.test/approval",
+        decisions=("accept", "decline"),
+    )
+
+    value = AssistantService._interaction_json(interaction)
+
+    assert value is not None
+    assert value["command"] == "git push origin feature"
+    assert value["cwd"] == str(tmp_path)
+    assert value["url"] == "https://example.test/approval"
+    assert value["decisions"] == ["accept", "decline"]
+
+
+async def test_auto_answer_is_bound_to_analyzed_interaction(tmp_path, monkeypatch):
+    state = AppState()
+    session = _session(tmp_path)
+    state.update_session(session)
+    first = _question()
+    second = PendingInteraction(
+        **{**vars(first), "id": "interaction-2", "title": "A newer question"}
+    )
+    current = [first]
+    provider = PROVIDERS["codex"]
+    monkeypatch.setattr(provider, "pending_interaction", lambda account, item: current[0])
+    answer = AsyncMock(return_value=InjectResult(True))
+    monkeypatch.setattr(provider, "answer_interaction", answer)
+    assistant = AssistantService(_config(tmp_path, auto_answer=True), state, runner=AsyncMock())
+    row = assistant._snapshot_row(session)
+
+    async def runner(account, config, prompt):
+        current[0] = second
+        return {
+            "summary": "One choice.",
+            "insights": [
+                {
+                    "session_key": session.key,
+                    "interaction_id": first.id,
+                    "kind": "waiting",
+                    "headline": "Choose SQLite",
+                    "detail": "Explicit local choice.",
+                    "answers": [{"question_id": "database", "values": ["SQLite"]}],
+                    "safe_to_auto_answer": True,
+                    "confidence": 1.0,
+                }
+            ],
+        }
+
+    assistant.runner = runner
+    await assistant.refresh(snapshot=[row])
+
+    answer.assert_not_awaited()
+    assert assistant.view.actions == ()
+
+
+def test_dirty_worktree_does_not_change_handled_evidence(tmp_path):
+    state = AppState()
+    session = _session(tmp_path)
+    assistant = AssistantService(_config(tmp_path), state)
+    assistant.contexts[session.key] = GitContext("eerovil/agentdeck", "feature", False)
+    clean = assistant._snapshot_row(session)
+    assistant.contexts[session.key] = GitContext("eerovil/agentdeck", "feature", True)
+    dirty = assistant._snapshot_row(session)
+
+    assert assistant._evidence_signature(clean) == assistant._evidence_signature(dirty)
+
+
+def test_unhandle_does_not_restore_card_after_evidence_changed(tmp_path):
+    state = AppState()
+    session = _session(tmp_path)
+    state.update_session(session)
+    assistant = AssistantService(_config(tmp_path), state)
+    insight = AssistantInsight(session.key, "waiting", "Choose", "A choice is waiting.")
+    assistant.view = AssistantView(state="ready", insights=(insight,))
+    assistant._evidence_signatures[session.key] = assistant._evidence_signature(
+        assistant._snapshot_row(session)
+    )
+    assert assistant.handle(session.key)
+    state.update_session(Session(**{**vars(session), "last_text": "Already resolved."}))
+
+    assert assistant.unhandle(session.key)
+    assert assistant.view.insights == ()
+    assert assistant._force is True
+
+
+def test_terminal_filter_is_per_claim_and_parses_pr_lists(tmp_path):
+    state = AppState()
+    assistant = AssistantService(_config(tmp_path), state)
+    session_key = "codex:test:thread-1"
+    assistant.contexts[session_key] = GitContext(
+        "eerovil/agentdeck",
+        "feature",
+        False,
+        (
+            PullRequestContext(
+                "eerovil/agentdeck", 91, "Merged", "https://example.test/91", "merged"
+            ),
+            PullRequestContext("eerovil/agentdeck", 92, "Open", "https://example.test/92", "open"),
+        ),
+    )
+    merged = AssistantInsight(session_key, "waiting", "PR #91 needs review", "Review it.")
+    open_pull = AssistantInsight(session_key, "waiting", "PR #92 needs review", "Review it.")
+    both = AssistantInsight(
+        session_key, "coordination", "PRs #91 and #92 overlap", "Keep one owner."
+    )
+
+    result = assistant._suppress_terminal_pr_insights(
+        AssistantView(state="ready", insights=(merged, open_pull, both))
+    )
+
+    assert result.insights == (open_pull, both)
+    assert AssistantService._pr_claims(both)[0] == {91, 92}
+
+
+def test_duplicate_underlying_work_is_shown_once(tmp_path):
+    state = AppState()
+    first_session = _session(tmp_path)
+    second_session = Session(
+        **{
+            **vars(first_session),
+            "key": "codex:test:thread-2",
+            "session_id": "thread-2",
+        }
+    )
+    state.update_session(first_session)
+    state.update_session(second_session)
+    assistant = AssistantService(_config(tmp_path), state)
+    first = AssistantInsight(
+        first_session.key,
+        "coordination",
+        "Compact deploy needs confirmation",
+        "Choose one owner.",
+        coordination_key="compact-deploy",
+    )
+    second = AssistantInsight(
+        second_session.key,
+        "stalled",
+        "Compact deployment is unresolved",
+        "The same work is waiting.",
+        coordination_key="compact-deploy",
+    )
+
+    result = assistant._deduplicate_insights(AssistantView(state="ready", insights=(first, second)))
+
+    assert result.insights == (first,)
+
+
+async def test_codex_failure_does_not_expose_prompt_or_stderr(tmp_path, monkeypatch):
+    class FailedProcess:
+        returncode = 7
+
+        async def communicate(self, value):
+            assert b"private dashboard" in value
+            return (b"", b"request failed: private transcript secret")
+
+    async def create_process(*args, **kwargs):
+        return FailedProcess()
+
+    monkeypatch.setattr("agentdeck.assistant.asyncio.create_subprocess_exec", create_process)
+    service = AssistantService(_config(tmp_path), AppState())
+    account = service._account()
+    assert account is not None
+
+    with pytest.raises(RuntimeError) as error:
+        await run_codex(account, service.config, "private dashboard")
+
+    assert str(error.value) == "Codex assistant exited without an answer (status 7)"
+    assert "secret" not in str(error.value)

@@ -70,6 +70,9 @@
   {% endif %}
   <div class="assistant-foot">
     {% if assistant.config.auto_answer %}Auto-answer on · choices only{% else %}Advice only{% endif %}
+    {% if assistant.total_session_count > assistant.analysis_session_count %}
+    · {{ assistant.analysis_session_count }} selected of {{ assistant.total_session_count }} chats
+    {% endif %}
     {% if assistant.view.analyzed_at %} · {{ assistant.view.analyzed_at | reltime_ago }}{% endif %}
   </div>
   {% endif %}
