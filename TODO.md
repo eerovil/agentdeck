@@ -5,7 +5,7 @@ follow-ups here instead of creating GitHub issues unless external coordination i
 
 ## Open
 
-- [ ] Investigate why visible Tilhi issue chats are absent from Deckhand.
+- [x] Investigate why visible Tilhi issue chats are absent from Deckhand.
   - Use the visible `tilhi#1632`, `tilhi#1633`, and `tilhi#1634` ALT/outdoor chats as reproduction
     cases; they report blocked terminal agent state, remain open for human action, and have no PR.
   - Trace whether they are excluded during session selection, omitted from the Luna update payload,

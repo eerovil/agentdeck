@@ -34,6 +34,11 @@ _INSIGHT_PR_URL_RE = re.compile(
     r"https?://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/(\d+)",
     re.IGNORECASE,
 )
+_ISSUE_URL_RE = re.compile(
+    r"https?://github\.com/[^/]+/([^/]+)/issues/(\d+)(?:[/?#]|$)",
+    re.IGNORECASE,
+)
+_BLOCKED_ISSUE_RE = re.compile(r"(?<![\w-])claude:blocked(?![\w-])", re.IGNORECASE)
 _UNSAFE_AUTO_ANSWER_RE = re.compile(
     r"\b(?:delete|destroy|drop|erase|overwrite|force[- ]?push|purchase|pay)\b",
     re.IGNORECASE,
@@ -442,10 +447,18 @@ class AssistantService:
     def _snapshot_row(self, session: Session) -> dict[str, Any]:
         context = self.contexts.get(session.key)
         interaction = self._interaction(session)
+        operator_action_required = (
+            "open_issue_blocked" if self._is_open_blocked_issue(session) else None
+        )
         return {
             "session_key": session.key,
             "title": session.title,
             "cwd": str(session.cwd) if session.cwd else None,
+            "worker_type": session.worker_type,
+            "issue_url": session.issue_url,
+            "issue_status": session.issue_status,
+            "issue_status_kind": session.issue_status_kind,
+            "operator_action_required": operator_action_required,
             "state": session.display_state,
             "activity": session.activity,
             "question": session.question,
@@ -455,6 +468,15 @@ class AssistantService:
             "git": context.as_json() if context is not None else None,
             "interaction": self._interaction_json(interaction),
         }
+
+    @staticmethod
+    def _is_open_blocked_issue(session: Session) -> bool:
+        return bool(
+            session.worker_type == "kanban"
+            and session.issue_url
+            and session.issue_status_kind == "open"
+            and _BLOCKED_ISSUE_RE.search(session.last_text or "")
+        )
 
     def _analysis_sessions(self) -> list[Session]:
         """Prioritize blocking interactions, then the most recently active chats.
@@ -823,6 +845,10 @@ treat it as active work or suggest review, merge, or coordination for it. Distin
 open and draft PRs. A chat may contain new work after an older PR became terminal, so
 evaluate the current question and transcript independently from historical PRs.
 Never attach a pull request from one session's git context to another session.
+Rows whose operator_action_required is open_issue_blocked are authoritative open
+issues parked by a terminal kanban agent for human action. Always report each such
+issue as its own waiting insight; do not group separate issue numbers merely because
+their failures look similar, and do not treat the absence of a PR as resolution.
 
 For an ordinary question interaction, you may suggest answers. Mark safe_to_auto_answer
 true only when all answers are unambiguous choices explicitly present in the question,
@@ -989,6 +1015,52 @@ Dashboard snapshot:
         if insights == view.insights:
             return view
         return replace(view, summary=self._tracking_summary(len(insights)), insights=insights)
+
+    @staticmethod
+    def _surface_open_blocked_issues(
+        view: AssistantView, snapshot: list[dict[str, Any]]
+    ) -> AssistantView:
+        """Guarantee one understandable action card per open terminal issue.
+
+        This state is supplied authoritatively by the kanban collector. Model
+        advice can add judgment elsewhere, but cannot silently omit an issue
+        whose terminal worker explicitly parked it for human intervention.
+        """
+        blocked = {
+            str(row["session_key"]): row
+            for row in snapshot
+            if row.get("operator_action_required") == "open_issue_blocked"
+        }
+        if not blocked:
+            return view
+
+        insights = [
+            insight for insight in view.insights if insight.session_key not in blocked
+        ]
+        for session_key, row in blocked.items():
+            match = _ISSUE_URL_RE.match(str(row.get("issue_url") or ""))
+            if match:
+                repository, number = match.groups()
+                project = _PROJECT_DISPLAY_NAMES.get(
+                    repository.casefold(), repository.replace("-", " ").title()
+                )
+                subject = f"{project} issue #{number}"
+            else:
+                subject = str(row.get("title") or "Open issue")
+            insights.append(
+                AssistantInsight(
+                    session_key=session_key,
+                    kind="waiting",
+                    headline=f"{subject} is blocked for human action",
+                    detail=(
+                        "The terminal kanban agent parked this issue with "
+                        "claude:blocked while GitHub still reports it open. "
+                        "Review the diagnosis, then close or retrigger the issue."
+                    ),
+                    confidence=1.0,
+                )
+            )
+        return replace(view, insights=tuple(insights))
 
     @staticmethod
     def _pr_feature_word(title: str, project: str) -> str:
@@ -1224,6 +1296,7 @@ Dashboard snapshot:
             view = self._suppress_non_actionable_insights(view)
             view = self._enrich_pr_headlines(view)
             view = self._deduplicate_insights(view)
+            view = self._surface_open_blocked_issues(view, snapshot)
             evidence = {row["session_key"]: self._evidence_signature(row) for row in snapshot}
             view = self._stabilize_insights(view, prior, evidence)
             view = self._deduplicate_insights(view)

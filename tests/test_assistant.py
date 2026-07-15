@@ -445,6 +445,74 @@ async def test_incremental_prompt_contains_changed_and_explicitly_related_chats_
     assert "RELATED_UNCHANGED" not in pr_prompt
 
 
+async def test_open_blocked_kanban_issues_surface_individually_when_model_omits_them(
+    tmp_path,
+):
+    state = AppState()
+    sessions = []
+    for number in (1632, 1633, 1634):
+        session = replace(
+            _session(tmp_path),
+            key=f"claude_code:alt:tilhi-{number}",
+            account_key="claude_code:alt",
+            session_id=f"tilhi-{number}",
+            title=f"tilhi#{number}",
+            question=None,
+            worker_type="kanban",
+            issue_url=f"https://github.com/ScandinavianOutdoor/tilhi/issues/{number}",
+            issue_status="open",
+            issue_status_kind="open",
+            last_text="Terminal PARK. Applied the `claude:blocked` label; no PR was opened.",
+        )
+        sessions.append(session)
+        state.update_session(session)
+
+    prompts = []
+
+    async def runner(account, config, prompt):
+        prompts.append(prompt)
+        return {"summary": "Nothing needs attention.", "insights": []}
+
+    assistant = AssistantService(_config(tmp_path), state, runner=runner)
+    snapshot = assistant.snapshot()
+    assert all(
+        row["operator_action_required"] == "open_issue_blocked" for row in snapshot
+    )
+    assert all(row["worker_type"] == "kanban" for row in snapshot)
+    assert all(row["issue_status_kind"] == "open" for row in snapshot)
+
+    await assistant.refresh(snapshot=snapshot)
+
+    assert len(assistant.view.insights) == 3
+    assert {insight.headline for insight in assistant.view.insights} == {
+        f"Tilhi issue #{number} is blocked for human action"
+        for number in (1632, 1633, 1634)
+    }
+    assert all(insight.kind == "waiting" for insight in assistant.view.insights)
+    assert all("close or retrigger" in insight.detail for insight in assistant.view.insights)
+    assert '"operator_action_required":"open_issue_blocked"' in prompts[0]
+    assert "Always report each such\nissue as its own waiting insight" in prompts[0]
+
+    closed = replace(
+        sessions[0],
+        issue_status="closed",
+        issue_status_kind="closed",
+    )
+    state.update_session(closed)
+    await assistant.refresh(snapshot=assistant.snapshot())
+
+    assert {insight.session_key for insight in assistant.view.insights} == {
+        sessions[1].key,
+        sessions[2].key,
+    }
+    assert len(prompts) == 2
+
+    assert assistant.handle(sessions[1].key)
+    await assistant.refresh(snapshot=assistant.snapshot())
+    assert {insight.session_key for insight in assistant.view.insights} == {sessions[2].key}
+    assert len(prompts) == 2
+
+
 async def test_handled_insight_stays_hidden_until_chat_evidence_changes(tmp_path):
     state = AppState()
     state.update_session(_session(tmp_path))
