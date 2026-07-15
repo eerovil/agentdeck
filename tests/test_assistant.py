@@ -595,6 +595,39 @@ def test_pr_insight_must_match_target_chats_authoritative_context(tmp_path):
     assert result.summary == "Deckhand is tracking 1 item that still needs attention."
 
 
+def test_pr_headline_includes_project_and_feature_from_authoritative_title(tmp_path):
+    state = AppState()
+    assistant = AssistantService(_config(tmp_path), state)
+    session_key = "codex:test:storm"
+    assistant.contexts[session_key] = GitContext(
+        "protecomp/storm",
+        "feature/search",
+        False,
+        (
+            PullRequestContext(
+                "protecomp/storm",
+                255,
+                "Improve Elasticsearch free-text search",
+                "https://github.com/protecomp/storm/pull/255",
+                "open",
+            ),
+        ),
+    )
+    insight = AssistantInsight(
+        session_key,
+        "waiting",
+        "PR #255 is open and awaiting review",
+        "Implementation and tests are complete.",
+    )
+
+    result = assistant._enrich_pr_headlines(AssistantView(state="ready", insights=(insight,)))
+
+    assert result.insights[0].headline == (
+        "Storm · Elasticsearch · PR #255 is open and awaiting review"
+    )
+    assert assistant._enrich_pr_headlines(result) == result
+
+
 async def test_refresh_does_not_retain_old_cross_chat_pr_insight(tmp_path):
     state = AppState()
     session = _session(tmp_path)

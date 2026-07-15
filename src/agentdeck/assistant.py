@@ -38,6 +38,25 @@ _UNSAFE_AUTO_ANSWER_RE = re.compile(
     r"\b(?:delete|destroy|drop|erase|overwrite|force[- ]?push|purchase|pay)\b",
     re.IGNORECASE,
 )
+_PR_TITLE_WORD_RE = re.compile(r"[^\W_][\w.+-]*", re.UNICODE)
+_GENERIC_PR_TITLE_WORDS = {
+    "add",
+    "allow",
+    "change",
+    "create",
+    "ensure",
+    "fix",
+    "harden",
+    "implement",
+    "improve",
+    "make",
+    "pr",
+    "refactor",
+    "remove",
+    "support",
+    "update",
+}
+_PROJECT_DISPLAY_NAMES = {"agentdeck": "AgentDeck", "sos": "SOS"}
 
 
 @dataclass(frozen=True)
@@ -522,6 +541,7 @@ class AssistantService:
         candidate = self._suppress_unattributed_pr_insights(candidate)
         candidate = self._suppress_terminal_pr_insights(candidate)
         candidate = self._suppress_non_actionable_insights(candidate)
+        candidate = self._enrich_pr_headlines(candidate)
         if (
             current == self._evidence_signatures.get(session_key)
             and candidate.insights
@@ -714,6 +734,52 @@ Dashboard snapshot:
             return view
         return replace(view, summary=self._tracking_summary(len(insights)), insights=insights)
 
+    @staticmethod
+    def _pr_feature_word(title: str, project: str) -> str:
+        for word in _PR_TITLE_WORD_RE.findall(title):
+            if (
+                not word.isdigit()
+                and word.casefold() not in _GENERIC_PR_TITLE_WORDS
+                and word.casefold() != project.casefold()
+            ):
+                return word
+        return "Change"
+
+    def _enrich_pr_headlines(self, view: AssistantView) -> AssistantView:
+        """Prefix PR advice with its project and a compact title-derived feature word."""
+        insights = []
+        for insight in view.insights:
+            context = self.contexts.get(insight.session_key)
+            numbers, repositories = self._pr_claims(insight)
+            pulls = context.pull_requests if context is not None else ()
+            pull = next(
+                (
+                    item
+                    for item in pulls
+                    if item.number in numbers
+                    or (item.repository.casefold(), item.number) in repositories
+                ),
+                None,
+            )
+            if pull is None:
+                insights.append(insight)
+                continue
+            repository_name = pull.repository.rsplit("/", 1)[-1]
+            project = _PROJECT_DISPLAY_NAMES.get(
+                repository_name.casefold(), repository_name.replace("-", " ").title()
+            )
+            if insight.headline.startswith(f"{project} · "):
+                insights.append(insight)
+                continue
+            feature = self._pr_feature_word(pull.title, project)
+            insights.append(
+                replace(insight, headline=f"{project} · {feature} · {insight.headline}")
+            )
+        result = tuple(insights)
+        if result == view.insights:
+            return view
+        return replace(view, insights=result)
+
     def _deduplicate_insights(self, view: AssistantView) -> AssistantView:
         """Keep one operator action per underlying PR, issue, branch, or model group."""
         seen: set[str] = set()
@@ -862,6 +928,7 @@ Dashboard snapshot:
         prior = self._suppress_unattributed_pr_insights(self.view)
         prior = self._suppress_terminal_pr_insights(prior)
         prior = self._suppress_non_actionable_insights(prior)
+        prior = self._enrich_pr_headlines(prior)
         prior = self._deduplicate_insights(prior)
         self.view = AssistantView(
             state="analyzing",
@@ -879,6 +946,7 @@ Dashboard snapshot:
             view = self._suppress_unattributed_pr_insights(view)
             view = self._suppress_terminal_pr_insights(view)
             view = self._suppress_non_actionable_insights(view)
+            view = self._enrich_pr_headlines(view)
             view = self._deduplicate_insights(view)
             evidence = {row["session_key"]: self._evidence_signature(row) for row in snapshot}
             view = self._stabilize_insights(view, prior, evidence)

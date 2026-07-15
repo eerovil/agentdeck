@@ -134,7 +134,7 @@ async def test_orchestration_assistant_fits_mobile_and_desktop(tmp_path):
             AssistantInsight(
                 session_key="claude_code:test:sid1",
                 kind="waiting",
-                headline="Confirm the database choice",
+                headline="Storm · Elasticsearch · PR #255 is open and awaiting review",
                 detail="This agent is waiting for an explicit architecture decision.",
             ),
             AssistantInsight(
