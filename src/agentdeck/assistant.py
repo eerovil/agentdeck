@@ -10,108 +10,49 @@ import re
 import signal
 import tempfile
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from .config import AppConfig, AssistantConfig
 from .git_context import GitContext, GitContextResolver
+from .insight_pipeline import (
+    AssistantAction,
+    AssistantAnswer,
+    AssistantInsight,
+    AssistantView,
+    deduplicate_insights,
+    enrich_pr_headlines,
+    suppress_non_actionable_insights,
+    suppress_terminal_pr_insights,
+    suppress_unattributed_pr_insights,
+    surface_open_blocked_issues,
+    surface_unreported_open_pull_requests,
+    tracking_summary,
+)
 from .models import Account, PendingInteraction, Session
 from .providers import PROVIDERS
 from .state import AppState
 
 log = logging.getLogger(__name__)
 
+# View/insight dataclasses and the pure post-processing filters live in
+# insight_pipeline; they are re-exported above so callers can keep importing
+# them from agentdeck.assistant. Only service-scoped state stays here.
 _SCHEMA_PATH = Path(__file__).with_name("assistant_output.schema.json")
 _MAX_CONTEXT_CHARS = 1_000
-_INSIGHT_PR_SEQUENCE_RE = re.compile(
-    r"\b(?:PR|PRs|pull request|pull requests)\s+"
-    r"((?:#?\d+)(?:\s*(?:,|and|&)\s*#?\d+)*)",
-    re.IGNORECASE,
-)
-_INSIGHT_PR_URL_RE = re.compile(
-    r"https?://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/(\d+)",
-    re.IGNORECASE,
-)
-_ISSUE_URL_RE = re.compile(
-    r"https?://github\.com/[^/]+/([^/]+)/issues/(\d+)(?:[/?#]|$)",
-    re.IGNORECASE,
-)
 _BLOCKED_ISSUE_RE = re.compile(r"(?<![\w-])claude:blocked(?![\w-])", re.IGNORECASE)
-_VALIDATED_COMPLETION_RE = re.compile(
-    r"\b(?:\d+\s+(?:\*{0,2})?passed|tests?\s+(?:all\s+)?pass(?:ed|ing))\b",
-    re.IGNORECASE,
-)
 _UNSAFE_AUTO_ANSWER_RE = re.compile(
     r"\b(?:delete|destroy|drop|erase|overwrite|force[- ]?push|purchase|pay)\b",
     re.IGNORECASE,
 )
-_PR_TITLE_WORD_RE = re.compile(r"[^\W_][\w.+-]*", re.UNICODE)
-_PR_HEADLINE_PREFIX_RE = re.compile(
-    r"^(?:(?:open|draft)\s+)?(?:PR|pull request)\s*(?:#\d+)?\s*",
-    re.IGNORECASE,
-)
-_GENERIC_PR_TITLE_WORDS = {
-    "add",
-    "allow",
-    "change",
-    "create",
-    "ensure",
-    "fix",
-    "harden",
-    "implement",
-    "improve",
-    "make",
-    "pr",
-    "refactor",
-    "remove",
-    "support",
-    "update",
-}
-_PROJECT_DISPLAY_NAMES = {"agentdeck": "AgentDeck", "sos": "SOS"}
-
-
-@dataclass(frozen=True)
-class AssistantAnswer:
-    question_id: str
-    values: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class AssistantInsight:
-    session_key: str
-    kind: str
-    headline: str
-    detail: str
-    interaction_id: str | None = None
-    coordination_key: str | None = None
-    answers: tuple[AssistantAnswer, ...] = ()
-    safe_to_auto_answer: bool = False
-    confidence: float = 0.0
-
-
-@dataclass(frozen=True)
-class AssistantAction:
-    session_key: str
-    text: str
-    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 @dataclass(frozen=True)
 class AssistantHandledItem:
     session_key: str
     headline: str
-
-
-@dataclass(frozen=True)
-class AssistantView:
-    state: str = "idle"
-    summary: str = "Waiting for session activity."
-    insights: tuple[AssistantInsight, ...] = ()
-    actions: tuple[AssistantAction, ...] = ()
-    analyzed_at: datetime | None = None
-    error: str | None = None
 
 
 Runner = Callable[[Account, AssistantConfig, str], Awaitable[dict[str, Any]]]
@@ -402,13 +343,10 @@ class AssistantService:
         )
         if insights == self.view.insights:
             return
-        self.view = AssistantView(
-            state=self.view.state,
+        self.view = replace(
+            self.view,
             summary=(self.view.summary if insights else "Nothing needs your attention right now."),
             insights=insights,
-            actions=self.view.actions,
-            analyzed_at=self.view.analyzed_at,
-            error=self.view.error,
         )
         self._save_checkpoint()
         self.state.bus.publish("assistant")
@@ -640,6 +578,11 @@ class AssistantService:
             changed_identities.update(self._coordination_identities(rows[key]))
             previous = self._evidence_signatures.get(key)
             if previous:
+                # Recovers the prior row's coordination identities (e.g. a PR that
+                # just moved off this chat) so the now-orphaned peer is still pulled
+                # in as related. This depends on _evidence_signature producing JSON;
+                # if that format ever changes, this degrades to "no prior identities"
+                # rather than failing — keep the two in sync.
                 try:
                     previous_row = json.loads(previous)
                 except ValueError:
@@ -676,7 +619,14 @@ class AssistantService:
         prior: AssistantView,
         evidence: dict[str, str],
     ) -> AssistantView:
-        """Keep advice stable until its session evidence materially changes."""
+        """Keep advice stable until its session evidence materially changes.
+
+        Side effect: this augments the passed-in ``evidence`` dict in place with
+        signatures for retained chats that fell outside the analysis window. The
+        caller (``refresh``) relies on that: it persists the same dict into
+        ``self._evidence_signatures`` after stabilization so a retained
+        out-of-window finding is not resurrected on the next poll.
+        """
         # Findings can refer to chats that temporarily fall outside max_sessions.
         # Compare those chats directly instead of treating window membership as
         # evidence that the concern was resolved.
@@ -736,16 +686,8 @@ class AssistantService:
 
         summary = view.summary
         if retained:
-            summary = self._tracking_summary(len(visible))
+            summary = tracking_summary(len(visible))
         return replace(view, summary=summary, insights=tuple(visible))
-
-    @staticmethod
-    def _tracking_summary(count: int) -> str:
-        if count == 0:
-            return "Nothing needs your attention right now."
-        if count == 1:
-            return "Deckhand is tracking 1 item that still needs attention."
-        return f"Deckhand is tracking {count} items that still need attention."
 
     def handle(self, session_key: str) -> bool:
         """Acknowledge advice until material evidence for its chat changes."""
@@ -773,7 +715,7 @@ class AssistantService:
         )
         self.view = replace(
             self.view,
-            summary=self._tracking_summary(len(insights)),
+            summary=tracking_summary(len(insights)),
             insights=insights,
         )
         self._save_checkpoint()
@@ -815,10 +757,7 @@ class AssistantService:
             state="ready",
             insights=(insight,) if insight is not None and current is not None else (),
         )
-        candidate = self._suppress_unattributed_pr_insights(candidate)
-        candidate = self._suppress_terminal_pr_insights(candidate)
-        candidate = self._suppress_non_actionable_insights(candidate)
-        candidate = self._enrich_pr_headlines(candidate)
+        candidate = self._normalize_insights(candidate)
         if (
             current == self._evidence_signatures.get(session_key)
             and candidate.insights
@@ -827,7 +766,7 @@ class AssistantService:
             insights = self.view.insights + candidate.insights
             self.view = replace(
                 self.view,
-                summary=self._tracking_summary(len(insights)),
+                summary=tracking_summary(len(insights)),
                 insights=insights,
             )
         self._save_checkpoint()
@@ -948,289 +887,37 @@ Dashboard snapshot:
             analyzed_at=datetime.now(UTC),
         )
 
-    @staticmethod
-    def _pr_claims(insight: AssistantInsight) -> tuple[set[int], set[tuple[str, int]]]:
-        text = f"{insight.headline}\n{insight.detail}"
-        numbers = {
-            int(number)
-            for match in _INSIGHT_PR_SEQUENCE_RE.finditer(text)
-            for number in re.findall(r"\d+", match.group(1))
-        }
-        repositories = {
-            (repository.casefold(), int(number))
-            for repository, number in _INSIGHT_PR_URL_RE.findall(text)
-        }
-        return numbers, repositories
-
-    def _suppress_terminal_pr_insights(self, view: AssistantView) -> AssistantView:
-        """Suppress only advice whose claimed PR work is entirely terminal."""
-        insights = []
-        for insight in view.insights:
-            numbers, repositories = self._pr_claims(insight)
-            if not numbers and not repositories:
-                insights.append(insight)
-                continue
-            context = self.contexts.get(insight.session_key)
-            pulls = context.pull_requests if context is not None else ()
-            claimed = [
-                pull
-                for pull in pulls
-                if pull.number in numbers
-                or (pull.repository.casefold(), pull.number) in repositories
-            ]
-            if claimed and all(pull.status in {"closed", "merged"} for pull in claimed):
-                continue
-            insights.append(insight)
-        insights = tuple(insights)
-        if insights == view.insights:
-            return view
-        return AssistantView(
-            state=view.state,
-            summary=(view.summary if insights else "Nothing needs your attention right now."),
-            insights=insights,
-            actions=view.actions,
-            analyzed_at=view.analyzed_at,
-            error=view.error,
-        )
-
-    def _suppress_unattributed_pr_insights(self, view: AssistantView) -> AssistantView:
-        """Reject PR claims copied from another chat in the shared snapshot."""
-        insights = []
-        for insight in view.insights:
-            numbers, repositories = self._pr_claims(insight)
-            if not numbers and not repositories:
-                insights.append(insight)
-                continue
-            context = self.contexts.get(insight.session_key)
-            pulls = context.pull_requests if context is not None else ()
-            valid_numbers = {pull.number for pull in pulls}
-            valid_repositories = {(pull.repository.casefold(), pull.number) for pull in pulls}
-            if numbers <= valid_numbers and repositories <= valid_repositories:
-                insights.append(insight)
-                continue
-            log.debug(
-                "Deckhand suppressed cross-chat PR insight for %s: %s",
-                insight.session_key,
-                insight.headline,
-            )
-        result = tuple(insights)
-        if result == view.insights:
-            return view
-        return replace(
-            view,
-            summary=self._tracking_summary(len(result)),
-            insights=result,
-        )
-
-    def _suppress_non_actionable_insights(self, view: AssistantView) -> AssistantView:
-        """Active progress alone is not an item that needs the operator's attention."""
-        insights = tuple(
-            insight
-            for insight in view.insights
-            if not (
-                insight.kind in {"info", "waiting", "stalled"}
-                and (session := self.state.sessions.get(insight.session_key)) is not None
-                and session.thinking
-                and self._interaction(session) is None
-                and not session.question
-            )
-        )
-        if insights == view.insights:
-            return view
-        return replace(view, summary=self._tracking_summary(len(insights)), insights=insights)
-
-    @staticmethod
-    def _surface_open_blocked_issues(
-        view: AssistantView, snapshot: list[dict[str, Any]]
+    def _normalize_insights(
+        self,
+        view: AssistantView,
+        *,
+        snapshot: list[dict[str, Any]] | None = None,
+        stabilize: tuple[AssistantView, dict[str, str]] | None = None,
     ) -> AssistantView:
-        """Guarantee one understandable action card per open terminal issue.
+        """Apply the insight post-processing pipeline in one authoritative order.
 
-        This state is supplied authoritatively by the kanban collector. Model
-        advice can add judgment elsewhere, but cannot silently omit an issue
-        whose terminal worker explicitly parked it for human intervention.
+        Every path (prior re-normalization, post-model reconciliation, unhandle)
+        runs the same suppress -> surface -> enrich -> deduplicate spine so the
+        shared ordering cannot drift between call sites. ``snapshot`` enables the
+        surface stages, which need authoritative per-row evidence to add cards the
+        model omitted. ``stabilize`` runs the handled/evidence stabilization
+        against prior advice followed by a final dedup; the caller owns the final
+        summary once stabilization has reconciled retained findings.
         """
-        blocked = {
-            str(row["session_key"]): row
-            for row in snapshot
-            if row.get("operator_action_required") == "open_issue_blocked"
-        }
-        if not blocked:
-            return view
-
-        insights = [
-            insight for insight in view.insights if insight.session_key not in blocked
-        ]
-        for session_key, row in blocked.items():
-            match = _ISSUE_URL_RE.match(str(row.get("issue_url") or ""))
-            if match:
-                repository, number = match.groups()
-                project = _PROJECT_DISPLAY_NAMES.get(
-                    repository.casefold(), repository.replace("-", " ").title()
-                )
-                subject = f"{project} issue #{number}"
-            else:
-                subject = str(row.get("title") or "Open issue")
-            insights.append(
-                AssistantInsight(
-                    session_key=session_key,
-                    kind="waiting",
-                    headline=f"{subject} is blocked for human action",
-                    detail=(
-                        "The terminal kanban agent parked this issue with "
-                        "claude:blocked while GitHub still reports it open. "
-                        "Review the diagnosis, then close or retrigger the issue."
-                    ),
-                    confidence=1.0,
-                )
-            )
-        return replace(view, insights=tuple(insights))
-
-    @staticmethod
-    def _surface_unreported_open_pull_requests(
-        view: AssistantView, snapshot: list[dict[str, Any]]
-    ) -> AssistantView:
-        """Keep a validated but still-open PR visible as the chat's next action."""
-        represented_sessions = {insight.session_key for insight in view.insights}
-        insights = list(view.insights)
-        for row in snapshot:
-            session_key = str(row.get("session_key") or "")
-            if (
-                not session_key
-                or session_key in represented_sessions
-                or row.get("state") != "idle"
-                or row.get("question")
-                or row.get("interaction")
-                or not _VALIDATED_COMPLETION_RE.search(str(row.get("last_response") or ""))
-            ):
-                continue
-            git = row.get("git")
-            if not isinstance(git, dict):
-                continue
-            pull = next(
-                (
-                    item
-                    for item in git.get("pull_requests") or ()
-                    if isinstance(item, dict)
-                    and item.get("status") == "open"
-                    and not item.get("draft")
-                    and isinstance(item.get("number"), int)
-                ),
-                None,
-            )
-            if pull is None:
-                continue
-            title = pull.get("title")
-            detail = (
-                f"{title} is still open while its owning chat is idle. Review or "
-                "otherwise resolve the pull request."
-                if isinstance(title, str) and title
-                else "The pull request is still open while its owning chat is idle. "
-                "Review or otherwise resolve it."
-            )
-            insights.append(
-                AssistantInsight(
-                    session_key=session_key,
-                    kind="waiting",
-                    headline=f"PR #{pull['number']} is open and awaiting review",
-                    detail=detail,
-                    confidence=1.0,
-                )
-            )
-            represented_sessions.add(session_key)
-        return replace(view, insights=tuple(insights))
-
-    @staticmethod
-    def _pr_feature_word(title: str, project: str) -> str:
-        for word in _PR_TITLE_WORD_RE.findall(title):
-            if (
-                not word.isdigit()
-                and word.casefold() not in _GENERIC_PR_TITLE_WORDS
-                and word.casefold() != project.casefold()
-            ):
-                return word
-        return "Change"
-
-    def _enrich_pr_headlines(self, view: AssistantView) -> AssistantView:
-        """Prefix PR advice with its project and a compact title-derived feature word."""
-        insights = []
-        for insight in view.insights:
-            context = self.contexts.get(insight.session_key)
-            numbers, repositories = self._pr_claims(insight)
-            pulls = context.pull_requests if context is not None else ()
-            pull = next(
-                (
-                    item
-                    for item in pulls
-                    if item.number in numbers
-                    or (item.repository.casefold(), item.number) in repositories
-                ),
-                None,
-            )
-            if pull is None:
-                insights.append(insight)
-                continue
-            repository_name = pull.repository.rsplit("/", 1)[-1]
-            project = _PROJECT_DISPLAY_NAMES.get(
-                repository_name.casefold(), repository_name.replace("-", " ").title()
-            )
-            feature = self._pr_feature_word(pull.title, project)
-            prefix = f"{project} · {feature} · PR #{pull.number}"
-            if insight.headline.startswith(prefix):
-                insights.append(insight)
-                continue
-            action = _PR_HEADLINE_PREFIX_RE.sub("", insight.headline).strip()
-            insights.append(replace(insight, headline=f"{prefix} {action}".strip()))
-        result = tuple(insights)
-        if result == view.insights:
-            return view
-        return replace(view, insights=result)
-
-    def _deduplicate_insights(self, view: AssistantView) -> AssistantView:
-        """Keep one operator action per underlying PR, issue, branch, or model group."""
-        seen: set[str] = set()
-        insights = []
-        for insight in view.insights:
-            context = self.contexts.get(insight.session_key)
-            numbers, repositories = self._pr_claims(insight)
-            pulls = context.pull_requests if context is not None else ()
-            claimed = sorted(
-                f"{pull.repository.casefold()}#{pull.number}"
-                for pull in pulls
-                if pull.number in numbers
-                or (pull.repository.casefold(), pull.number) in repositories
-            )
-            session = self.state.sessions.get(insight.session_key)
-            if claimed:
-                key = "prs:" + ",".join(claimed)
-            elif session is not None and session.issue_url:
-                key = f"issue:{session.issue_url.casefold()}"
-            elif (
-                context is not None
-                and context.repository
-                and context.branch
-                and context.branch not in {"main", "master"}
-            ):
-                key = f"branch:{context.repository.casefold()}:{context.branch.casefold()}"
-            elif insight.coordination_key:
-                namespace = (
-                    context.repository.casefold()
-                    if context is not None and context.repository
-                    else str(session.cwd)
-                    if session is not None and session.cwd
-                    else "global"
-                )
-                key = f"model:{namespace}:{insight.coordination_key.strip().casefold()}"
-            else:
-                key = ""
-            if key and key in seen:
-                continue
-            if key:
-                seen.add(key)
-            insights.append(insight)
-        result = tuple(insights)
-        if result == view.insights:
-            return view
-        return replace(view, summary=self._tracking_summary(len(result)), insights=result)
+        sessions = self.state.sessions
+        view = suppress_unattributed_pr_insights(view, self.contexts)
+        view = suppress_terminal_pr_insights(view, self.contexts)
+        view = suppress_non_actionable_insights(view, sessions, self._interaction)
+        if snapshot is not None:
+            view = surface_open_blocked_issues(view, snapshot)
+            view = surface_unreported_open_pull_requests(view, snapshot)
+        view = enrich_pr_headlines(view, self.contexts)
+        view = deduplicate_insights(view, self.contexts, sessions)
+        if stabilize is not None:
+            prior, evidence = stabilize
+            view = self._stabilize_insights(view, prior, evidence)
+            view = deduplicate_insights(view, self.contexts, sessions)
+        return view
 
     async def _auto_answer(self, view: AssistantView) -> tuple[AssistantAction, ...]:
         if not self.config.auto_answer:
@@ -1333,11 +1020,7 @@ Dashboard snapshot:
             )
             self.state.bus.publish("assistant")
             return
-        prior = self._suppress_unattributed_pr_insights(self.view)
-        prior = self._suppress_terminal_pr_insights(prior)
-        prior = self._suppress_non_actionable_insights(prior)
-        prior = self._enrich_pr_headlines(prior)
-        prior = self._deduplicate_insights(prior)
+        prior = self._normalize_insights(self.view)
         analysis_snapshot, changed_keys = self._incremental_snapshot(snapshot, prior)
         if not analysis_snapshot:
             if prior != self.view:
@@ -1368,17 +1051,11 @@ Dashboard snapshot:
             view = self._parse_result(
                 raw, {row["session_key"] for row in analysis_snapshot}
             )
-            view = self._suppress_unattributed_pr_insights(view)
-            view = self._suppress_terminal_pr_insights(view)
-            view = self._suppress_non_actionable_insights(view)
-            view = self._surface_open_blocked_issues(view, snapshot)
-            view = self._surface_unreported_open_pull_requests(view, snapshot)
-            view = self._enrich_pr_headlines(view)
-            view = self._deduplicate_insights(view)
             evidence = {row["session_key"]: self._evidence_signature(row) for row in snapshot}
-            view = self._stabilize_insights(view, prior, evidence)
-            view = self._deduplicate_insights(view)
-            view = replace(view, summary=self._tracking_summary(len(view.insights)))
+            view = self._normalize_insights(
+                view, snapshot=snapshot, stabilize=(prior, evidence)
+            )
+            view = replace(view, summary=tracking_summary(len(view.insights)))
             actions = await self._auto_answer(view)
             self.view = AssistantView(
                 state=view.state,

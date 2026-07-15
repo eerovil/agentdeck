@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from agentdeck import insight_pipeline
 from agentdeck.assistant import (
     AssistantAnswer,
     AssistantInsight,
@@ -858,8 +859,9 @@ def test_pr_insight_must_match_target_chats_authoritative_context(tmp_path):
         "See https://github.com/protecomp/storm/pull/239.",
     )
 
-    result = assistant._suppress_unattributed_pr_insights(
-        AssistantView(state="ready", summary="Two PRs need review.", insights=(wrong, right))
+    result = insight_pipeline.suppress_unattributed_pr_insights(
+        AssistantView(state="ready", summary="Two PRs need review.", insights=(wrong, right)),
+        assistant.contexts,
     )
 
     assert result.insights == (right,)
@@ -891,20 +893,22 @@ def test_pr_headline_includes_project_and_feature_from_authoritative_title(tmp_p
         "Implementation and tests are complete.",
     )
 
-    result = assistant._enrich_pr_headlines(AssistantView(state="ready", insights=(insight,)))
+    result = insight_pipeline.enrich_pr_headlines(
+        AssistantView(state="ready", insights=(insight,)), assistant.contexts
+    )
 
     assert result.insights[0].headline == (
         "Storm · Elasticsearch · PR #255 is open and awaiting review"
     )
-    assert assistant._enrich_pr_headlines(result) == result
+    assert insight_pipeline.enrich_pr_headlines(result, assistant.contexts) == result
 
     number_in_detail = replace(
         insight,
         headline="Open PR needs review",
         detail="Implementation is complete in PR #255.",
     )
-    detail_result = assistant._enrich_pr_headlines(
-        AssistantView(state="ready", insights=(number_in_detail,))
+    detail_result = insight_pipeline.enrich_pr_headlines(
+        AssistantView(state="ready", insights=(number_in_detail,)), assistant.contexts
     )
     assert detail_result.insights[0].headline == ("Storm · Elasticsearch · PR #255 needs review")
 
@@ -1448,12 +1452,12 @@ def test_terminal_filter_is_per_claim_and_parses_pr_lists(tmp_path):
         session_key, "coordination", "PRs #91 and #92 overlap", "Keep one owner."
     )
 
-    result = assistant._suppress_terminal_pr_insights(
-        AssistantView(state="ready", insights=(merged, open_pull, both))
+    result = insight_pipeline.suppress_terminal_pr_insights(
+        AssistantView(state="ready", insights=(merged, open_pull, both)), assistant.contexts
     )
 
     assert result.insights == (open_pull, both)
-    assert AssistantService._pr_claims(both)[0] == {91, 92}
+    assert insight_pipeline.pr_claims(both)[0] == {91, 92}
 
 
 def test_duplicate_underlying_work_is_shown_once(tmp_path):
@@ -1484,7 +1488,11 @@ def test_duplicate_underlying_work_is_shown_once(tmp_path):
         coordination_key="compact-deploy",
     )
 
-    result = assistant._deduplicate_insights(AssistantView(state="ready", insights=(first, second)))
+    result = insight_pipeline.deduplicate_insights(
+        AssistantView(state="ready", insights=(first, second)),
+        assistant.contexts,
+        assistant.state.sessions,
+    )
 
     assert result.insights == (first,)
 
