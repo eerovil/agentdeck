@@ -22,6 +22,7 @@ from .web import render as render_mod
 from .web.action_timing import ActionTiming, identify_action
 from .web.routes_actions import router as actions_router
 from .web.routes_api import router as api_router
+from .web.routes_files import router as files_router
 from .web.routes_pages import router as pages_router
 from .web.routes_partials import router as partials_router
 from .web.routes_pwa import cache_stamp
@@ -117,4 +118,7 @@ def create_app(config: AppConfig) -> FastAPI:
     app.include_router(partials_router)
     app.include_router(sse_router)
     app.include_router(pwa_router)
+    # Deliberately last: the local-file route is a catch-all for absolute paths
+    # such as /tmp/report.md:12 and must never shadow AgentDeck's own routes.
+    app.include_router(files_router)
     return app

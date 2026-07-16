@@ -497,6 +497,46 @@ async def test_markdown_links_reject_unsafe_schemes_and_attribute_breakout(tmp_p
     assert '<a href="https://e.com" target="_blank" rel="noopener">x</a>' in rendered[4]["html"]
 
 
+async def test_local_markdown_file_opens_from_absolute_path_with_line_suffix(tmp_path):
+    app = _app_with_state(tmp_path)
+    handoff = tmp_path / "handoff.md"
+    handoff.write_text("# Handoff\n\n- first\n- second\n")
+
+    async with _client(app) as client:
+        rendered = await client.get(f"{handoff}:1")
+        source = await client.get(f"{handoff}:3")
+
+    assert rendered.status_code == 200
+    assert 'id="local-markdown"' in rendered.text
+    assert "# Handoff" in rendered.text
+    assert rendered.headers["cache-control"] == "no-store"
+    assert source.status_code == 200
+    assert 'class="local-source"' in source.text
+    assert 'id="L3" class="selected"' in source.text
+    assert "first" in source.text
+
+
+async def test_local_file_route_escapes_active_text_and_serves_binary_inline(tmp_path):
+    app = _app_with_state(tmp_path)
+    active = tmp_path / "page.html"
+    active.write_text("<script>alert('no')</script>")
+    binary = tmp_path / "asset.bin"
+    binary.write_bytes(b"\x00\x01agentdeck")
+
+    async with _client(app) as client:
+        active_response = await client.get(str(active))
+        binary_response = await client.get(str(binary))
+        missing_response = await client.get(str(tmp_path / "missing.txt"))
+
+    assert active_response.status_code == 200
+    assert "&lt;script&gt;alert" in active_response.text
+    assert "<script>alert('no')</script>" not in active_response.text
+    assert binary_response.status_code == 200
+    assert binary_response.content == b"\x00\x01agentdeck"
+    assert binary_response.headers["content-disposition"].startswith("inline;")
+    assert missing_response.status_code == 404
+
+
 async def test_partial_sessions(tmp_path):
     app = _app_with_state(tmp_path)
     async with _client(app) as c:
