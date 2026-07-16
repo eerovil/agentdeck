@@ -10,6 +10,7 @@ from playwright.async_api import async_playwright
 from agentdeck.action_context import current_client_action_id
 from agentdeck.app import create_app
 from agentdeck.config import AccountConfig, AppConfig, HistoryConfig, InjectConfig
+from agentdeck.db import Db
 from agentdeck.inject import InjectionService, InjectionStatus, QueuedMessage
 from agentdeck.models import (
     Account,
@@ -613,6 +614,65 @@ async def test_new_session_route_and_enter_to_send_ui(tmp_path, monkeypatch):
         )
         assert "New Codex chat completed" in status_response.text
     await app.state.injector.stop()
+
+
+async def test_manual_new_session_cwd_is_shared_and_delegation_does_not_change_it(
+    tmp_path, monkeypatch
+):
+    app = _web_app(tmp_path)
+    db = Db(tmp_path / "shared.db")
+    app.state.db = db
+    app.state.app_state.db = db
+    manual_cwd = tmp_path / "manual-project"
+    delegated_cwd = tmp_path / "delegated-project"
+    manual_cwd.mkdir()
+    delegated_cwd.mkdir()
+
+    async def fake_start(account, cwd, message, **kwargs):
+        return InjectResult(True, session_id=f"started-{cwd.name}")
+
+    from agentdeck.providers import PROVIDERS
+
+    monkeypatch.setattr(PROVIDERS["codex"], "start_session", fake_start)
+    transport = ASGITransport(app=app)
+    async with (
+        AsyncClient(transport=transport, base_url="http://test") as desktop,
+        AsyncClient(transport=transport, base_url="http://test") as mobile,
+    ):
+        response = await desktop.post(
+            "/sessions/new",
+            data={
+                "account_key": "codex:test",
+                "cwd": str(manual_cwd),
+                "message": "start manually",
+            },
+            headers={"origin": "http://test"},
+        )
+        assert response.status_code == 202
+
+        mobile_dashboard = await mobile.get("/")
+        assert (
+            f'id="new-chat-cwd" name="cwd" type="text" list="new-chat-cwds"\n'
+            f'           value="{manual_cwd}"'
+        ) in mobile_dashboard.text
+
+        delegated = await desktop.post(
+            "/api/delegations",
+            json={
+                "account_key": "codex:test",
+                "cwd": str(delegated_cwd),
+                "message": "start automatically",
+            },
+        )
+        assert delegated.status_code == 202
+        unchanged = await mobile.get("/")
+        assert (
+            f'id="new-chat-cwd" name="cwd" type="text" list="new-chat-cwds"\n'
+            f'           value="{manual_cwd}"'
+        ) in unchanged.text
+
+    await app.state.injector.stop()
+    db.close()
 
 
 async def test_machine_delegation_api_returns_final_message(tmp_path, monkeypatch):

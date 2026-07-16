@@ -43,6 +43,21 @@ def test_sessions_seen_upsert(tmp_path):
         db.close()
 
 
+def test_manual_new_chat_cwd_round_trip_survives_reopen(tmp_path):
+    path = tmp_path / "h.db"
+    db = Db(path)
+    assert db.load_manual_new_chat_cwd() is None
+    db.record_manual_new_chat_cwd("/srv/first")
+    db.record_manual_new_chat_cwd("/srv/last")
+    db.close()
+
+    reopened = Db(path)
+    try:
+        assert reopened.load_manual_new_chat_cwd() == "/srv/last"
+    finally:
+        reopened.close()
+
+
 def test_assistant_handled_round_trip(tmp_path):
     db = Db(tmp_path / "history.db")
     try:

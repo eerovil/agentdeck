@@ -20,7 +20,7 @@
     </select>
     <label for="new-chat-cwd">Working directory</label>
     <input id="new-chat-cwd" name="cwd" type="text" list="new-chat-cwds"
-           value="{{ new_chat_cwds[0] if new_chat_cwds else '' }}"
+           value="{{ new_chat_default_cwd }}"
            autocomplete="off" required placeholder="/path/to/project">
     <datalist id="new-chat-cwds">
       {% for cwd in new_chat_cwds %}<option value="{{ cwd }}">{% endfor %}

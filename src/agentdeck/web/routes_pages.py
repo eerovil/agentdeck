@@ -7,6 +7,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from .deps import (
     get_accounts,
+    get_db,
     get_state,
     get_templates,
     require_access,
@@ -63,6 +64,10 @@ async def dashboard(request: Request) -> HTMLResponse:
             if session.account_key in new_chat_account_keys and session.cwd is not None
         }
     )
+    manual_cwd = get_db(request).load_manual_new_chat_cwd()
+    if manual_cwd and manual_cwd not in cwd_options:
+        cwd_options.insert(0, manual_cwd)
+    default_cwd = manual_cwd or (cwd_options[0] if cwd_options else "")
 
     resp = templates.TemplateResponse(
         request,
@@ -78,6 +83,7 @@ async def dashboard(request: Request) -> HTMLResponse:
             "new_chat_accounts": new_chat_accounts,
             "new_chat_enabled": request.app.state.config.inject.enabled,
             "new_chat_cwds": cwd_options,
+            "new_chat_default_cwd": default_cwd,
             "assistant": request.app.state.assistant,
             "assistant_sessions": state.sessions,
             "working_count": sum(1 for s in state.visible_sessions() if s.thinking),

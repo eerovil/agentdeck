@@ -1,6 +1,6 @@
 """Optional SQLite persistence for usage history, the sessions-seen ledger,
-and Deckhand state. Disabled entirely when ``[history] enabled = false`` — the
-app runs fully from memory in that case (NullDb).
+Deckhand state, and shared UI preferences. Disabled entirely when ``[history]
+enabled = false`` — the app runs fully from memory in that case (NullDb).
 
 Writes are small and infrequent (usage every ~5 min, sessions-seen every scan),
 so a short synchronous insert on the event loop is negligible here; we keep one
@@ -32,6 +32,10 @@ class NullDb:
         return []
 
     def upsert_sessions_seen(self, sessions: list[Session]) -> None: ...
+    def load_manual_new_chat_cwd(self) -> str | None:
+        return None
+
+    def record_manual_new_chat_cwd(self, cwd: str) -> None: ...
     def load_assistant_checkpoint(self) -> dict[str, Any] | None:
         return None
 
@@ -98,6 +102,11 @@ class Db:
                     payload TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS manual_new_chat_state (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                    cwd TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
             columns = {
@@ -158,6 +167,30 @@ class Db:
                     )
         except sqlite3.Error as exc:
             log.debug("upsert_sessions_seen failed: %s", exc)
+
+    def load_manual_new_chat_cwd(self) -> str | None:
+        try:
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT cwd FROM manual_new_chat_state WHERE singleton = 1"
+                ).fetchone()
+            return str(row[0]) if row is not None else None
+        except sqlite3.Error as exc:
+            log.debug("load_manual_new_chat_cwd failed: %s", exc)
+            return None
+
+    def record_manual_new_chat_cwd(self, cwd: str) -> None:
+        try:
+            with self._lock, self._conn:
+                self._conn.execute(
+                    "INSERT INTO manual_new_chat_state(singleton, cwd, updated_at)"
+                    " VALUES (1, ?, ?)"
+                    " ON CONFLICT(singleton) DO UPDATE SET"
+                    " cwd=excluded.cwd, updated_at=excluded.updated_at",
+                    (cwd, datetime.now(UTC).isoformat()),
+                )
+        except sqlite3.Error as exc:
+            log.debug("record_manual_new_chat_cwd failed: %s", exc)
 
     def load_assistant_checkpoint(self) -> dict[str, Any] | None:
         try:

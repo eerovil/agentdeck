@@ -15,6 +15,7 @@ from .action_timing import bind_action, timing_span
 from .deps import (
     get_accounts,
     get_config,
+    get_db,
     get_injector,
     get_templates,
     require_access,
@@ -332,6 +333,9 @@ async def new_session(request: Request) -> HTMLResponse:
         cleanup_image_files(images)
         status_code = 409 if "already starting" in (result.reason or "") else 422
         raise HTTPException(status_code=status_code, detail=result.reason)
+    # This UI route is the one intentional source of the shared form default.
+    # Machine delegations use /api/delegations and must not change it.
+    get_db(request).record_manual_new_chat_cwd(str(cwd))
     with timing_span(request, "render"):
         response = _render_new_status(
             request,
