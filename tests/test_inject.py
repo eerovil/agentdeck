@@ -893,6 +893,9 @@ async def test_browser_action_timing_covers_htmx_response_and_sse_reconciliation
         "/static/interaction_feedback.js": (
             static_dir / "interaction_feedback.js"
         ).read_text(),
+        "/static/session_bottom_follow.js": (
+            static_dir / "session_bottom_follow.js"
+        ).read_text(),
     }
     measured = []
 

@@ -13,6 +13,7 @@
 
 {% block content %}
 <script src="/static/mobile_session_stack.js?v={{ asset_ver }}" defer></script>
+<script src="/static/session_bottom_follow.js?v={{ asset_ver }}" defer></script>
 <div class="session-layout">
 <aside class="session-sidebar" aria-label="All sessions">
   <div class="session-sidebar-head">
@@ -125,10 +126,6 @@
 
 <script>
 (function () {
-  // Open at the newest message. For later transcript appends, decide whether to
-  // follow *before* HTMX changes the page height. Status/activity/usage swaps
-  // never move the viewport; send state is an overlay inside the composer.
-  var NEAR = 80;
   function formatElapsed(seconds) {
     if (seconds < 60) return seconds + 's';
     var minutes = Math.floor(seconds / 60);
@@ -145,111 +142,6 @@
   }
   updateActivityElapsed();
   window.setInterval(updateActivityElapsed, 1000);
-  function scrollRoot() {
-    var detail = document.querySelector('.session-detail');
-    if (detail && getComputedStyle(detail).overflowY === 'auto') return detail;
-    return window;
-  }
-  function atBottom() {
-    var root = scrollRoot();
-    if (root === window) {
-      return (window.innerHeight + window.scrollY) >= (document.documentElement.scrollHeight - NEAR);
-    }
-    return (root.clientHeight + root.scrollTop) >= (root.scrollHeight - NEAR);
-  }
-  function toBottom() {
-    var root = scrollRoot();
-    if (root === window) window.scrollTo(0, document.documentElement.scrollHeight);
-    else root.scrollTo(0, root.scrollHeight);
-  }
-  function followBottom() {
-    if (followAfterSend) toBottom();
-  }
-  var followTranscript = false;
-  var followAfterSend = false;
-  var initialDone = false;
-  var userMoved = false;
-
-  ['wheel', 'touchstart', 'pointerdown'].forEach(function (name) {
-    window.addEventListener(name, function () {
-      userMoved = true;
-      followAfterSend = false;
-    }, { passive: true });
-  });
-  window.addEventListener('keydown', function (event) {
-    if (['PageUp', 'Home', 'ArrowUp', 'ArrowDown', 'PageDown', 'End', ' '].includes(event.key)) {
-      userMoved = true;
-      followAfterSend = false;
-    }
-  });
-  function initialScroll() {
-    if (initialDone) return;
-    initialDone = true;
-    requestAnimationFrame(function () { if (!userMoved) toBottom(); });
-  }
-  if (document.readyState === 'complete') initialScroll();
-  else window.addEventListener('load', initialScroll, { once: true });
-
-  if (window.visualViewport) {
-    window.visualViewport.addEventListener('resize', function () {
-      if (followAfterSend) requestAnimationFrame(followBottom);
-    });
-  }
-
-  function beforeTranscriptSwap(event) {
-    if (!event.target.matches('.transcript')) return false;
-    followTranscript = followAfterSend ||
-      (atBottom() && !document.activeElement.closest('.inject-form'));
-    return true;
-  }
-  function afterTranscriptSwap(event) {
-    if (!event.target.matches('.transcript')) return;
-    reconcilePendingMessages();
-    if (followTranscript) requestAnimationFrame(toBottom);
-    followTranscript = false;
-  }
-  function reconcilePendingMessages() {
-    var actionRows = new Map();
-    document.querySelectorAll('.transcript [data-pending-message]').forEach(function (pending) {
-      var pendingActionId = pending.dataset.clientActionId;
-      if (pendingActionId && actionRows.has(pendingActionId)) {
-        pending.remove();
-        return;
-      }
-      if (pendingActionId) actionRows.set(pendingActionId, pending);
-      var text = pending.querySelector('.ev-text');
-      var next = pending.nextElementSibling;
-      while (text && next) {
-        var nextText = next.matches('.ev.user:not([data-pending-message])') &&
-          next.querySelector('.ev-text');
-        if (nextText && nextText.textContent === text.textContent) {
-          var actionId = pending.dataset.clientActionId;
-          if (actionId && window.AgentDeckActionTiming) {
-            window.AgentDeckActionTiming.mark(actionId, 'first_transcript');
-          }
-          pending.remove();
-          break;
-        }
-        next = next.nextElementSibling;
-      }
-    });
-  }
-  document.body.addEventListener('htmx:beforeSwap', beforeTranscriptSwap);
-  document.body.addEventListener('htmx:afterSwap', afterTranscriptSwap);
-  // The SSE extension swaps directly through htmx's internal API and exposes
-  // its own lifecycle events rather than the ordinary before/afterSwap pair.
-  document.body.addEventListener('htmx:sseBeforeMessage', beforeTranscriptSwap);
-  document.body.addEventListener('htmx:sseMessage', afterTranscriptSwap);
-  document.body.addEventListener('agentdeck:optimistic-send', function () {
-    followAfterSend = true;
-    requestAnimationFrame(followBottom);
-  });
-  document.body.addEventListener('htmx:afterRequest', function (event) {
-    var form = event.detail && event.detail.elt;
-    if (!event.detail || !event.detail.successful || !form || !form.matches('.inject-form')) return;
-    followAfterSend = true;
-    requestAnimationFrame(followBottom);
-  });
 })();
 </script>
 {% endblock %}

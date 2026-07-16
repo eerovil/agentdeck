@@ -607,96 +607,117 @@ async def test_clipboard_screenshot_attaches_to_chat_composer(tmp_path):
     }
 
 
-async def test_session_autoscroll_follows_successful_send_but_not_unrelated_swaps(tmp_path):
-    app = _app_with_state(tmp_path, with_transcript=True)
-    async with _client(app) as client:
-        response = await client.get("/sessions/claude_code:test:sid1")
+async def test_session_bottom_follow_stops_on_manual_scroll_and_resumes_near_end():
+    static_dir = Path(__file__).parents[1] / "src/agentdeck/web/static"
+    css = (static_dir / "app.css").read_text()
+    bottom_follow = (static_dir / "session_bottom_follow.js").read_text()
+    filler = "".join(
+        f'<div class="ev" style="min-height:80px">older message {index}</div>'
+        for index in range(30)
+    )
+    html = f"""
+      <style>{css}</style>
+      <body class="session-page session-stack-page"><main>
+        <div class="session-layout">
+          <aside class="session-sidebar"></aside>
+          <section class="session-detail">
+            <div class="transcript">{filler}
+              <div class="ev user pending-message" data-pending-message>
+                <div class="ev-text">queued message</div>
+              </div>
+            </div>
+            <div id="tool-activity"></div>
+            <form class="inject-form"><div id="inject-result"></div></form>
+          </section>
+        </div>
+      </main></body>
+    """
 
-    marker = "// Open at the newest message."
-    marker_at = response.text.index(marker)
-    start = response.text.rfind("<script>", 0, marker_at) + len("<script>")
-    end = response.text.index("</script>", start)
-    script = response.text[start:end]
-
+    results = []
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()
-        page = await browser.new_page(viewport={"width": 800, "height": 500})
-        await page.set_content(
-            '<div class="transcript" style="height:2400px">'
-            '<div class="ev user pending-message" data-pending-message>'
-            '<div class="ev-text">queued message</div></div></div>'
-            '<div id="tool-activity"></div><form class="inject-form">'
-            '<div id="inject-result"></div></form>'
-        )
-        await page.add_script_tag(content=script)
-        # Let the page-load scroll's animation frame finish before counting
-        # scrolls caused by later HTMX events.
-        await page.evaluate("() => new Promise(requestAnimationFrame)")
-        await page.evaluate("window.scrollTo(0, 0)")
-        result = await page.evaluate(
-            """async () => {
-                let calls = 0;
-                const realScrollTo = window.scrollTo.bind(window);
-                window.scrollTo = () => { calls += 1; };
-                const swap = target => {
+        for width in (1200, 320):
+            page = await browser.new_page(viewport={"width": width, "height": 700})
+            await page.set_content(html)
+            await page.add_script_tag(content=bottom_follow)
+            result = await page.evaluate(
+                """async () => {
+                  const frame = () => new Promise(requestAnimationFrame);
+                  const settle = async () => { await frame(); await frame(); };
+                  const root = document.querySelector('.session-detail');
+                  const transcript = document.querySelector('.transcript');
+                  const status = document.querySelector('#inject-result');
+                  const form = document.querySelector('.inject-form');
+                  const bottomGap = () => root.scrollHeight - root.clientHeight - root.scrollTop;
+                  const swap = target => {
                     target.dispatchEvent(new CustomEvent('htmx:beforeSwap', {bubbles: true}));
                     target.dispatchEvent(new CustomEvent('htmx:afterSwap', {bubbles: true}));
-                };
-                const sseSwap = target => {
-                    target.dispatchEvent(new CustomEvent(
-                        'htmx:sseBeforeMessage', {bubbles: true}
+                  };
+                  const appendTranscript = html => {
+                    transcript.dispatchEvent(new CustomEvent(
+                      'htmx:sseBeforeMessage', {bubbles: true}
                     ));
-                    target.insertAdjacentHTML(
-                      'beforeend',
-                      '<div class="ev user"><div class="ev-text">queued message</div></div>'
-                    );
-                    target.dispatchEvent(new CustomEvent('htmx:sseMessage', {bubbles: true}));
-                };
-                swap(document.querySelector('#tool-activity'));
-                const afterActivity = calls;
-                sseSwap(document.querySelector('.transcript'));
-                const afterTranscript = calls;
-                const pendingAfterTranscript = document.querySelectorAll(
-                  '[data-pending-message]'
-                ).length;
-                const form = document.querySelector('.inject-form');
-                form.dispatchEvent(new CustomEvent('htmx:afterRequest', {
-                  bubbles: true,
-                  detail: {successful: true, elt: form}
-                }));
-                await new Promise(requestAnimationFrame);
-                const afterSend = calls;
-                sseSwap(document.querySelector('.transcript'));
-                await new Promise(requestAnimationFrame);
-                const afterSentTranscript = calls;
-                await new Promise(resolve => setTimeout(resolve, 400));
-                const afterViewportSettle = calls;
-                swap(document.querySelector('#inject-result'));
-                await new Promise(requestAnimationFrame);
-                const afterSendingStatus = calls;
-                window.scrollTo = realScrollTo;
-                return {
-                    afterActivity,
-                    afterTranscript,
-                    pendingAfterTranscript,
-                    afterSend,
-                    afterSentTranscript,
-                    afterViewportSettle,
-                    afterSendingStatus,
-                };
-            }"""
-        )
+                    transcript.insertAdjacentHTML('beforeend', html);
+                    transcript.dispatchEvent(new CustomEvent(
+                      'htmx:sseMessage', {bubbles: true}
+                    ));
+                  };
+
+                  await settle();
+                  const initialGap = bottomGap();
+                  document.body.dispatchEvent(new CustomEvent('agentdeck:optimistic-send'));
+                  await settle();
+
+                  root.scrollTo(0, root.scrollHeight - root.clientHeight - 400);
+                  await settle();
+                  const readingPosition = root.scrollTop;
+
+                  // The request can finish after the reader has already moved.
+                  // Its late acknowledgement must not re-arm bottom-follow.
+                  form.dispatchEvent(new CustomEvent('htmx:afterRequest', {
+                    bubbles: true, detail: {successful: true, elt: form}
+                  }));
+                  appendTranscript(
+                    '<div class="ev user" style="min-height:80px">' +
+                    '<div class="ev-text">queued message</div></div>'
+                  );
+                  swap(status);
+                  await settle();
+                  appendTranscript('<div class="ev" style="min-height:80px">working</div>');
+                  swap(status);
+                  await settle();
+                  appendTranscript('<div class="ev" style="min-height:80px">reply</div>');
+                  swap(status);
+                  await settle();
+                  const positionWhileReading = root.scrollTop;
+                  const pendingAfterReconcile = document.querySelectorAll(
+                    '[data-pending-message]'
+                  ).length;
+
+                  root.scrollTo(0, root.scrollHeight - root.clientHeight - 20);
+                  await settle();
+                  appendTranscript(
+                    '<div class="ev" style="min-height:120px">continued reply</div>'
+                  );
+                  await settle();
+                  return {
+                    initialGap,
+                    readingPosition,
+                    positionWhileReading,
+                    pendingAfterReconcile,
+                    resumedGap: bottomGap(),
+                  };
+                }"""
+            )
+            results.append(result)
+            await page.close()
         await browser.close()
 
-    assert result == {
-        "afterActivity": 0,
-        "afterTranscript": 0,
-        "pendingAfterTranscript": 0,
-        "afterSend": 1,
-        "afterSentTranscript": 2,
-        "afterViewportSettle": 2,
-        "afterSendingStatus": 2,
-    }
+    for result in results:
+        assert result["initialGap"] <= 1
+        assert result["positionWhileReading"] == result["readingPosition"]
+        assert result["pendingAfterReconcile"] == 0
+        assert result["resumedGap"] <= 1
 
 
 async def test_message_draft_survives_reload_and_newer_text_is_not_cleared(tmp_path):
