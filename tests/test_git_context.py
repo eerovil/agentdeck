@@ -68,6 +68,22 @@ def test_explicit_refs_full_url_wins_regardless_of_candidates(tmp_path):
     ]
 
 
+def test_explicit_refs_qualified_handoff_wins_over_checkout_and_issue_repo(tmp_path):
+    session = _session(
+        tmp_path,
+        issue_url="https://github.com/ScandinavianOutdoor/issues/issues/1635",
+        last_text=(
+            "Done.\n\n"
+            "- **PR:** ScandinavianOutdoor/tilhi#1636 (ready — tests green).\n"
+            "- **Board:** In review."
+        ),
+    )
+
+    assert GitContextResolver._explicit_refs(
+        session, ["ScandinavianOutdoor/docker", "ScandinavianOutdoor/issues"]
+    ) == [("ScandinavianOutdoor/tilhi", 1636)]
+
+
 async def test_resolves_merged_pr_for_worktree_branch(tmp_path, monkeypatch):
     resolver = GitContextResolver()
     resolver._git = "git"

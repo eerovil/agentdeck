@@ -24,6 +24,11 @@ _PR_URL_RE = re.compile(
     r"https?://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/(\d+)",
     re.IGNORECASE,
 )
+_QUALIFIED_PR_RE = re.compile(
+    r"\b(?:PR|pull request)\b[ \t:*_`-]*"
+    r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d+)\b",
+    re.IGNORECASE,
+)
 _GITHUB_REPO_URL_RE = re.compile(
     r"https?://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)(?:/|$)",
     re.IGNORECASE,
@@ -272,6 +277,12 @@ class GitContextResolver:
         # Full URLs carry their own repo — always authoritative.
         refs.extend(
             (f"{m.group(1)}/{m.group(2)}", int(m.group(3))) for m in _PR_URL_RE.finditer(text)
+        )
+        # Kanban handoffs commonly use ``PR: owner/repo#123`` instead of a URL.
+        # Preserve that repository rather than trying the number against the
+        # worker's shared checkout or issue-tracker repository.
+        refs.extend(
+            (m.group(1), int(m.group(2))) for m in _QUALIFIED_PR_RE.finditer(text)
         )
         # A bare "PR #123" has no repo; try each candidate (checkout + referenced).
         bare_numbers = [int(m.group(1)) for m in _PR_NUMBER_RE.finditer(text)]
