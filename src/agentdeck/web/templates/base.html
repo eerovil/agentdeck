@@ -485,14 +485,15 @@
     });
     document.body.addEventListener('htmx:afterRequest', function (event) {
       var form = event.detail && event.detail.elt;
-      if (!event.detail || !event.detail.successful || !form ||
-          !form.matches('form[data-clear-on-send]')) return;
+      if (!form || !form.matches('form[data-clear-on-send]') ||
+          !Object.prototype.hasOwnProperty.call(form, '_agentdeckSubmittedMessage')) return;
       var input = messageInput(form);
       var submitted = form._agentdeckSubmittedMessage;
-      // Do not erase a new draft typed while the previous request was in flight.
-      if (input && (submitted === undefined || input.value === submitted)) input.value = '';
-      if (input) { persist(input); input.focus(); }
       delete form._agentdeckSubmittedMessage;
+      if (!event.detail.successful) return;
+      // Do not erase a new draft typed while the previous request was in flight.
+      if (input && input.value === submitted) input.value = '';
+      if (input) { persist(input); input.focus(); }
       var images = form.querySelector('input[type="file"][name="images"]');
       if (images) {
         images.value = '';

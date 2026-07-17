@@ -844,7 +844,22 @@ async def test_message_draft_survives_reload_and_newer_text_is_not_cleared(tmp_p
                   bubbles: true,
                   detail: {successful: true, elt: form}
                 }));
-                return {newerDraft, afterNormalSend: input.value};
+                const afterNormalSend = input.value;
+
+                input.value = 'next draft while queued';
+                input.dispatchEvent(new Event('input', {bubbles: true}));
+                // HTMX re-homes completion events from a polling status node
+                // after outerHTML removes it. That event reaches the connected
+                // parent form without a matching form beforeRequest.
+                form.dispatchEvent(new CustomEvent('htmx:afterRequest', {
+                  bubbles: true,
+                  detail: {successful: true, elt: form}
+                }));
+                return {
+                  newerDraft,
+                  afterNormalSend,
+                  afterQueuedStatusPoll: input.value,
+                };
             }"""
         )
         await page.reload()
@@ -855,8 +870,9 @@ async def test_message_draft_survives_reload_and_newer_text_is_not_cleared(tmp_p
     assert result == {
         "newerDraft": "new draft typed while sending",
         "afterNormalSend": "",
+        "afterQueuedStatusPoll": "next draft while queued",
     }
-    assert afterSentReload == ""
+    assert afterSentReload == "next draft while queued"
 
 
 async def test_working_marker_is_an_overlay_that_does_not_change_page_height(tmp_path):
