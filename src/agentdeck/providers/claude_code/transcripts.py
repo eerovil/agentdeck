@@ -318,6 +318,41 @@ def last_event(path: Path, *, tail: int = 65536) -> TranscriptEvent | None:
     return found
 
 
+def recent_conversation(
+    path: Path, *, limit: int = 4, tail: int = 1024 * 1024
+) -> list[TranscriptEvent]:
+    """Recent conversational messages from a bounded complete-line file tail."""
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            if size > tail:
+                handle.seek(size - tail)
+                handle.readline()
+            data = handle.read(tail)
+    except OSError:
+        return []
+    events = []
+    for raw in data.splitlines():
+        try:
+            obj = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        event = _event_from_line(0, obj)
+        if event is not None and event.role in ("user", "assistant") and event.text:
+            events.append(event)
+    real_user_texts = {
+        event.text for event in events if event.role == "user" and not event.queued
+    }
+    events = [
+        event
+        for event in events
+        if not (event.queued and event.text in real_user_texts)
+    ]
+    return events[-limit:]
+
+
 def last_context_tokens(path: Path, *, tail: int = 65536) -> int | None:
     """Current context-window occupancy in tokens: the input side of the most
     recent usage block (``input + cache_read + cache_creation``) — i.e. how large

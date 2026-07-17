@@ -826,6 +826,30 @@ def last_event(path: Path, *, tail: int = _META_TAIL) -> TranscriptEvent | None:
     return found
 
 
+def recent_conversation(
+    path: Path, *, limit: int = 4, tail: int = 1024 * 1024
+) -> list[TranscriptEvent]:
+    """Recent conversational messages from a bounded complete-line rollout tail."""
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            if size > tail:
+                handle.seek(size - tail)
+            blob = handle.read(tail)
+    except OSError:
+        return []
+    events = []
+    for obj in _objects(
+        blob,
+        skip_first_partial=size > tail,
+        require_final_newline=True,
+    ):
+        event = _event_from_line(0, obj)
+        if event is not None and event.role in ("user", "assistant") and event.text:
+            events.append(event)
+    return events[-limit:]
+
+
 def last_turn_complete(path: Path, *, tail: int = _META_TAIL) -> bool:
     """Whether the most recent native turn boundary is a completed turn.
 

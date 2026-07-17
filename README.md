@@ -25,6 +25,8 @@ What works today:
   the existing transcript view — see the safety limits below.
 - **Deckhand orchestration assistant** (opt-in): an ephemeral, read-only Codex
   pass turns the current deck into concise waiting/stalled/coordination tips.
+  Deckhand also generates concise objective-based chat titles and refreshes them
+  when a conversation's goal changes.
   It can optionally answer only explicit low-risk multiple-choice questions;
   approvals, permissions, secrets, and open-ended choices always remain manual.
 

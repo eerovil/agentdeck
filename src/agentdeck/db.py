@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .models import Session, UsageSnapshot
+from .models import GeneratedTitle, Session, UsageSnapshot
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +32,14 @@ class NullDb:
         return []
 
     def upsert_sessions_seen(self, sessions: list[Session]) -> None: ...
+    def load_generated_titles(self) -> dict[str, GeneratedTitle]:
+        return {}
+
+    def record_generated_title(
+        self, session_key: str, title: str, evidence_signature: str
+    ) -> GeneratedTitle:
+        return GeneratedTitle(title, evidence_signature, datetime.now(UTC))
+
     def load_delegated_sessions(self) -> set[str]:
         return set()
 
@@ -92,6 +100,12 @@ class Db:
                     cwd TEXT,
                     first_seen TEXT,
                     last_seen TEXT
+                );
+                CREATE TABLE IF NOT EXISTS generated_titles (
+                    session_key TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    evidence_signature TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS assistant_handled (
                     session_key TEXT PRIMARY KEY,
@@ -175,6 +189,42 @@ class Db:
                     )
         except sqlite3.Error as exc:
             log.debug("upsert_sessions_seen failed: %s", exc)
+
+    def load_generated_titles(self) -> dict[str, GeneratedTitle]:
+        try:
+            with self._lock:
+                rows = self._conn.execute(
+                    "SELECT session_key, title, evidence_signature, updated_at"
+                    " FROM generated_titles"
+                ).fetchall()
+            return {
+                str(session_key): GeneratedTitle(
+                    str(title), str(signature), datetime.fromisoformat(str(updated_at))
+                )
+                for session_key, title, signature, updated_at in rows
+            }
+        except (sqlite3.Error, ValueError) as exc:
+            log.debug("load_generated_titles failed: %s", exc)
+            return {}
+
+    def record_generated_title(
+        self, session_key: str, title: str, evidence_signature: str
+    ) -> GeneratedTitle:
+        updated_at = datetime.now(UTC)
+        record = GeneratedTitle(title, evidence_signature, updated_at)
+        try:
+            with self._lock, self._conn:
+                self._conn.execute(
+                    "INSERT INTO generated_titles(session_key, title, evidence_signature,"
+                    " updated_at) VALUES (?, ?, ?, ?)"
+                    " ON CONFLICT(session_key) DO UPDATE SET"
+                    " title=excluded.title, evidence_signature=excluded.evidence_signature,"
+                    " updated_at=excluded.updated_at",
+                    (session_key, title, evidence_signature, updated_at.isoformat()),
+                )
+        except sqlite3.Error as exc:
+            log.debug("record_generated_title failed: %s", exc)
+        return record
 
     def load_manual_new_chat_cwd(self) -> str | None:
         try:

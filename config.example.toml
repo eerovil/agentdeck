@@ -32,9 +32,10 @@ enabled = false             # write-capability kill-switch; opt in only on a tru
 timeout_s = 900
 max_message_chars = 16000
 
-# Codex-powered orchestration advice. Analyses are ephemeral and read-only, so
-# they do not appear as sessions. Automatic answers are opt-in and limited to
-# explicit low-risk multiple-choice questions, never approvals or permissions.
+# Codex-powered orchestration advice and automatically refreshed chat titles.
+# Analyses are ephemeral and read-only, so they do not appear as sessions.
+# Automatic answers are opt-in and limited to explicit low-risk multiple-choice
+# questions, never approvals or permissions.
 [assistant]
 enabled = false
 account_key = ""                # first Codex account, or e.g. "codex:main"

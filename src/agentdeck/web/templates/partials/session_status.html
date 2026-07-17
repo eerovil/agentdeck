@@ -1,7 +1,7 @@
 {# session header/status chip. `s` = Session. Re-rendered over SSE on flips. #}
 <div class="session-head {{ s.status }}">
   <span class="dot {{ s.status }}{% if s.thinking %} thinking{% endif %}"></span>
-  <span class="session-title">{{ s.title or s.session_id[:8] }}</span>
+  <span class="session-title">{{ s.display_title }}</span>
   <span class="status-tag {{ s.display_state }}">{{ s.display_state }}</span>
   {% if s.subagent_count %}<span class="subagent-badge">{{ s.subagent_count }} sub-agent{{ '' if s.subagent_count == 1 else 's' }}</span>{% endif %}
 </div>

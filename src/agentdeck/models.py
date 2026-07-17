@@ -36,6 +36,15 @@ class Account:
 
 
 @dataclass(frozen=True)
+class GeneratedTitle:
+    """Deckhand's persisted semantic title for one provider session."""
+
+    title: str
+    evidence_signature: str
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
 class TokenTotals:
     input_tokens: int = 0
     output_tokens: int = 0
@@ -74,7 +83,8 @@ class Session:
     status: SessionStatus
     thinking: bool = False  # LIVE and actively writing its transcript right now
     cwd: Path | None = None
-    title: str | None = None  # from history.jsonl "display"
+    title: str | None = None  # provider-native title
+    generated_title: str | None = None  # Deckhand display title; native title stays intact
     initial_prompt: str | None = None  # first real user prompt; stable ownership/reference context
     last_prompt: str | None = None  # user's most recent prompt
     last_text: str | None = None  # agent's most recent response text
@@ -113,6 +123,10 @@ class Session:
         if self.status == SessionStatus.LIVE:
             return "idle"
         return self.status.value
+
+    @property
+    def display_title(self) -> str:
+        return self.generated_title or self.title or self.session_id[:8]
 
 
 @dataclass

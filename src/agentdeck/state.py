@@ -7,17 +7,31 @@ Mutations publish coarse-grained topics to the EventBus:
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from .events import EventBus
 from .host_stats import HostStats
-from .models import Session, SessionStatus, UsageSnapshot
+from .models import GeneratedTitle, Session, SessionStatus, UsageSnapshot
 
 if TYPE_CHECKING:
     from .db import Db, NullDb
 
 _STATUS_ORDER = {SessionStatus.LIVE: 0, SessionStatus.IDLE: 1, SessionStatus.REMOTE: 2}
+_ISSUE_URL_RE = re.compile(r"https://github\.com/[^/]+/([^/]+)/(?:issues|pull)/(\d+)")
+_KANBAN_MODE_RE = re.compile(r"\s+\((review|merge-fix|merge-arm|resume)\)$", re.IGNORECASE)
+
+
+def generated_display_title(session: Session, semantic_title: str) -> str:
+    """Attach stable issue identity around a Deckhand-generated semantic title."""
+    match = _ISSUE_URL_RE.match(session.issue_url or "")
+    if match is None:
+        return semantic_title
+    suffix_match = _KANBAN_MODE_RE.search(session.title or "")
+    suffix = suffix_match.group(0) if suffix_match else ""
+    return f"{match.group(1)}#{match.group(2)} · {semantic_title}{suffix}"
 
 
 class AppState:
@@ -29,6 +43,9 @@ class AppState:
         self.host_stats: HostStats | None = None
         self.transcript_offsets: dict[str, tuple[int, int]] = {}  # v0.2: (byte_offset, seq)
         self.delegated_session_keys = db.load_delegated_sessions() if db else set()
+        self.generated_titles: dict[str, GeneratedTitle] = (
+            db.load_generated_titles() if db else {}
+        )
 
     # --- sessions -----------------------------------------------------
 
@@ -45,6 +62,7 @@ class AppState:
             else session
             for session in sessions
         ]
+        sessions = [self._with_generated_title(session) for session in sessions]
         new = {s.key: s for s in sessions}
         old = {k: v for k, v in self.sessions.items() if v.account_key == account_key}
         if new == old:
@@ -64,10 +82,38 @@ class AppState:
                 self.db.record_delegated_session(session.key)
         elif session.key in self.delegated_session_keys:
             session = replace(session, is_delegated=True)
+        session = self._with_generated_title(session)
         if self.sessions.get(session.key) == session:
             return
         self.sessions[session.key] = session
         self.bus.publish("sessions")
+
+    def _with_generated_title(self, session: Session) -> Session:
+        record = self.generated_titles.get(session.key)
+        if record is None:
+            return session
+        title = generated_display_title(session, record.title)
+        return (
+            replace(session, generated_title=title)
+            if session.generated_title != title
+            else session
+        )
+
+    def set_generated_title(
+        self, session_key: str, title: str, evidence_signature: str
+    ) -> None:
+        record = (
+            self.db.record_generated_title(session_key, title, evidence_signature)
+            if self.db is not None
+            else GeneratedTitle(title, evidence_signature, datetime.now(UTC))
+        )
+        self.generated_titles[session_key] = record
+        session = self.sessions.get(session_key)
+        if session is not None:
+            updated = self._with_generated_title(session)
+            if updated != session:
+                self.sessions[session_key] = updated
+                self.bus.publish("sessions")
 
     def mark_delegated_session(self, session_key: str) -> None:
         """Persist machine-started work so Deckhand ignores it across rescans/restarts."""

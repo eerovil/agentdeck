@@ -419,6 +419,14 @@ class ClaudeCodeProvider(SessionProvider):
             else None
         )
 
+    async def recent_conversation(
+        self, account: Account, session: Session, limit: int = 4
+    ) -> list[TranscriptEvent]:
+        path = self._transcript_path(account, session)
+        if path is None:
+            return []
+        return await asyncio.to_thread(transcripts_mod.recent_conversation, path, limit=limit)
+
     async def transcript_cursor(self, account: Account, session: Session) -> tuple[int, int]:
         path = self._transcript_path(account, session)
         if path is None:

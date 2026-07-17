@@ -45,6 +45,28 @@ def _usage(last: dict, total: dict) -> dict:
     )
 
 
+def test_recent_conversation_reads_bounded_tail_and_filters_tools(tmp_path):
+    path = tmp_path / "rollout.jsonl"
+    lines = [
+        _message("user", "old objective"),
+        _line("event_msg", {"type": "agent_message_delta", "delta": "x" * 2_000}),
+        _message("user", "new objective"),
+        _message("assistant", "working on it"),
+        _line(
+            "response_item",
+            {"type": "function_call_output", "call_id": "c", "output": "private output"},
+        ),
+    ]
+    path.write_text("".join(json.dumps(line) + "\n" for line in lines))
+
+    events = transcripts.recent_conversation(path, limit=4, tail=900)
+
+    assert [(event.role, event.text) for event in events] == [
+        ("user", "new objective"),
+        ("assistant", "working on it"),
+    ]
+
+
 def _rollout(root: Path, sid: str, *, old: bool = False) -> Path:
     directory = root / "sessions" / "2026" / "07" / "13"
     directory.mkdir(parents=True, exist_ok=True)

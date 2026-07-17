@@ -13,9 +13,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
-import signal
-import tempfile
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -23,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import AppConfig, AssistantConfig
+from .deckhand_runner import run_codex_json
 from .git_context import GitContext, GitContextResolver
 from .models import Account, PendingInteraction, Session
 from .providers import PROVIDERS
@@ -64,83 +62,16 @@ def _trim(value: str | None) -> str | None:
     return value[-_MAX_SIGNATURE_CHARS:]
 
 
-async def _terminate_group(process: asyncio.subprocess.Process) -> None:
-    if process.returncode is not None:
-        return
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
-    try:
-        await asyncio.wait_for(process.wait(), timeout=5.0)
-    except TimeoutError:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            return
-        await process.wait()
-
-
 async def run_codex(account: Account, config: AssistantConfig, prompt: str) -> dict[str, Any]:
     """Run one read-only, ephemeral Codex classification and return its JSON result."""
-    env = os.environ.copy()
-    env["CODEX_HOME"] = str(account.root)
-    with tempfile.TemporaryDirectory(prefix="agentdeck-assistant-") as tmp:
-        output = Path(tmp) / "result.json"
-        args = [
-            "codex",
-            "--ask-for-approval",
-            "never",
-            "exec",
-            "--ephemeral",
-            "--ignore-user-config",
-            "--ignore-rules",
-            "--sandbox",
-            "read-only",
-            "--output-schema",
-            str(_SCHEMA_PATH),
-            "--output-last-message",
-            str(output),
-            "--skip-git-repo-check",
-        ]
-        if config.model:
-            args.extend(("--model", config.model))
-        args.append("-")
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *args,
-                cwd=str(Path.cwd()),
-                env=env,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE,
-                start_new_session=True,
-            )
-        except OSError as exc:
-            raise RuntimeError(f"could not start Codex: {exc}") from exc
-        try:
-            await asyncio.wait_for(
-                process.communicate((prompt + "\n").encode()), timeout=config.timeout_s
-            )
-        except TimeoutError as exc:
-            await _terminate_group(process)
-            raise RuntimeError("Codex assistant timed out") from exc
-        except asyncio.CancelledError:
-            await _terminate_group(process)
-            raise
-        if process.returncode != 0:
-            # Codex stderr can echo the prompt (including transcript excerpts); keep the
-            # operator-visible error generic so chat data never lands in logs.
-            raise RuntimeError(
-                f"Codex assistant exited without an answer (status {process.returncode})"
-            )
-        try:
-            value = json.loads(output.read_text())
-        except (OSError, json.JSONDecodeError) as exc:
-            raise RuntimeError("Codex assistant returned invalid JSON") from exc
-        if not isinstance(value, dict):
-            raise RuntimeError("Codex assistant returned an invalid result")
-        return value
+    return await run_codex_json(
+        account,
+        config,
+        prompt,
+        schema_path=_SCHEMA_PATH,
+        temp_prefix="agentdeck-assistant-",
+        job_name="assistant",
+    )
 
 
 class AssistantService:
@@ -606,7 +537,7 @@ class AssistantService:
             headline = (
                 insight.headline
                 if insight is not None
-                else (session.title if session and session.title else "Handled item")
+                else (session.display_title if session else "Handled item")
             )
             return (AssistantHandledItem(session_key, headline),)
         return ()

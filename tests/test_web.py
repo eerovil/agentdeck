@@ -427,6 +427,64 @@ async def test_card_colour_class_and_direct_claudeai_button(tmp_path):
     assert "Should I push both commits?" in r.text
 
 
+async def test_long_card_title_gets_full_width_three_line_layout(tmp_path):
+    app = _app_with_state(tmp_path)
+    long_title = (
+        "store#2728 · Investigate refund validation failures and deploy the durable fix"
+    )
+    app.state.app_state.update_session(
+        Session(
+            key="claude_code:test:sid1",
+            account_key="claude_code:test",
+            session_id="sid1",
+            status=SessionStatus.LIVE,
+            title=long_title,
+            issue_url="https://github.com/example/store/issues/2728",
+            deep_link="https://claude.ai/code/session_sid1",
+            deep_link_label="open in claude.ai",
+            last_prompt="Please deploy it",
+        )
+    )
+    async with _client(app) as client:
+        response = await client.get("/")
+
+    assert response.text.index('class="session-actions"') < response.text.index(
+        'class="session-main"'
+    )
+    assert f'class="card-title" title="{long_title}"' in response.text
+
+    static_dir = Path(__file__).parents[1] / "src/agentdeck/web/static"
+    css = (static_dir / "app.css").read_text()
+    html = response.text.replace("</head>", f"<style>{css}</style></head>")
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        page = await browser.new_page(viewport={"width": 320, "height": 800})
+        await page.set_content(html)
+        metrics = await page.locator('.session[data-session-key="claude_code:test:sid1"]').evaluate(
+            """card => {
+              const title = card.querySelector('.card-title');
+              const actions = card.querySelector('.session-actions');
+              const cardRect = card.getBoundingClientRect();
+              const titleRect = title.getBoundingClientRect();
+              return {
+                clamp: getComputedStyle(title).webkitLineClamp,
+                titleWidth: titleRect.width,
+                cardWidth: cardRect.width,
+                actionsBottom: actions.getBoundingClientRect().bottom,
+                titleTop: titleRect.top,
+                scrollWidth: document.documentElement.scrollWidth,
+                viewportWidth: document.documentElement.clientWidth,
+              };
+            }"""
+        )
+        await browser.close()
+
+    assert metrics["clamp"] == "3"
+    assert metrics["titleWidth"] > metrics["cardWidth"] * 0.8
+    assert metrics["actionsBottom"] <= metrics["titleTop"]
+    assert metrics["scrollWidth"] <= metrics["viewportWidth"]
+
+
 async def test_pwa_routes(tmp_path):
     app = _app_with_state(tmp_path)
     async with _client(app) as c:

@@ -44,6 +44,23 @@ def test_sessions_seen_upsert(tmp_path):
         db.close()
 
 
+def test_generated_title_round_trip_survives_reopen(tmp_path):
+    path = tmp_path / "h.db"
+    db = Db(path)
+    record = db.record_generated_title("codex:test:sid", "Fix refund errors", "sig-1")
+    assert db.load_generated_titles() == {"codex:test:sid": record}
+    db.close()
+
+    reopened = Db(path)
+    try:
+        loaded = reopened.load_generated_titles()["codex:test:sid"]
+        assert loaded.title == "Fix refund errors"
+        assert loaded.evidence_signature == "sig-1"
+        assert loaded.updated_at == record.updated_at
+    finally:
+        reopened.close()
+
+
 def test_manual_new_chat_cwd_round_trip_survives_reopen(tmp_path):
     path = tmp_path / "h.db"
     db = Db(path)

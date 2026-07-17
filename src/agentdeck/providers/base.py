@@ -68,6 +68,13 @@ class SessionProvider(ABC):
         the provider has no transcript."""
         return None
 
+    async def recent_conversation(
+        self, account: Account, session: Session, limit: int = 4
+    ) -> list[TranscriptEvent]:
+        """Bounded recent user/assistant messages for lightweight summaries."""
+        events = await self.read_transcript(account, session)
+        return [event for event in events if event.role in ("user", "assistant")][-limit:]
+
     def make_usage_poller(
         self, account: Account, state: AppState, bus: EventBus, **kwargs: Any
     ) -> Any | None:

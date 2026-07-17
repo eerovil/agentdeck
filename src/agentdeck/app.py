@@ -18,6 +18,7 @@ from .config import AppConfig
 from .db import make_db
 from .inject import InjectionService
 from .state import AppState
+from .titles import TitleService
 from .web import render as render_mod
 from .web.action_timing import ActionTiming, identify_action
 from .web.routes_actions import router as actions_router
@@ -75,15 +76,18 @@ def create_app(config: AppConfig) -> FastAPI:
         on_delegation_started=state.mark_delegated_session,
     )
     assistant = AssistantService(config, state)
+    titles = TitleService(config, state)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         await collector.start()
+        await titles.start()
         await assistant.start()
         try:
             yield
         finally:
             await assistant.stop()
+            await titles.stop()
             await injector.stop()
             await collector.stop()
             db.close()
@@ -96,6 +100,7 @@ def create_app(config: AppConfig) -> FastAPI:
     app.state.collector = collector
     app.state.injector = injector
     app.state.assistant = assistant
+    app.state.titles = titles
     app.state.db = db
 
     @app.middleware("http")

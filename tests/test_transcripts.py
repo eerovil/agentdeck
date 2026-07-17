@@ -33,6 +33,40 @@ def test_trailing_question():
     assert tq("The value is a ? b : c in that branch.") is None
 
 
+def test_recent_conversation_reads_bounded_tail_and_filters_tools(tmp_path):
+    path = tmp_path / "chat.jsonl"
+    lines = [
+        {
+            "type": "user",
+            "message": {"role": "user", "content": "old objective"},
+        },
+        {"type": "progress", "payload": "x" * 2_000},
+        {
+            "type": "user",
+            "message": {"role": "user", "content": "new objective"},
+        },
+        {
+            "type": "assistant",
+            "message": {"role": "assistant", "content": "working on it"},
+        },
+        {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{"type": "tool_result", "content": "private output"}],
+            },
+        },
+    ]
+    _write(path, lines)
+
+    events = transcripts.recent_conversation(path, limit=4, tail=700)
+
+    assert [(event.role, event.text) for event in events] == [
+        ("user", "new objective"),
+        ("assistant", "working on it"),
+    ]
+
+
 ASK_QUESTION = {
     "type": "assistant",
     "timestamp": "2026-07-03T08:00:02Z",
