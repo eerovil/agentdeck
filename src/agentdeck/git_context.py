@@ -39,6 +39,7 @@ _PR_NUMBER_RE = re.compile(
 )
 
 _PR_FIELDS = "number,title,url,state,isDraft,mergedAt,headRefName,baseRefName"
+_DEFAULT_BRANCHES = {"main", "master"}
 
 
 @dataclass(frozen=True)
@@ -227,7 +228,10 @@ class GitContextResolver:
             # This matters for shared checkouts: their current branch may belong
             # to a newer session after the old PR was merged. Only fall back to
             # branch discovery when the transcript did not resolve to a PR.
-            if not pulls and repository and branch:
+            # Long-lived default branches may themselves be the head of a
+            # promotion PR (for example master -> staging). Such a PR belongs
+            # to the repository, not to every chat sharing its checkout.
+            if not pulls and repository and branch and branch not in _DEFAULT_BRANCHES:
                 for pull in await self._pulls_for_branch(repository, branch):
                     pulls[(pull.repository.lower(), pull.number)] = pull
 

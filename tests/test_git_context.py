@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from agentdeck.git_context import GitContextResolver, github_repository
 from agentdeck.models import Session, SessionStatus
 
@@ -126,6 +128,34 @@ async def test_resolves_merged_pr_for_worktree_branch(tmp_path, monkeypatch):
     assert context.pull_requests[0].status == "merged"
     assert context.pull_requests[0].number == 91
     assert any(call[1:3] == ("pr", "list") for call in calls)
+
+
+@pytest.mark.parametrize("branch", ["main", "master"])
+async def test_default_branch_does_not_trigger_branch_pr_discovery(
+    branch, tmp_path, monkeypatch
+):
+    resolver = GitContextResolver()
+    resolver._git = "git"
+    resolver._gh = "gh"
+    branch_lookups = 0
+
+    async def fake_run(*args):
+        nonlocal branch_lookups
+        if "status" in args:
+            return (0, f"## {branch}...origin/{branch}\n")
+        if "remote" in args:
+            return (0, "git@github.com:protecomp/storm.git\n")
+        if args[1:3] == ("pr", "list"):
+            branch_lookups += 1
+            raise AssertionError("default branches must not trigger PR discovery")
+        raise AssertionError(args)
+
+    monkeypatch.setattr(resolver, "_run", fake_run)
+    context = (await resolver.resolve([_session(tmp_path)]))["codex:test:thread-1"]
+
+    assert context.branch == branch
+    assert context.pull_requests == ()
+    assert branch_lookups == 0
 
 
 async def test_resolves_explicit_pr_number_when_branch_has_no_pr(tmp_path, monkeypatch):
