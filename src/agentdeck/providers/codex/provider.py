@@ -56,12 +56,16 @@ def _mtime(path: Path) -> datetime | None:
         return None
 
 
-def _list_rollouts(root: Path) -> list[Path]:
+def _all_rollouts(root: Path) -> list[Path]:
     sessions = root / "sessions"
     if not sessions.is_dir():
         return []
+    return list(sessions.glob("*/*/*/rollout-*.jsonl"))
+
+
+def _list_rollouts(root: Path) -> list[Path]:
     found = []
-    for path in sessions.glob("*/*/*/rollout-*.jsonl"):
+    for path in _all_rollouts(root):
         try:
             found.append((path.stat().st_mtime, path))
         except OSError:
@@ -91,6 +95,7 @@ class CodexProvider(SessionProvider):
     def __init__(self) -> None:
         self._meta_cache: dict[str, tuple[float, transcripts_mod.TranscriptMeta]] = {}
         self._last_ev_cache: dict[str, tuple[float, TranscriptEvent | None]] = {}
+        self._delegation_cache: dict[str, tuple[int, int, frozenset[str]]] = {}
         self._paths: dict[tuple[str, str], Path] = {}
         self._clients: dict[str, CodexRuntimeClient] = {}
         self._states = {}
@@ -199,6 +204,19 @@ class CodexProvider(SessionProvider):
         self._last_ev_cache[str(path)] = (mtime, event)
         return event
 
+    def _cached_delegated_session_keys(self, path: Path) -> frozenset[str]:
+        try:
+            stat = path.stat()
+        except OSError:
+            return frozenset()
+        signature = (stat.st_size, stat.st_mtime_ns)
+        hit = self._delegation_cache.get(str(path))
+        if hit is not None and hit[:2] == signature:
+            return hit[2]
+        keys = transcripts_mod.delegated_session_keys(path)
+        self._delegation_cache[str(path)] = (*signature, keys)
+        return keys
+
     def _transcript_path(self, account: Account, session: Session) -> Path | None:
         path = self._paths.get((account.key, session.session_id))
         if path is not None and path.is_file():
@@ -274,8 +292,15 @@ class CodexProvider(SessionProvider):
         turn_starts: dict[str, datetime] = {}
         current_paths: dict[tuple[str, str], Path] = {}
         seen: set[str] = set()
-        for path in _list_rollouts(account.root):
-            meta = self._cached_meta(path)
+        rollouts = [
+            (path, self._cached_meta(path)) for path in _list_rollouts(account.root)
+        ]
+        delegated_session_keys = {
+            session_key
+            for path in _all_rollouts(account.root)
+            for session_key in self._cached_delegated_session_keys(path)
+        }
+        for path, meta in rollouts:
             if meta.is_spawned_subagent:
                 if meta.agent_id and meta.agent_nickname:
                     self._subagent_names[meta.agent_id] = meta.agent_nickname
@@ -356,7 +381,10 @@ class CodexProvider(SessionProvider):
                         else _display_kind(meta.kind)
                     ),
                     worker_type="you",
-                    is_delegated=meta.kind == "exec",
+                    is_delegated=(
+                        meta.kind == "exec"
+                        or f"{account.key}:{session_id}" in delegated_session_keys
+                    ),
                     started_at=meta.started_at,
                     last_activity=last_activity,
                     tokens=meta.tokens,

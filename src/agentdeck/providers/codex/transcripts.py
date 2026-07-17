@@ -25,6 +25,13 @@ _MAX_TITLE = 200
 _MAX_TOOL_SUMMARY = 160
 _META_HEAD = 128 * 1024
 _META_TAIL = 256 * 1024
+_DELEGATION_STATUS_MARKER = b"AgentDeck delegation: running (/sessions/"
+_DELEGATION_SESSION_RE = re.compile(
+    r"(?:^|\r?\n|\\n)"
+    r"AgentDeck delegation: running \(/sessions/([A-Za-z0-9_.:-]+)\)"
+    r"(?=$|\r?\n|\\n)",
+    re.MULTILINE,
+)
 
 
 @dataclass
@@ -123,6 +130,56 @@ def _text_content(content: object) -> str | None:
             parts.append(value.strip())
     text = "\n".join(parts).strip()
     return text or None
+
+
+def _strings(value: object, *, json_depth: int = 2):
+    if isinstance(value, str):
+        yield value
+        if json_depth and value.lstrip().startswith(("{", "[")):
+            try:
+                decoded = json.loads(value)
+            except (TypeError, ValueError):
+                return
+            yield from _strings(decoded, json_depth=json_depth - 1)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _strings(item, json_depth=json_depth)
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _strings(item, json_depth=json_depth)
+
+
+def delegated_session_keys(path: Path) -> frozenset[str]:
+    """Find machine delegations proven by AgentDeck CLI status output.
+
+    Legacy delegations predate the database marker used by Deckhand. Their
+    parent transcripts still contain the exact status line emitted only after
+    the machine API has returned a child session URL. Tool inputs and ordinary
+    conversation are deliberately ignored to avoid prompt-text heuristics.
+    """
+    found: set[str] = set()
+    try:
+        with path.open("rb") as handle:
+            for raw_line in handle:
+                if _DELEGATION_STATUS_MARKER not in raw_line:
+                    continue
+                try:
+                    obj = json.loads(raw_line)
+                except (TypeError, ValueError):
+                    continue
+                if obj.get("type") != "response_item":
+                    continue
+                payload = obj.get("payload")
+                if not isinstance(payload, dict) or payload.get("type") not in {
+                    "custom_tool_call_output",
+                    "function_call_output",
+                }:
+                    continue
+                for text in _strings(payload.get("output")):
+                    found.update(_DELEGATION_SESSION_RE.findall(text))
+    except OSError:
+        pass
+    return frozenset(found)
 
 
 _INTERNAL_ASSISTANT_BLOCK = re.compile(r"\s*<oai-mem-citation>.*?</oai-mem-citation>\s*", re.DOTALL)

@@ -67,6 +67,121 @@ def test_recent_conversation_reads_bounded_tail_and_filters_tools(tmp_path):
     ]
 
 
+def test_delegated_session_keys_requires_machine_status_tool_output(tmp_path):
+    child_key = "codex:local:019f6085-5dbc-7f41-80b1-d32de9d80c14"
+    quoted_key = "codex:local:019f6085-6cb1-7920-891f-9403d202a6f0"
+    status = f"AgentDeck delegation: running (/sessions/{child_key})"
+    quoted = f"AgentDeck delegation: running (/sessions/{quoted_key})"
+    path = tmp_path / "rollout.jsonl"
+    lines = [
+        _message("user", f"A quoted example says {quoted}"),
+        _line(
+            "response_item",
+            {"type": "custom_tool_call", "name": "exec", "input": quoted},
+        ),
+        _line(
+            "response_item",
+            {
+                "type": "custom_tool_call_output",
+                "call_id": "delegate",
+                "output": [
+                    {
+                        "type": "input_text",
+                        "text": f"diagnostic: {quoted}\nstarted\n{status}\n",
+                    }
+                ],
+            },
+        ),
+    ]
+    path.write_text("".join(json.dumps(line) + "\n" for line in lines))
+
+    assert transcripts.delegated_session_keys(path) == frozenset({child_key})
+
+
+def test_delegated_session_keys_accepts_json_encoded_output_lines(tmp_path):
+    path = tmp_path / "rollout.jsonl"
+    child_key = "codex:codex:019f6ee6-394d-7402-80fd-b1f762ebadcd"
+    line = {
+        "type": "response_item",
+        "payload": {
+            "type": "custom_tool_call_output",
+            "output": json.dumps(
+                {
+                    "output": (
+                        "AgentDeck delegation started.\\n"
+                        f"AgentDeck delegation: running (/sessions/{child_key})\\n"
+                    )
+                }
+            ),
+        },
+    }
+    path.write_text(json.dumps(line) + "\n")
+
+    assert transcripts.delegated_session_keys(path) == frozenset({child_key})
+
+
+async def test_machine_delegation_status_marks_legacy_child_delegated(tmp_path):
+    parent_sid = "019f6073-17bd-7251-9db1-383bfe24c143"
+    child_sid = "019f6085-5dbc-7f41-80b1-d32de9d80c14"
+    parent = _rollout(tmp_path, parent_sid)
+    _rollout(tmp_path, child_sid)
+    status = f"AgentDeck delegation: running (/sessions/codex:local:{child_sid})"
+    with parent.open("a") as handle:
+        handle.write(
+            json.dumps(
+                _line(
+                    "response_item",
+                    {
+                        "type": "custom_tool_call_output",
+                        "call_id": "delegate",
+                        "output": status,
+                    },
+                )
+            )
+            + "\n"
+        )
+
+    sessions = await CodexProvider().scan_sessions(_account(tmp_path))
+    found = {session.session_id: session for session in sessions}
+
+    assert found[parent_sid].is_delegated is False
+    assert found[child_sid].is_delegated is True
+
+
+async def test_legacy_delegation_evidence_outside_session_cap_is_used(
+    tmp_path, monkeypatch
+):
+    parent_sid = "019f6073-17bd-7251-9db1-383bfe24c143"
+    child_sid = "019f6085-5dbc-7f41-80b1-d32de9d80c14"
+    parent = _rollout(tmp_path, parent_sid)
+    child = _rollout(tmp_path, child_sid)
+    with parent.open("a") as handle:
+        handle.write(
+            json.dumps(
+                _line(
+                    "response_item",
+                    {
+                        "type": "custom_tool_call_output",
+                        "call_id": "delegate",
+                        "output": (
+                            f"AgentDeck delegation: running (/sessions/codex:local:{child_sid})"
+                        ),
+                    },
+                )
+            )
+            + "\n"
+        )
+    old_time = time.time() - 3600
+    os.utime(parent, (old_time, old_time))
+    os.utime(child, None)
+    monkeypatch.setattr(provider_mod, "MAX_SESSIONS", 1)
+
+    (session,) = await CodexProvider().scan_sessions(_account(tmp_path))
+
+    assert session.session_id == child_sid
+    assert session.is_delegated is True
+
+
 def _rollout(root: Path, sid: str, *, old: bool = False) -> Path:
     directory = root / "sessions" / "2026" / "07" / "13"
     directory.mkdir(parents=True, exist_ok=True)
