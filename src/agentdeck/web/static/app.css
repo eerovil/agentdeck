@@ -576,6 +576,8 @@ details.ev.tool > .ev-text { margin-top: 6px; max-height: 420px; overflow: auto;
     transform: translate3d(var(--mobile-chat-x, 0), 0, 0);
     transition: transform 180ms cubic-bezier(.2, .75, .25, 1);
     box-shadow: -12px 0 28px color-mix(in srgb, #000 34%, transparent); }
+  .subagent-activity.active { position: sticky; top: 0; z-index: 3;
+    box-shadow: 0 5px 14px color-mix(in srgb, #000 20%, transparent); }
   body.mobile-list-open .session-detail { transform: translate3d(100%, 0, 0);
     pointer-events: none; }
   body.mobile-list-open .back { visibility: hidden; }
@@ -619,6 +621,8 @@ details.ev.tool > .ev-text { margin-top: 6px; max-height: 420px; overflow: auto;
   .session-detail-head { position: sticky; top: 0; z-index: 4; padding-bottom: 1px;
     border-bottom: 1px solid var(--line); background: var(--bg); }
   .session-detail-head .detail-meta { margin-bottom: 7px; }
+  .subagent-activity.active { position: sticky; top: 70px; z-index: 3;
+    box-shadow: 0 5px 14px color-mix(in srgb, #000 20%, transparent); }
   body.session-page .back { display: none; }
   .session-sidebar .card-latest { height: 5.65em; }
   .session-sidebar .session.expanded .card-latest { max-height: 45vh; }

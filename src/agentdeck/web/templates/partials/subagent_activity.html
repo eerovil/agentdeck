@@ -1,5 +1,5 @@
 {% if s.subagents %}
-<section class="subagent-activity" aria-label="Subagent progress">
+<section class="subagent-activity{% if s.subagent_count %} active{% endif %}" aria-label="Subagent progress">
   <div class="subagent-activity-head">
     <span>Subagents</span>
     {% if s.subagent_count %}<span>{{ s.subagent_count }} working</span>{% else %}<span>recently finished</span>{% endif %}

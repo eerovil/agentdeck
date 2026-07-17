@@ -1466,6 +1466,7 @@ async def test_subagent_count_renders_on_card_and_detail_header(tmp_path):
     assert 'title="This chat is running spawned agents"' in dashboard.text
     assert "2 sub-agents" in detail.text
     assert 'aria-label="Subagent progress"' in detail.text
+    assert 'class="subagent-activity active"' in detail.text
     assert "Faraday" in detail.text
     assert "scout" in detail.text
     assert "Inventory the Storm migration surface" in detail.text
