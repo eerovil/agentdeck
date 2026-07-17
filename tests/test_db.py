@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 
 from agentdeck.db import Db, NullDb, make_db
 from agentdeck.models import Session, SessionStatus, UsageSnapshot
+from agentdeck.state import AppState
 
 
 def _snap(pct):
@@ -54,6 +55,28 @@ def test_manual_new_chat_cwd_round_trip_survives_reopen(tmp_path):
     reopened = Db(path)
     try:
         assert reopened.load_manual_new_chat_cwd() == "/srv/last"
+    finally:
+        reopened.close()
+
+
+def test_delegated_session_marker_survives_reopen_and_rescan(tmp_path):
+    path = tmp_path / "h.db"
+    db = Db(path)
+    state = AppState(db=db)
+    state.mark_delegated_session("codex:test:child")
+    db.close()
+
+    reopened = Db(path)
+    try:
+        restored = AppState(db=reopened)
+        session = Session(
+            key="codex:test:child",
+            account_key="codex:test",
+            session_id="child",
+            status=SessionStatus.IDLE,
+        )
+        restored.replace_account_sessions("codex:test", [session])
+        assert restored.sessions[session.key].is_delegated is True
     finally:
         reopened.close()
 

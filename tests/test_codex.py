@@ -775,7 +775,9 @@ async def test_codex_hides_launcher_source_but_preserves_exec_kind(tmp_path):
 
     assert transcripts.transcript_meta(vscode_path).kind == "vscode"
     assert found[vscode_sid].kind is None
+    assert found[vscode_sid].is_delegated is False
     assert found[exec_sid].kind == "exec"
+    assert found[exec_sid].is_delegated is True
 
 
 def test_codex_final_message_prefers_task_complete(tmp_path):

@@ -279,6 +279,7 @@ class ClaudeCodeProvider(SessionProvider):
                     question=question,
                     kind=entry.kind if entry else None,
                     worker_type=wtype,
+                    is_delegated=wtype != "you",
                     issue_url=issue_url,
                     issue_status=issue_status,
                     issue_status_kind=issue_status_kind,

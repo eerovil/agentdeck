@@ -735,6 +735,7 @@ async def test_machine_delegation_api_returns_final_message(tmp_path, monkeypatc
             "final_message": None,
             "interaction": None,
         }
+        assert "codex:test:delegated-thread" in app.state.app_state.delegated_session_keys
 
         release.set()
         for _ in range(10):

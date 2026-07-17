@@ -100,6 +100,47 @@ async def test_finished_agent_cleared_by_the_model_shows_no_card(tmp_path):
     assert assistant.view.summary == "Nothing needs your attention right now."
 
 
+async def test_delegated_agents_are_not_triaged_or_counted(tmp_path):
+    runner = AsyncMock(return_value=_ATTENTION)
+    state = AppState()
+    state.update_session(_finished(tmp_path, key="codex:test:operator"))
+    state.update_session(
+        _finished(
+            tmp_path,
+            key="codex:test:subagent",
+            session_id="subagent",
+            is_delegated=True,
+            last_text="Investigated the issue but made no changes.",
+        )
+    )
+    assistant = _service(tmp_path, runner, state=state)
+
+    await assistant.refresh()
+
+    assert runner.await_count == 1
+    assert [insight.session_key for insight in assistant.view.insights] == [
+        "codex:test:operator"
+    ]
+    assert assistant.analysis_session_count == 1
+    assert assistant.total_session_count == 1
+
+
+async def test_delegated_agent_is_removed_from_old_handled_state(tmp_path):
+    state = AppState()
+    session = _finished(tmp_path, is_delegated=True)
+    state.update_session(session)
+    assistant = _service(tmp_path, AsyncMock(), state=state)
+    assistant._handled[session.key] = "old-evidence"
+    assistant._handled_insights[session.key] = AssistantInsight(
+        session.key, "stalled", "Old delegated card", "Old detail"
+    )
+
+    await assistant.refresh()
+
+    assert assistant.handled_items == ()
+    assert session.key not in assistant._handled
+
+
 async def test_finished_agent_with_pr_review_shows_a_finished_card(tmp_path):
     runner = AsyncMock(return_value=_REVIEW)
     state = AppState()

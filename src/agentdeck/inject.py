@@ -57,9 +57,13 @@ class InjectionService:
         config: InjectConfig,
         *,
         on_change: Callable[[str], None] | None = None,
+        on_delegation_started: Callable[[str], None] | None = None,
     ):
         self.config = config
         self._on_change = on_change or (lambda _session_key: None)
+        self._on_delegation_started = on_delegation_started or (
+            lambda _session_key: None
+        )
         self._tasks: dict[str, asyncio.Task] = {}
         self._status: dict[str, InjectionStatus] = {}
         self._items: dict[str, list[QueuedMessage]] = {}
@@ -395,6 +399,7 @@ class InjectionService:
                 )
                 return
             session_key = f"{account.key}:{started.session_id}"
+            self._on_delegation_started(session_key)
             self._remember_delegation(
                 DelegationStatus(
                     delegation_id,

@@ -72,6 +72,7 @@ def create_app(config: AppConfig) -> FastAPI:
     injector = InjectionService(
         config.inject,
         on_change=lambda _session_key: state.bus.publish("sessions"),
+        on_delegation_started=state.mark_delegated_session,
     )
     assistant = AssistantService(config, state)
 

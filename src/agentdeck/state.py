@@ -28,11 +28,23 @@ class AppState:
         self.usage: dict[str, UsageSnapshot] = {}
         self.host_stats: HostStats | None = None
         self.transcript_offsets: dict[str, tuple[int, int]] = {}  # v0.2: (byte_offset, seq)
+        self.delegated_session_keys = db.load_delegated_sessions() if db else set()
 
     # --- sessions -----------------------------------------------------
 
     def replace_account_sessions(self, account_key: str, sessions: list[Session]) -> bool:
         """Replace all sessions of one account; returns True (and publishes) on change."""
+        for session in sessions:
+            if session.is_delegated and session.key not in self.delegated_session_keys:
+                self.delegated_session_keys.add(session.key)
+                if self.db is not None:
+                    self.db.record_delegated_session(session.key)
+        sessions = [
+            replace(session, is_delegated=True)
+            if session.key in self.delegated_session_keys and not session.is_delegated
+            else session
+            for session in sessions
+        ]
         new = {s.key: s for s in sessions}
         old = {k: v for k, v in self.sessions.items() if v.account_key == account_key}
         if new == old:
@@ -46,10 +58,26 @@ class AppState:
         return True
 
     def update_session(self, session: Session) -> None:
+        if session.is_delegated and session.key not in self.delegated_session_keys:
+            self.delegated_session_keys.add(session.key)
+            if self.db is not None:
+                self.db.record_delegated_session(session.key)
+        elif session.key in self.delegated_session_keys:
+            session = replace(session, is_delegated=True)
         if self.sessions.get(session.key) == session:
             return
         self.sessions[session.key] = session
         self.bus.publish("sessions")
+
+    def mark_delegated_session(self, session_key: str) -> None:
+        """Persist machine-started work so Deckhand ignores it across rescans/restarts."""
+        self.delegated_session_keys.add(session_key)
+        if self.db is not None:
+            self.db.record_delegated_session(session_key)
+        session = self.sessions.get(session_key)
+        if session is not None and not session.is_delegated:
+            self.sessions[session_key] = replace(session, is_delegated=True)
+            self.bus.publish("sessions")
 
     def _sort_key(self, s: Session) -> tuple[int, int, float]:
         status_order = _STATUS_ORDER.get(s.status, 9)

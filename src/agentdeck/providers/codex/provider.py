@@ -356,6 +356,7 @@ class CodexProvider(SessionProvider):
                         else _display_kind(meta.kind)
                     ),
                     worker_type="you",
+                    is_delegated=meta.kind == "exec",
                     started_at=meta.started_at,
                     last_activity=last_activity,
                     tokens=meta.tokens,

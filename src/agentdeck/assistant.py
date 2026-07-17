@@ -309,7 +309,7 @@ class AssistantService:
 
     def _triage_sessions(self) -> list[Session]:
         """Blocking chats first, then most-recently-active, capped to max_sessions."""
-        visible = self.state.visible_sessions()
+        visible = self._eligible_sessions()
         blocking = [s for s in visible if s.question or self._interaction(s) is not None]
         blocking_keys = {s.key for s in blocking}
         remaining = [s for s in visible if s.key not in blocking_keys]
@@ -324,6 +324,10 @@ class AssistantService:
         self.analysis_session_count = len(selected)
         self.total_session_count = len(visible)
         return selected
+
+    def _eligible_sessions(self) -> list[Session]:
+        """Operator-owned chats only; delegated/background agents report to parents."""
+        return [session for session in self.state.visible_sessions() if not session.is_delegated]
 
     @staticmethod
     def _interaction_signature(interaction: PendingInteraction | None) -> Any:
@@ -415,7 +419,15 @@ class AssistantService:
     async def refresh(self, *, manual: bool = False) -> None:
         sessions = self._triage_sessions()
         resolved = await self.context_resolver.resolve(sessions)
-        live_keys = set(self.state.sessions)
+        live_keys = {
+            session.key for session in self.state.sessions.values() if not session.is_delegated
+        }
+        delegated_handled = set(self._handled) - live_keys
+        for session_key in delegated_handled & self.state.delegated_session_keys:
+            self._handled.pop(session_key, None)
+            self._handled_insights.pop(session_key, None)
+            if self.state.db:
+                self.state.db.delete_assistant_handled(session_key)
         self.contexts = {k: v for k, v in self.contexts.items() if k in live_keys}
         self.contexts.update(resolved)
         self._verdicts = {k: v for k, v in self._verdicts.items() if k in live_keys}
@@ -615,7 +627,7 @@ class AssistantService:
                 pass
             self._wake.clear()
             due = loop.time() - self._last_run >= self.config.refresh_interval_s
-            visible_keys = {s.key for s in self.state.visible_sessions()}
+            visible_keys = {session.key for session in self._eligible_sessions()}
             newly_visible = bool(visible_keys - self._known_visible_session_keys)
             self._known_visible_session_keys = visible_keys
             if not self._force and not due and not newly_visible:

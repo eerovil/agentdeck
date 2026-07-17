@@ -32,6 +32,10 @@ class NullDb:
         return []
 
     def upsert_sessions_seen(self, sessions: list[Session]) -> None: ...
+    def load_delegated_sessions(self) -> set[str]:
+        return set()
+
+    def record_delegated_session(self, session_key: str) -> None: ...
     def load_manual_new_chat_cwd(self) -> str | None:
         return None
 
@@ -101,6 +105,10 @@ class Db:
                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                     payload TEXT NOT NULL,
                     updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS delegated_sessions (
+                    session_key TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS manual_new_chat_state (
                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -178,6 +186,28 @@ class Db:
         except sqlite3.Error as exc:
             log.debug("load_manual_new_chat_cwd failed: %s", exc)
             return None
+
+    def load_delegated_sessions(self) -> set[str]:
+        try:
+            with self._lock:
+                rows = self._conn.execute(
+                    "SELECT session_key FROM delegated_sessions"
+                ).fetchall()
+            return {str(row[0]) for row in rows}
+        except sqlite3.Error as exc:
+            log.debug("load_delegated_sessions failed: %s", exc)
+            return set()
+
+    def record_delegated_session(self, session_key: str) -> None:
+        try:
+            with self._lock, self._conn:
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO delegated_sessions(session_key, created_at)"
+                    " VALUES (?, ?)",
+                    (session_key, datetime.now(UTC).isoformat()),
+                )
+        except sqlite3.Error as exc:
+            log.debug("record_delegated_session failed: %s", exc)
 
     def record_manual_new_chat_cwd(self, cwd: str) -> None:
         try:
