@@ -248,6 +248,11 @@ async def test_running_spawned_agents_are_counted_on_parent_session(tmp_path):
         {"thread_spawn": {"parent_thread_id": parent_sid, "depth": 1}},
         ["task_started", "task_complete"],
     )
+    expired = helper(
+        "019f6085-7db2-7031-8be2-a51f6aa6b9bd",
+        {"thread_spawn": {"parent_thread_id": parent_sid, "depth": 1}},
+        ["task_started", "task_complete"],
+    )
     helper(
         "019f6089-5b05-76d2-b480-f5cb5b793bfb",
         {"other": "guardian"},
@@ -262,6 +267,8 @@ async def test_running_spawned_agents_are_counted_on_parent_session(tmp_path):
     # remain visible instead of disappearing after the generic 30-second window.
     old_time = time.time() - 10 * 60
     os.utime(active, (old_time, old_time))
+    expired_time = time.time() - 60 * 60
+    os.utime(expired, (expired_time, expired_time))
 
     provider = CodexProvider()
     (session,) = await provider.scan_sessions(_account(tmp_path))
@@ -274,6 +281,7 @@ async def test_running_spawned_agents_are_counted_on_parent_session(tmp_path):
     assert session.subagents[0].task == "Build the parser safely"
     assert session.subagents[1].status == "finished"
     assert session.subagents[1].result == "Implemented and tested"
+    assert provider._subagent_names["019f6085-7db2-7031-8be2-a51f6aa6b9bd"] == "Faraday"
 
 
 def test_codex_compacts_subagent_notifications_without_clobbering_last_prompt(tmp_path):

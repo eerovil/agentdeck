@@ -277,6 +277,8 @@ class CodexProvider(SessionProvider):
         for path in _list_rollouts(account.root):
             meta = self._cached_meta(path)
             if meta.is_spawned_subagent:
+                if meta.agent_id and meta.agent_nickname:
+                    self._subagent_names[meta.agent_id] = meta.agent_nickname
                 last_activity = _mtime(path)
                 age = (
                     (datetime.now(UTC) - last_activity).total_seconds()
@@ -284,8 +286,6 @@ class CodexProvider(SessionProvider):
                     else 1e9
                 )
                 if meta.session_id and (meta.task_active or age < RECENT_SUBAGENT_S):
-                    if meta.agent_id and meta.agent_nickname:
-                        self._subagent_names[meta.agent_id] = meta.agent_nickname
                     status = (
                         ("working" if age < SUBAGENT_QUIET_S else "quiet")
                         if meta.task_active
