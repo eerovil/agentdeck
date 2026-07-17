@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
@@ -73,6 +74,76 @@ def _interaction_payload(interaction) -> dict | None:
             for question in interaction.questions
         ],
     }
+
+
+# --- deck-owned Claude workers -------------------------------------------
+# Thin TCP-surface proxy to the runtime service (which owns worker processes
+# over a Unix socket), so external callers — e.g. a board poller — drive
+# workers without touching the socket. Keys are opaque and travel in the body.
+
+
+class WorkerDeliverRequest(BaseModel):
+    key: str
+    message: str
+    cwd: str | None = None
+    fresh: bool = False
+
+
+class WorkerKeyRequest(BaseModel):
+    key: str
+
+
+async def _runtime_proxy(
+    request: Request, method: str, path: str, json: dict | None = None
+) -> dict:
+    client: httpx.AsyncClient | None = getattr(request.app.state, "runtime_http", None)
+    if client is None:
+        raise HTTPException(status_code=503, detail="runtime service not configured")
+    try:
+        response = await client.request(method, path, json=json)
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=503, detail=f"claude worker runtime unavailable: {exc}"
+        ) from None
+    if response.status_code >= 400:
+        detail: object = response.text
+        if response.headers.get("content-type", "").startswith("application/json"):
+            detail = response.json().get("detail", detail)
+        raise HTTPException(status_code=response.status_code, detail=detail)
+    return response.json()
+
+
+@router.get("/claude/accounts/{label}/workers")
+async def claude_workers(request: Request, label: str) -> dict:
+    return await _runtime_proxy(request, "GET", f"/claude/accounts/{label}/workers")
+
+
+@router.post("/claude/accounts/{label}/deliver")
+async def claude_deliver(request: Request, label: str, body: WorkerDeliverRequest) -> dict:
+    return await _runtime_proxy(
+        request, "POST", f"/claude/accounts/{label}/deliver", json=body.model_dump()
+    )
+
+
+@router.post("/claude/accounts/{label}/interrupt")
+async def claude_interrupt(request: Request, label: str, body: WorkerKeyRequest) -> dict:
+    return await _runtime_proxy(
+        request, "POST", f"/claude/accounts/{label}/interrupt", json=body.model_dump()
+    )
+
+
+@router.post("/claude/accounts/{label}/stop")
+async def claude_stop(request: Request, label: str, body: WorkerKeyRequest) -> dict:
+    return await _runtime_proxy(
+        request, "POST", f"/claude/accounts/{label}/stop", json=body.model_dump()
+    )
+
+
+@router.post("/claude/accounts/{label}/forget")
+async def claude_forget(request: Request, label: str, body: WorkerKeyRequest) -> dict:
+    return await _runtime_proxy(
+        request, "POST", f"/claude/accounts/{label}/forget", json=body.model_dump()
+    )
 
 
 @router.post("/delegations", status_code=202)

@@ -109,6 +109,10 @@ class ClaudeWorkersConfig(BaseModel):
     max_workers: int = 4  # per account; delivery to a live worker is exempt
     permission_mode: str = ""  # e.g. "acceptEdits" / "bypassPermissions"; "" = CLI default
     model: str = ""  # "" = account default model
+    usage_ceiling_pct: float = 0.0  # refuse (re)spawns at/above this 5h-or-7d usage %; 0 disables
+    stall_after_s: float = (
+        0.0  # flag a live worker stalled after this many silent seconds; 0 disables
+    )
     state_dir: str = "~/.local/share/agentdeck/claude-workers"
 
     @field_validator("max_workers")
@@ -116,6 +120,20 @@ class ClaudeWorkersConfig(BaseModel):
     def _positive_max_workers(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("claude_workers.max_workers must be positive")
+        return value
+
+    @field_validator("usage_ceiling_pct")
+    @classmethod
+    def _usage_ceiling_range(cls, value: float) -> float:
+        if not 0 <= value <= 100:
+            raise ValueError("claude_workers.usage_ceiling_pct must be between 0 and 100")
+        return value
+
+    @field_validator("stall_after_s")
+    @classmethod
+    def _non_negative_stall(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("claude_workers.stall_after_s must be non-negative")
         return value
 
     @property

@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from .config import AppConfig
 from .models import Account, InjectResult
+from .providers.claude_code.usage import shared_cache_dir
 from .providers.claude_code.worker import ClaudeWorkerHost, DeliverResult
 from .providers.codex.appserver import CodexAppServer
 from .providers.codex.runtime_client import runtime_socket_path
@@ -66,11 +67,18 @@ class DeliverRequest(ActionRequest):
     fresh: bool = False
 
 
+class WorkerKeyRequest(ActionRequest):
+    # Keys are opaque and may contain '#' or '/' (e.g. "owner/repo#12"), which
+    # are unsafe in a URL path — always carry the key in the body.
+    key: str
+
+
 class ClaudeWorkerRuntime:
     """Own deck-managed Claude worker hosts, one per claude_code account."""
 
     def __init__(self, config: AppConfig) -> None:
         self.settings = config.claude_workers
+        self._usage_cache_dir = shared_cache_dir(config.usage.shared_cache_dir)
         self.accounts = {
             account.label: account
             for account in config.build_accounts()
@@ -92,6 +100,9 @@ class ClaudeWorkerRuntime:
                 max_workers=self.settings.max_workers,
                 permission_mode=self.settings.permission_mode or None,
                 model=self.settings.model or None,
+                usage_ceiling_pct=self.settings.usage_ceiling_pct,
+                usage_cache_dir=self._usage_cache_dir,
+                stall_after_s=self.settings.stall_after_s,
             )
             self.hosts[label] = host
         return host
@@ -272,17 +283,17 @@ def create_runtime_app(config: AppConfig) -> FastAPI:
         )
         return _deliver_result(result)
 
-    @app.post("/claude/accounts/{label}/workers/{key}/interrupt")
-    async def claude_interrupt(label: str, key: str) -> dict[str, Any]:
-        return _deliver_result(await claude_workers.host(label).interrupt(key))
+    @app.post("/claude/accounts/{label}/interrupt")
+    async def claude_interrupt(label: str, body: WorkerKeyRequest) -> dict[str, Any]:
+        return _deliver_result(await claude_workers.host(label).interrupt(body.key))
 
-    @app.post("/claude/accounts/{label}/workers/{key}/stop")
-    async def claude_stop(label: str, key: str) -> dict[str, Any]:
-        return _deliver_result(await claude_workers.host(label).stop_worker(key))
+    @app.post("/claude/accounts/{label}/stop")
+    async def claude_stop(label: str, body: WorkerKeyRequest) -> dict[str, Any]:
+        return _deliver_result(await claude_workers.host(label).stop_worker(body.key))
 
-    @app.delete("/claude/accounts/{label}/workers/{key}")
-    async def claude_forget(label: str, key: str) -> dict[str, Any]:
-        return {"removed": claude_workers.host(label).forget(key)}
+    @app.post("/claude/accounts/{label}/forget")
+    async def claude_forget(label: str, body: WorkerKeyRequest) -> dict[str, Any]:
+        return {"removed": claude_workers.host(label).forget(body.key)}
 
     @app.get("/accounts/{label}/state")
     async def state(label: str) -> dict[str, Any]:

@@ -20,6 +20,7 @@ import os
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,10 @@ log = logging.getLogger(__name__)
 STDOUT_LINE_LIMIT = 16 * 1024 * 1024
 
 INTERRUPT_TIMEOUT_S = 15.0
+
+# Published usage snapshots older than this are treated as unknown rather than
+# trusted — a stalled collector must not permanently block (or greenlight) work.
+USAGE_MAX_AGE_S = 1800.0
 
 
 class WorkerError(RuntimeError):
@@ -77,12 +82,20 @@ class ClaudeWorkerHost:
         max_workers: int = 4,
         permission_mode: str | None = None,
         model: str | None = None,
+        usage_ceiling_pct: float = 0.0,
+        usage_cache_dir: Path | None = None,
+        stall_after_s: float = 0.0,
         process_factory=None,
+        usage_reader=None,
     ) -> None:
         self.account = account
         self.max_workers = max_workers
         self.permission_mode = permission_mode
         self.model = model
+        self.usage_ceiling_pct = usage_ceiling_pct
+        self.stall_after_s = stall_after_s
+        self._usage_cache_dir = usage_cache_dir
+        self._usage_reader = usage_reader or self._read_published_usage
         self._process_factory = process_factory or asyncio.create_subprocess_exec
         self._state_path = state_dir / f"{account.label}.json"
         self._records: dict[str, WorkerRecord] = {}
@@ -90,6 +103,37 @@ class ClaudeWorkerHost:
         self._interrupt_waiters: dict[str, asyncio.Future] = {}
         self._lock = asyncio.Lock()
         self._load_state()
+
+    # --- admission policy --------------------------------------------------
+
+    def _read_published_usage(self) -> float | None:
+        """Max(5h, 7d) utilization % from the shared usage cache, or None if
+        missing/unparseable/stale — the collector publishes ``usage-<label>.json``."""
+        if self._usage_cache_dir is None:
+            return None
+        try:
+            raw = json.loads(
+                (self._usage_cache_dir / f"usage-{self.account.label}.json").read_text()
+            )
+        except (OSError, ValueError):
+            return None
+        fetched = raw.get("fetched_at")
+        if isinstance(fetched, str):
+            try:
+                age = time.time() - datetime.fromisoformat(fetched).timestamp()
+            except ValueError:
+                age = None
+            if age is not None and age > USAGE_MAX_AGE_S:
+                return None
+        pcts = [raw.get("five_hour_pct"), raw.get("seven_day_pct")]
+        known = [p for p in pcts if isinstance(p, (int, float))]
+        return max(known) if known else None
+
+    def _over_budget(self) -> bool:
+        if self.usage_ceiling_pct <= 0:
+            return False
+        pct = self._usage_reader()
+        return pct is not None and pct >= self.usage_ceiling_pct
 
     # --- state persistence -------------------------------------------------
 
@@ -115,19 +159,32 @@ class ClaudeWorkerHost:
     # --- public API --------------------------------------------------------
 
     def snapshot(self) -> dict[str, Any]:
+        now = time.time()
         workers = {}
         for key, rec in self._records.items():
             live = self._live.get(key)
+            turn_active = bool(live and live.turn_active)
+            stalled = (
+                turn_active
+                and self.stall_after_s > 0
+                and (now - rec.last_delivery_at) > self.stall_after_s
+            )
             workers[key] = {
                 "session_id": rec.session_id,
                 "cwd": rec.cwd,
                 "live": live is not None,
-                "turn_active": bool(live and live.turn_active),
+                "turn_active": turn_active,
+                "stalled": stalled,
                 "last_delivery_at": rec.last_delivery_at,
                 "last_result_at": rec.last_result_at,
                 "last_result_subtype": rec.last_result_subtype,
             }
-        return {"workers": workers, "live_count": len(self._live)}
+        return {
+            "workers": workers,
+            "live_count": len(self._live),
+            "usage_pct": self._usage_reader(),
+            "over_budget": self._over_budget(),
+        }
 
     async def deliver(
         self,
@@ -150,10 +207,14 @@ class ClaudeWorkerHost:
                 live.turn_active = True
                 return DeliverResult(True, action, session_id=rec.session_id)
 
-            # Not live (or fresh requested) — this is a (re)spawn: capacity applies.
+            # Not live (or fresh requested) — this is a (re)spawn: admission
+            # policy applies here only. Steering a live worker is always allowed
+            # so in-flight work finishes even at the cap or over budget.
             running = [w for w in self._live.values() if w.process.returncode is None]
             if len(running) >= self.max_workers:
                 return DeliverResult(False, "rejected", reason="at_capacity")
+            if self._over_budget():
+                return DeliverResult(False, "rejected", reason="over_budget")
 
             if rec is None or fresh or rec.cwd != (cwd or (rec.cwd if rec else None)):
                 if cwd is None and rec is None:

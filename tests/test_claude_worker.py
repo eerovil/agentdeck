@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 from pathlib import Path
 
 from agentdeck.models import Account
@@ -198,6 +199,76 @@ async def test_worker_command_includes_configured_flags(tmp_path):
     args = spawned[0]["args"]
     assert args[args.index("--permission-mode") + 1] == "acceptEdits"
     assert args[args.index("--model") + 1] == "haiku"
+    await host.stop()
+
+
+async def test_over_budget_rejects_spawn_but_not_steer(tmp_path):
+    host, spawned = _host(tmp_path, usage_ceiling_pct=90.0, usage_reader=lambda: 95.0)
+    # live worker first (spawned while a lower reader would allow) — flip after.
+    host._usage_reader = lambda: 10.0
+    await host.deliver("issue-1", "start", cwd=str(tmp_path))
+    host._usage_reader = lambda: 95.0  # now over ceiling
+    # steering the live worker is exempt
+    steered = await host.deliver("issue-1", "keep going")
+    assert steered.accepted
+    # a NEW key spawn is rejected
+    rejected = await host.deliver("issue-2", "start", cwd=str(tmp_path))
+    assert not rejected.accepted and rejected.reason == "over_budget"
+    assert len(spawned) == 1
+    await host.stop()
+
+
+async def test_under_ceiling_allows_spawn(tmp_path):
+    host, spawned = _host(tmp_path, usage_ceiling_pct=90.0, usage_reader=lambda: 42.0)
+    result = await host.deliver("issue-1", "start", cwd=str(tmp_path))
+    assert result.accepted and result.action == "spawned"
+    snap = host.snapshot()
+    assert snap["usage_pct"] == 42.0 and snap["over_budget"] is False
+    await host.stop()
+
+
+async def test_unknown_usage_does_not_block(tmp_path):
+    host, spawned = _host(tmp_path, usage_ceiling_pct=90.0, usage_reader=lambda: None)
+    result = await host.deliver("issue-1", "start", cwd=str(tmp_path))
+    assert result.accepted
+    assert host.snapshot()["over_budget"] is False
+    await host.stop()
+
+
+async def test_reads_published_usage_file_with_staleness(tmp_path):
+    import json as _json
+    import time as _time
+
+    cache = tmp_path / "usage-cache"
+    cache.mkdir()
+    host, _ = _host(tmp_path, usage_ceiling_pct=90.0, usage_cache_dir=cache)
+    host._usage_reader = host._read_published_usage  # exercise the real reader
+
+    def write(pct, age_s):
+        (cache / "usage-test.json").write_text(
+            _json.dumps(
+                {
+                    "fetched_at": datetime.fromtimestamp(_time.time() - age_s).isoformat(),
+                    "five_hour_pct": pct,
+                    "seven_day_pct": 1.0,
+                }
+            )
+        )
+
+    write(95.0, age_s=10)
+    assert host._read_published_usage() == 95.0
+    assert host._over_budget() is True
+    write(95.0, age_s=9999)  # stale → unknown → not blocking
+    assert host._read_published_usage() is None
+    assert host._over_budget() is False
+
+
+async def test_stalled_flag_after_threshold(tmp_path):
+    host, spawned = _host(tmp_path, stall_after_s=100.0)
+    await host.deliver("issue-1", "start", cwd=str(tmp_path))
+    # backdate the delivery so the live turn looks silent
+    host._records["issue-1"].last_delivery_at -= 200
+    assert host.snapshot()["workers"]["issue-1"]["stalled"] is True
     await host.stop()
 
 
