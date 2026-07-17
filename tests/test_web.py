@@ -17,9 +17,11 @@ from agentdeck.models import (
     Session,
     SessionStatus,
     SubagentProgress,
+    TranscriptEvent,
     UsageSnapshot,
 )
 from agentdeck.providers.claude_code.provider import worker_type
+from agentdeck.web.routes_pages import _pr_reference_text
 
 
 def _app_with_state(tmp_path, *, with_transcript=False):
@@ -1638,6 +1640,31 @@ async def test_session_detail_renders_transcript(tmp_path):
     assert "42%" in r.text
     # the page binds its single SSE connection to the per-session stream
     assert 'sse-connect="/events/sessions/claude_code:test:sid1"' in r.text
+
+
+def test_pr_reference_text_uses_conversation_not_system_or_tool_traffic():
+    events = [
+        TranscriptEvent(seq=1, role="system", text="Memory mentions PR #250."),
+        TranscriptEvent(
+            seq=2,
+            role="assistant",
+            tool_name="exec_command",
+            tool_summary="gh pr view 251",
+            tool_detail="Rendered page contains PR #252",
+        ),
+        TranscriptEvent(seq=3, role="tool", text="PR #253 merged"),
+        TranscriptEvent(seq=4, role="user", text="Please inspect PR #91."),
+        TranscriptEvent(
+            seq=5,
+            role="assistant",
+            text="Opened https://github.com/eerovil/agentdeck/pull/92.",
+        ),
+    ]
+
+    assert _pr_reference_text(events) == (
+        "Please inspect PR #91.\n"
+        "Opened https://github.com/eerovil/agentdeck/pull/92."
+    )
 
 
 async def test_session_detail_uses_responsive_split_view(tmp_path):

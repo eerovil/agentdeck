@@ -18,10 +18,17 @@ router = APIRouter()
 
 
 def _pr_reference_text(events) -> str | None:
-    """PR-bearing transcript fragments used to find every PR in the visible history."""
+    """PR-bearing conversation fragments from the visible history.
+
+    System context and tool traffic can contain unrelated repository history,
+    including PRs from injected memories or rendered AgentDeck pages. Only
+    references stated in the user/assistant conversation belong to this chat.
+    """
     fragments = []
     for event in events:
-        for value in (event.text, event.tool_summary, event.tool_detail, event.question):
+        if event.role not in {"user", "assistant"}:
+            continue
+        for value in (event.text, event.question):
             if value and (
                 "github.com/" in value.lower()
                 or "pr #" in value.lower()
