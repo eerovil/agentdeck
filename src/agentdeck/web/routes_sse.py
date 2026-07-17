@@ -33,6 +33,7 @@ from .render import (
     render_limit_bars,
     render_session_list,
     render_session_status,
+    render_subagent_activity,
     render_tool_activity,
     render_transcript_events,
 )
@@ -152,6 +153,7 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
     last_status = None
     last_busy = None
     last_subagent_count = None
+    last_subagents = None
     last_label = None
     last_can_interrupt = None
     # The topbar, Deckhand, and desktop session list ride this same stream (see
@@ -209,6 +211,11 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
                 last_subagent_count = current.subagent_count
                 snap = replace(current, thinking=busy)
                 yield format_sse("status", render_session_status(templates, snap))
+            if current.subagents != last_subagents:
+                last_subagents = current.subagents
+                yield format_sse(
+                    "subagents", render_subagent_activity(templates, current)
+                )
             can_interrupt = Capability.INTERRUPT in current.capabilities
             if can_interrupt != last_can_interrupt:
                 last_can_interrupt = can_interrupt

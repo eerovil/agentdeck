@@ -14,6 +14,7 @@ from ...models import (
     PendingInteraction,
     Session,
     SessionStatus,
+    SubagentProgress,
     TokenTotals,
     TranscriptDetail,
     TranscriptEvent,
@@ -36,6 +37,9 @@ from .usage import UsagePoller, fetch_usage_once
 DETAIL_WINDOW = 400
 MAX_SESSIONS = 200
 LIVE_WINDOW_S = 30.0
+SUBAGENT_QUIET_S = 300.0
+RECENT_SUBAGENT_S = 30 * 60.0
+MAX_SUBAGENTS_SHOWN = 4
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +70,13 @@ def _list_rollouts(root: Path) -> list[Path]:
     return [path for _, path in found[:MAX_SESSIONS]]
 
 
+def _compact_line(value: str | None, limit: int = 220) -> str | None:
+    if not value:
+        return None
+    line = next((part.strip() for part in value.splitlines() if part.strip()), "")
+    return line[:limit] or None
+
+
 class CodexProvider(SessionProvider):
     """Read Codex CLI rollouts.
 
@@ -84,6 +95,7 @@ class CodexProvider(SessionProvider):
         self._clients: dict[str, CodexRuntimeClient] = {}
         self._states = {}
         self._runtime_tasks: dict[str, asyncio.Task] = {}
+        self._subagent_names: dict[str, str] = {}
 
     async def start_account(self, account: Account, state) -> None:
         client = CodexRuntimeClient(
@@ -235,6 +247,17 @@ class CodexProvider(SessionProvider):
                 event.model = model
         return events
 
+    def _decorate_events(
+        self, events: list[TranscriptEvent], model: str | None
+    ) -> list[TranscriptEvent]:
+        self._apply_model(events, model)
+        for event in events:
+            for agent_id, nickname in event.subagent_identities:
+                self._subagent_names[agent_id] = nickname
+            if event.subagent_id and event.subagent_name is None:
+                event.subagent_name = self._subagent_names.get(event.subagent_id)
+        return events
+
     def watch_paths(self, account: Account) -> list[Path]:
         sessions = account.root / "sessions"
         return [sessions] if sessions.exists() else []
@@ -247,7 +270,8 @@ class CodexProvider(SessionProvider):
             except Exception as exc:  # noqa: BLE001 -- transcript scan remains useful
                 log.debug("Codex runtime unavailable during scan for %s: %s", account.key, exc)
         sessions = []
-        active_subagents: dict[str, int] = {}
+        subagents: dict[str, list[SubagentProgress]] = {}
+        turn_starts: dict[str, datetime] = {}
         current_paths: dict[tuple[str, str], Path] = {}
         seen: set[str] = set()
         for path in _list_rollouts(account.root):
@@ -259,9 +283,25 @@ class CodexProvider(SessionProvider):
                     if last_activity
                     else 1e9
                 )
-                if meta.task_active and age < LIVE_WINDOW_S and meta.session_id:
-                    active_subagents[meta.session_id] = (
-                        active_subagents.get(meta.session_id, 0) + 1
+                if meta.session_id and (meta.task_active or age < RECENT_SUBAGENT_S):
+                    if meta.agent_id and meta.agent_nickname:
+                        self._subagent_names[meta.agent_id] = meta.agent_nickname
+                    status = (
+                        ("working" if age < SUBAGENT_QUIET_S else "quiet")
+                        if meta.task_active
+                        else (meta.task_status or "finished")
+                    )
+                    subagents.setdefault(meta.session_id, []).append(
+                        SubagentProgress(
+                            agent_id=meta.agent_id or path.stem[-36:],
+                            nickname=meta.agent_nickname,
+                            role=meta.agent_role,
+                            task=meta.title,
+                            status=status,
+                            result=_compact_line(meta.last_agent_message or meta.last_text),
+                            started_at=meta.started_at,
+                            updated_at=last_activity,
+                        )
                     )
             # Internal helpers reuse the parent chat's session_id. Reject both
             # legacy approval-review and structured sub-agent rollouts before
@@ -272,6 +312,8 @@ class CodexProvider(SessionProvider):
             if not session_id or session_id in seen:
                 continue
             seen.add(session_id)
+            if meta.task_started_at:
+                turn_starts[session_id] = meta.task_started_at
             current_paths[(account.key, session_id)] = path
             last_activity = _mtime(path)
             status, thinking, activity = self._derived_state(path, last_activity)
@@ -323,7 +365,24 @@ class CodexProvider(SessionProvider):
                 )
             )
         for session in sessions:
-            session.subagent_count = active_subagents.get(session.session_id, 0)
+            agents = subagents.get(session.session_id, [])
+            turn_started = turn_starts.get(session.session_id)
+            if turn_started is not None:
+                agents = [
+                    agent
+                    for agent in agents
+                    if agent.started_at is None or agent.started_at >= turn_started
+                ]
+            agents.sort(
+                key=lambda item: (
+                    item.status not in ("working", "quiet"),
+                    -(item.updated_at.timestamp() if item.updated_at else 0.0),
+                )
+            )
+            session.subagents = tuple(agents[:MAX_SUBAGENTS_SHOWN])
+            session.subagent_count = sum(
+                agent.status in ("working", "quiet") for agent in agents
+            )
         self._paths = {key: value for key, value in self._paths.items() if key[0] != account.key}
         self._paths.update(current_paths)
         return sessions
@@ -600,7 +659,7 @@ class CodexProvider(SessionProvider):
         """Read and filter a transcript outside the caller's event loop."""
         read = transcripts_mod.read_events(path)
         events = [event for event in read.events if event.seq > after_seq]
-        return self._apply_model(events, self._cached_meta(path).model)
+        return self._decorate_events(events, self._cached_meta(path).model)
 
     async def transcript_cursor(self, account: Account, session: Session) -> tuple[int, int]:
         path = self._transcript_path(account, session)
@@ -619,7 +678,7 @@ class CodexProvider(SessionProvider):
         read = await asyncio.to_thread(
             transcripts_mod.read_events, path, byte_offset=byte_offset, seq=seq
         )
-        events = self._apply_model(read.events, self._cached_meta(path).model)
+        events = self._decorate_events(read.events, self._cached_meta(path).model)
         return (events, read.byte_offset, read.seq)
 
     async def last_event(self, account: Account, session: Session) -> TranscriptEvent | None:
@@ -644,11 +703,13 @@ class CodexProvider(SessionProvider):
                 total_events=0,
                 earliest_seq=0,
             )
-        return await asyncio.to_thread(
+        detail = await asyncio.to_thread(
             self._load_transcript_file,
             path,
             before_seq,
         )
+        self._decorate_events(detail.events, detail.model)
+        return detail
 
     def _load_transcript_file(self, path: Path, before_seq: int | None) -> TranscriptDetail:
         """Build a detail window without blocking the caller's event loop."""

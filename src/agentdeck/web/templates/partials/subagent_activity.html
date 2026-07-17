@@ -1,0 +1,25 @@
+{% if s.subagents %}
+<section class="subagent-activity" aria-label="Subagent progress">
+  <div class="subagent-activity-head">
+    <span>Subagents</span>
+    {% if s.subagent_count %}<span>{{ s.subagent_count }} working</span>{% else %}<span>recently finished</span>{% endif %}
+  </div>
+  <div class="subagent-list">
+  {% for agent in s.subagents %}
+    <div class="subagent-row {{ agent.status }}">
+      <span class="subagent-state" aria-hidden="true"></span>
+      <div class="subagent-copy">
+        <div class="subagent-name">
+          <strong>{{ agent.nickname or agent.agent_id[:8] }}</strong>
+          {% if agent.role %}<span>{{ agent.role }}</span>{% endif %}
+          <span class="subagent-status">{{ agent.status }}</span>
+        </div>
+        {% if agent.task %}<div class="subagent-task" title="{{ agent.task }}">{{ agent.task }}</div>{% endif %}
+        {% if agent.result and agent.status not in ('working', 'quiet') %}<div class="subagent-result" title="{{ agent.result }}">{{ agent.result }}</div>{% endif %}
+      </div>
+      {% if agent.updated_at %}<time class="subagent-age" datetime="{{ agent.updated_at.isoformat() }}" title="{{ agent.updated_at | chat_time_title }}">{{ agent.updated_at | reltime_ago }}</time>{% endif %}
+    </div>
+  {% endfor %}
+  </div>
+</section>
+{% endif %}

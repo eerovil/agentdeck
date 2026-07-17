@@ -53,6 +53,20 @@ class TokenTotals:
 
 
 @dataclass
+class SubagentProgress:
+    """Compact progress for one Codex agent spawned by a parent chat."""
+
+    agent_id: str
+    nickname: str | None = None
+    role: str | None = None
+    task: str | None = None
+    status: str = "working"  # working | quiet | finished | failed
+    result: str | None = None
+    started_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass
 class Session:
     key: str  # f"{account_key}:{session_id}" — used in all URLs (urlsafe)
     account_key: str
@@ -68,6 +82,7 @@ class Session:
     question: str | None = None  # trailing question from the agent's latest reply (awaiting you)
     activity: str | None = None  # what it's doing now: "Using tools" / "Working"
     subagent_count: int = 0  # currently-running Codex spawned agents owned by this chat
+    subagents: tuple[SubagentProgress, ...] = ()  # active + recently-finished agents
     model: str | None = None  # last assistant line's model (v0.2)
     kind: str | None = None  # "interactive" | "sdk-cli" | RC worker …
     worker_type: str | None = None  # "kanban" | "cloud" | "you" — drives list colour
@@ -201,6 +216,10 @@ def detailed_activity_label(label: str | None, last_ev) -> str | None:
         return "Thinking"
     if folded_name in ("wait", "write stdin"):
         return "Waiting for command output"
+    if folded_name == "wait for agents":
+        return "Waiting for subagents"
+    if folded_name == "start agents":
+        return "Starting subagents"
     summary = (last_ev.tool_summary or "").strip()
     if folded_name == "approval":
         reason = summary.removeprefix("reason: ")
@@ -240,6 +259,10 @@ class TranscriptEvent:  # normalized transcript line (parsed from v0.2)
     subagent: str | None = None  # set when from <uuid>/subagents/
     queued: bool = False  # user message typed while the agent was busy (enqueued)
     tool_detail: str | None = None  # expandable provider-native tool input
+    subagent_status: str | None = None  # compact spawned-agent lifecycle update
+    subagent_id: str | None = None
+    subagent_name: str | None = None
+    subagent_identities: tuple[tuple[str, str], ...] = ()  # spawn output id/name pairs
 
 
 @dataclass

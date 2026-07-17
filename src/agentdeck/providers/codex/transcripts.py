@@ -60,6 +60,12 @@ class TranscriptMeta:
     is_subagent: bool = False
     is_spawned_subagent: bool = False
     task_active: bool = False
+    task_started_at: datetime | None = None
+    agent_id: str | None = None
+    agent_nickname: str | None = None
+    agent_role: str | None = None
+    task_finished_at: datetime | None = None
+    task_status: str | None = None
 
 
 def _parse_ts(value: object) -> datetime | None:
@@ -145,6 +151,7 @@ def _is_noise_user(text: str | None) -> bool:
         (
             "<environment_context>",
             "<recommended_plugins>",
+            "<subagent_notification>",
             "# agents.md instructions for ",
             "<instructions>",
         )
@@ -249,7 +256,51 @@ def _tool_display_name(native_name: object, value: object) -> str | None:
         return "Approval"
     if re.search(r"\btools\.apply_patch\s*\(", text):
         return "Edit files"
+    if re.search(r"\btools\.multi_agent_v1__spawn_agent\s*\(", text):
+        return "Start agents"
+    if re.search(r"\btools\.multi_agent_v1__wait_agent\s*\(", text):
+        return "Wait for agents"
+    if re.search(r"\btools\.multi_agent_v1__(?:send_input|send_message)\s*\(", text):
+        return "Message agent"
     return None
+
+
+def _subagent_notification(text: str | None) -> tuple[str | None, str, str | None] | None:
+    """Decode Codex's internal user-message wrapper into a compact lifecycle event."""
+    if not text or not text.lstrip().startswith("<subagent_notification>"):
+        return None
+    inner = text.strip().removeprefix("<subagent_notification>").removesuffix(
+        "</subagent_notification>"
+    ).strip()
+    try:
+        value = json.loads(inner)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    agent_id = value.get("agent_path")
+    status_value = value.get("status")
+    if isinstance(status_value, dict) and status_value:
+        raw_status, detail = next(iter(status_value.items()))
+        status = {
+            "completed": "finished",
+            "errored": "failed",
+            "pending_init": "starting",
+        }.get(str(raw_status), str(raw_status).replace("_", " "))
+        return (
+            agent_id if isinstance(agent_id, str) else None,
+            status,
+            detail.strip() if isinstance(detail, str) and detail.strip() else None,
+        )
+    status = str(status_value).replace("_", " ") if status_value is not None else "updated"
+    return agent_id if isinstance(agent_id, str) else None, status, None
+
+
+def _one_line(value: str | None, limit: int = _MAX_TOOL_SUMMARY) -> str | None:
+    if not value:
+        return None
+    line = next((part.strip() for part in value.splitlines() if part.strip()), "")
+    return line[:limit] or None
 
 
 def _tool_summary(value: object, display_name: str | None = None) -> str | None:
@@ -331,6 +382,35 @@ def _tool_output(value: object) -> str | None:
         return str(value)[:_MAX_TOOL_OUTPUT] or None
 
 
+def _subagent_identities(value: object) -> tuple[tuple[str, str], ...]:
+    """Find agent id/nickname pairs inside nested orchestrator output blocks."""
+    found: list[tuple[str, str]] = []
+
+    def visit(item: object) -> None:
+        if isinstance(item, dict):
+            agent_id = item.get("agent_id")
+            nickname = item.get("nickname")
+            if isinstance(agent_id, str) and isinstance(nickname, str):
+                pair = (agent_id, nickname)
+                if pair not in found:
+                    found.append(pair)
+            for child in item.values():
+                visit(child)
+        elif isinstance(item, list):
+            for child in item:
+                visit(child)
+        elif isinstance(item, str) and "agent_id" in item and "nickname" in item:
+            for line in item.splitlines():
+                try:
+                    parsed = json.loads(line.strip())
+                except (TypeError, ValueError):
+                    continue
+                visit(parsed)
+
+    visit(value)
+    return tuple(found)
+
+
 def _event_from_line(seq: int, data: dict) -> TranscriptEvent | None:
     timestamp = _parse_ts(data.get("timestamp"))
     outer_type = data.get("type")
@@ -352,10 +432,24 @@ def _event_from_line(seq: int, data: dict) -> TranscriptEvent | None:
     item_type = payload.get("type")
     if item_type == "message":
         native_role = payload.get("role")
+        text = _text_content(payload.get("content"))
+        notification = _subagent_notification(text) if native_role == "user" else None
+        if notification is not None:
+            agent_id, status, detail = notification
+            return TranscriptEvent(
+                seq=seq,
+                role="system",
+                text=detail,
+                tool_name="subagent",
+                tool_display_name="Subagent",
+                tool_summary=_one_line(detail),
+                ts=timestamp,
+                subagent_status=status,
+                subagent_id=agent_id,
+            )
         role = "system" if native_role in ("developer", "system") else native_role
         if role not in ("user", "assistant", "system"):
             return None
-        text = _text_content(payload.get("content"))
         if text is not None and role == "assistant":
             text = _strip_internal_assistant_metadata(text)
         if (
@@ -384,6 +478,7 @@ def _event_from_line(seq: int, data: dict) -> TranscriptEvent | None:
             role="tool",
             text=_tool_output(payload.get("output")),
             ts=timestamp,
+            subagent_identities=_subagent_identities(payload.get("output")),
         )
     if item_type == "reasoning":
         summary = payload.get("summary")
@@ -499,6 +594,68 @@ def _objects(blob: bytes, *, skip_first_partial: bool, require_final_newline: bo
     return out
 
 
+def _latest_task_state(
+    path: Path, *, chunk_size: int = 64 * 1024
+) -> tuple[str | None, datetime | None, datetime | None]:
+    """Return the latest task status and its start/end by scanning lines backwards.
+
+    Task boundaries may sit outside the bounded metadata head/tail on large,
+    multi-turn rollouts. Reverse scanning stops at the latest turn's start and
+    is cached by the provider's mtime-keyed metadata cache.
+    """
+    latest_status = None
+    latest_finished_at = None
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, 2)
+            position = handle.tell()
+            remainder = b""
+            while position > 0:
+                size = min(chunk_size, position)
+                position -= size
+                handle.seek(position)
+                data = handle.read(size) + remainder
+                lines = data.split(b"\n")
+                remainder = lines[0]
+                for raw in reversed(lines[1:]):
+                    if b'"task_' not in raw and b'"turn_aborted"' not in raw:
+                        continue
+                    try:
+                        obj = json.loads(raw)
+                    except (TypeError, ValueError):
+                        continue
+                    payload = obj.get("payload")
+                    if obj.get("type") != "event_msg" or not isinstance(payload, dict):
+                        continue
+                    boundary = payload.get("type")
+                    if boundary not in ("task_started", "task_complete", "turn_aborted"):
+                        continue
+                    timestamp = _parse_ts(obj.get("timestamp"))
+                    if latest_status is None:
+                        latest_status = {
+                            "task_started": "working",
+                            "task_complete": "finished",
+                            "turn_aborted": "stopped",
+                        }[boundary]
+                        if boundary != "task_started":
+                            latest_finished_at = timestamp
+                    if boundary == "task_started":
+                        return latest_status, timestamp, latest_finished_at
+            if remainder:
+                try:
+                    obj = json.loads(remainder)
+                except (TypeError, ValueError):
+                    obj = None
+                if isinstance(obj, dict) and obj.get("type") == "event_msg":
+                    payload = obj.get("payload")
+                    if isinstance(payload, dict) and payload.get("type") == "task_started":
+                        latest_status = latest_status or "working"
+                        return latest_status, _parse_ts(obj.get("timestamp")), latest_finished_at
+    except OSError:
+        pass
+    return latest_status, None, latest_finished_at
+
+
 def transcript_meta(
     path: Path, *, head: int = _META_HEAD, tail: int = _META_TAIL
 ) -> TranscriptMeta:
@@ -509,6 +666,10 @@ def transcript_meta(
 
     session_id = cwd = kind = model = None
     is_approval_review = is_subagent = is_spawned_subagent = task_active = False
+    agent_id = agent_nickname = agent_role = None
+    task_finished_at = None
+    task_started_at = None
+    task_status = None
     started_at = None
     title = first_prompt = last_prompt = last_text = last_role = None
     last_agent_message = None
@@ -518,6 +679,8 @@ def transcript_meta(
     def scan(objects: list[dict], *, find_title: bool) -> None:
         nonlocal session_id, cwd, kind, model, started_at, is_approval_review
         nonlocal is_subagent, is_spawned_subagent, task_active
+        nonlocal agent_id, agent_nickname, agent_role, task_finished_at, task_started_at
+        nonlocal task_status
         nonlocal title, first_prompt, last_prompt, last_text, last_role, tokens, context_tokens
         nonlocal last_agent_message
         for obj in objects:
@@ -529,8 +692,12 @@ def transcript_meta(
                 boundary = payload.get("type")
                 if boundary == "task_started":
                     task_active = True
+                    task_started_at = _parse_ts(obj.get("timestamp")) or task_started_at
+                    task_status = "working"
                 elif boundary in ("task_complete", "turn_aborted"):
                     task_active = False
+                    task_status = "finished" if boundary == "task_complete" else "stopped"
+                    task_finished_at = _parse_ts(obj.get("timestamp")) or task_finished_at
             if outer_type == "session_meta":
                 sid = payload.get("session_id", payload.get("id"))
                 session_id = sid if isinstance(sid, str) else session_id
@@ -543,10 +710,20 @@ def transcript_meta(
                     or payload.get("thread_source") == "subagent"
                 )
                 subagent = value.get("subagent") if isinstance(value, dict) else None
+                thread_spawn = subagent.get("thread_spawn") if isinstance(subagent, dict) else None
                 is_spawned_subagent = is_spawned_subagent or (
-                    isinstance(subagent, dict)
-                    and isinstance(subagent.get("thread_spawn"), dict)
+                    isinstance(thread_spawn, dict)
                 )
+                child_id = payload.get("id")
+                agent_id = child_id if isinstance(child_id, str) else agent_id
+                nickname = payload.get("agent_nickname")
+                if not isinstance(nickname, str) and isinstance(thread_spawn, dict):
+                    nickname = thread_spawn.get("agent_nickname")
+                agent_nickname = nickname if isinstance(nickname, str) else agent_nickname
+                role_name = payload.get("agent_role")
+                if not isinstance(role_name, str) and isinstance(thread_spawn, dict):
+                    role_name = thread_spawn.get("agent_role")
+                agent_role = role_name if isinstance(role_name, str) else agent_role
                 instructions = payload.get("base_instructions")
                 if isinstance(instructions, dict):
                     text = instructions.get("text")
@@ -597,6 +774,12 @@ def transcript_meta(
     scan(head_objects, find_title=True)
     if last:
         scan(tail_objects, find_title=False)
+    exact_task_status, exact_task_started_at, exact_task_finished_at = _latest_task_state(path)
+    if exact_task_status is not None:
+        task_status = exact_task_status
+        task_active = exact_task_status == "working"
+        task_started_at = exact_task_started_at
+        task_finished_at = exact_task_finished_at
     return TranscriptMeta(
         session_id=session_id,
         cwd=cwd,
@@ -615,6 +798,12 @@ def transcript_meta(
         is_subagent=is_subagent,
         is_spawned_subagent=is_spawned_subagent,
         task_active=task_active,
+        task_started_at=task_started_at,
+        agent_id=agent_id,
+        agent_nickname=agent_nickname,
+        agent_role=agent_role,
+        task_finished_at=task_finished_at,
+        task_status=task_status,
     )
 
 

@@ -1,7 +1,17 @@
 {# One normalized transcript event. Tool calls stay as compact history rows;
    large tool outputs remain hidden. Empty Codex reasoning events are private
    liveness heartbeats and update the activity marker without rendering here. #}
-{%- if e.tool_name == 'reasoning' -%}
+{%- if e.subagent_status -%}
+<details class="ev tool subagent-update {{ e.subagent_status | replace(' ', '-') }}">
+  <summary>
+    <span class="subagent-update-icon" aria-hidden="true"></span>
+    <span class="tool-name">{{ e.subagent_name or 'Subagent' }} {{ e.subagent_status }}</span>
+    {% if e.tool_summary %}<span class="tool-peek">{{ e.tool_summary }}</span>{% endif %}
+    {% if e.ts %}<time class="ev-time" datetime="{{ e.ts.isoformat() }}" title="{{ e.ts | chat_time_title }}">{{ e.ts | chat_time }}</time>{% endif %}
+  </summary>
+  {% if e.text %}<div class="ev-text">{{ e.text }}</div>{% endif %}
+</details>
+{%- elif e.tool_name == 'reasoning' -%}
 {%- elif e.tool_name and not e.question -%}
 {% if e.tool_detail %}
 <details class="ev tool tool-call{% if e.subagent %} sub{% endif %}">

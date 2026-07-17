@@ -11,7 +11,14 @@ from agentdeck.assistant import AssistantInsight, AssistantView
 from agentdeck.config import AccountConfig, AppConfig, HistoryConfig
 from agentdeck.git_context import GitContext, PullRequestContext
 from agentdeck.host_stats import HostStats
-from agentdeck.models import Account, Capability, Session, SessionStatus, UsageSnapshot
+from agentdeck.models import (
+    Account,
+    Capability,
+    Session,
+    SessionStatus,
+    SubagentProgress,
+    UsageSnapshot,
+)
 from agentdeck.providers.claude_code.provider import worker_type
 
 
@@ -1431,6 +1438,25 @@ async def test_subagent_count_renders_on_card_and_detail_header(tmp_path):
     app = _app_with_state(tmp_path)
     session = app.state.app_state.sessions["claude_code:test:sid1"]
     session.subagent_count = 2
+    session.subagents = (
+        SubagentProgress(
+            agent_id="agent-1",
+            nickname="Faraday",
+            role="scout",
+            task="Inventory the Storm migration surface",
+            status="working",
+            updated_at=datetime(2026, 7, 17, 7, 42, tzinfo=UTC),
+        ),
+        SubagentProgress(
+            agent_id="agent-2",
+            nickname="Banach",
+            role="investigator",
+            task="Audit the canonical engine boundary",
+            status="finished",
+            result="Found one status-normalization bug.",
+            updated_at=datetime(2026, 7, 17, 7, 43, tzinfo=UTC),
+        ),
+    )
 
     async with _client(app) as client:
         dashboard = await client.get("/")
@@ -1439,6 +1465,39 @@ async def test_subagent_count_renders_on_card_and_detail_header(tmp_path):
     assert "2 sub-agents" in dashboard.text
     assert 'title="This chat is running spawned agents"' in dashboard.text
     assert "2 sub-agents" in detail.text
+    assert 'aria-label="Subagent progress"' in detail.text
+    assert "Faraday" in detail.text
+    assert "scout" in detail.text
+    assert "Inventory the Storm migration surface" in detail.text
+    assert "Banach" in detail.text
+    assert "Found one status-normalization bug." in detail.text
+
+
+def test_subagent_notification_renders_as_compact_expandable_row(tmp_path):
+    from agentdeck.models import TranscriptEvent
+    from agentdeck.web.render import render_transcript_events
+
+    app = _app_with_state(tmp_path)
+    html = render_transcript_events(
+        app.state.templates,
+        [
+            TranscriptEvent(
+                seq=1,
+                role="system",
+                text="Audit complete.\n\nFull evidence follows.",
+                tool_name="subagent",
+                tool_summary="Audit complete.",
+                subagent_status="finished",
+                subagent_id="agent-1",
+                subagent_name="Faraday",
+            )
+        ],
+    )
+
+    assert '<details class="ev tool subagent-update finished">' in html
+    assert "Faraday finished" in html
+    assert "Audit complete." in html
+    assert "Full evidence follows." in html
 
 
 async def test_dashboard_marks_chats_that_recently_stopped_working(tmp_path):

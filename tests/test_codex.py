@@ -230,6 +230,8 @@ async def test_running_spawned_agents_are_counted_on_parent_session(tmp_path):
                 "session_id": parent_sid,
                 "source": {"subagent": source},
                 "thread_source": "subagent",
+                "agent_nickname": "Faraday" if "thread_spawn" in source else None,
+                "agent_role": "scout" if "thread_spawn" in source else None,
             }
         )
         lines.extend(_line("event_msg", {"type": boundary}) for boundary in boundaries)
@@ -256,10 +258,217 @@ async def test_running_spawned_agents_are_counted_on_parent_session(tmp_path):
     assert transcripts.transcript_meta(active).task_active is True
     assert transcripts.transcript_meta(completed).task_active is False
 
+    # Durable task boundaries outrank a quiet file: a long-running subagent must
+    # remain visible instead of disappearing after the generic 30-second window.
+    old_time = time.time() - 10 * 60
+    os.utime(active, (old_time, old_time))
+
     provider = CodexProvider()
     (session,) = await provider.scan_sessions(_account(tmp_path))
     assert session.session_id == parent_sid
     assert session.subagent_count == 1
+    assert len(session.subagents) == 2
+    assert session.subagents[0].nickname == "Faraday"
+    assert session.subagents[0].role == "scout"
+    assert session.subagents[0].status == "quiet"
+    assert session.subagents[0].task == "Build the parser safely"
+    assert session.subagents[1].status == "finished"
+    assert session.subagents[1].result == "Implemented and tested"
+
+
+def test_codex_compacts_subagent_notifications_without_clobbering_last_prompt(tmp_path):
+    path = tmp_path / "rollout.jsonl"
+    notification = (
+        "<subagent_notification>\n"
+        + json.dumps(
+            {
+                "agent_path": "019f6085-5dbc-7f41-80b1-d32de9d80c14",
+                "status": {
+                    "completed": "Read-only audit complete.\n\nFound one parser gap."
+                },
+            }
+        )
+        + "\n</subagent_notification>"
+    )
+    path.write_text(
+        "".join(
+            json.dumps(item) + "\n"
+            for item in [
+                _message("user", "Review the UX"),
+                _message("user", notification),
+            ]
+        )
+    )
+
+    meta = transcripts.transcript_meta(path)
+    events = transcripts.read_events(path).events
+
+    assert meta.last_prompt == "Review the UX"
+    assert len(events) == 2
+    update = events[1]
+    assert update.role == "system"
+    assert update.subagent_status == "finished"
+    assert update.subagent_id == "019f6085-5dbc-7f41-80b1-d32de9d80c14"
+    assert update.tool_summary == "Read-only audit complete."
+    assert update.text == "Read-only audit complete.\n\nFound one parser gap."
+
+
+def test_codex_labels_wrapped_subagent_operations(tmp_path):
+    path = tmp_path / "rollout.jsonl"
+    lines = [
+        _line(
+            "response_item",
+            {
+                "type": "custom_tool_call",
+                "name": "exec",
+                "input": (
+                    "const a = await tools.multi_agent_v1__spawn_agent("
+                    "{agent_type:\"scout\"});"
+                ),
+            },
+        ),
+        _line(
+            "response_item",
+            {
+                "type": "custom_tool_call",
+                "name": "exec",
+                "input": "const r = await tools.multi_agent_v1__wait_agent({targets:[\"id\"]});",
+            },
+        ),
+    ]
+    path.write_text("".join(json.dumps(line) + "\n" for line in lines))
+
+    spawn, wait = transcripts.read_events(path).events
+    assert spawn.tool_display_name == "Start agents"
+    assert wait.tool_display_name == "Wait for agents"
+
+
+def test_codex_finds_latest_task_boundary_outside_bounded_meta_windows(tmp_path):
+    path = tmp_path / "large-rollout.jsonl"
+    lines = [
+        _line("session_meta", {"session_id": "parent", "id": "child"}),
+        _line(
+            "event_msg",
+            {"type": "task_started"},
+            timestamp="2026-07-17T06:28:00Z",
+        ),
+        _message("assistant", "x" * (160 * 1024)),
+        _line(
+            "event_msg",
+            {"type": "task_complete", "last_agent_message": "done"},
+            timestamp="2026-07-17T06:33:00Z",
+        ),
+        _message("assistant", "y" * (300 * 1024)),
+    ]
+    path.write_text("".join(json.dumps(line) + "\n" for line in lines))
+
+    meta = transcripts.transcript_meta(path)
+
+    assert meta.task_active is False
+    assert meta.task_status == "finished"
+    assert meta.task_started_at.isoformat() == "2026-07-17T06:28:00+00:00"
+    assert meta.task_finished_at.isoformat() == "2026-07-17T06:33:00+00:00"
+
+
+async def test_subagent_roster_stays_scoped_to_latest_completed_parent_turn(tmp_path):
+    parent_sid = "019f6073-17bd-7251-9db1-383bfe24c143"
+    parent = _rollout(tmp_path, parent_sid)
+    with parent.open("a") as handle:
+        for item in [
+            _line("event_msg", {"type": "task_started"}, "2026-07-17T10:01:00Z"),
+            _line("event_msg", {"type": "task_complete"}, "2026-07-17T10:02:00Z"),
+            _line("event_msg", {"type": "task_started"}, "2026-07-17T10:03:00Z"),
+            _line("event_msg", {"type": "task_complete"}, "2026-07-17T10:04:00Z"),
+        ]:
+            handle.write(json.dumps(item) + "\n")
+
+    def completed_child(sid: str, nickname: str, started: str, finished: str) -> None:
+        path = _rollout(tmp_path, sid)
+        lines = [json.loads(line) for line in path.read_text().splitlines()]
+        lines[0]["timestamp"] = started
+        lines[0]["payload"].update(
+            {
+                "session_id": parent_sid,
+                "id": sid,
+                "timestamp": started,
+                "source": {
+                    "subagent": {
+                        "thread_spawn": {
+                            "parent_thread_id": parent_sid,
+                            "agent_nickname": nickname,
+                            "agent_role": "scout",
+                        }
+                    }
+                },
+                "thread_source": "subagent",
+            }
+        )
+        lines.extend(
+            [
+                _line("event_msg", {"type": "task_started"}, started),
+                _line("event_msg", {"type": "task_complete"}, finished),
+            ]
+        )
+        path.write_text("".join(json.dumps(item) + "\n" for item in lines))
+
+    completed_child(
+        "019f6085-5dbc-7f41-80b1-d32de9d80c14",
+        "OldAgent",
+        "2026-07-17T10:01:10Z",
+        "2026-07-17T10:01:50Z",
+    )
+    completed_child(
+        "019f6085-6cb1-7920-891f-9403d202a6f0",
+        "CurrentAgent",
+        "2026-07-17T10:03:10Z",
+        "2026-07-17T10:03:50Z",
+    )
+
+    provider = CodexProvider()
+    (session,) = await provider.scan_sessions(_account(tmp_path))
+
+    assert session.subagent_count == 0
+    assert [agent.nickname for agent in session.subagents] == ["CurrentAgent"]
+
+
+async def test_spawn_output_names_fast_subagent_notification_before_periodic_scan(tmp_path):
+    parent_sid = "019f6073-17bd-7251-9db1-383bfe24c143"
+    path = _rollout(tmp_path, parent_sid)
+    agent_id = "019f6085-5dbc-7f41-80b1-d32de9d80c14"
+    notification = (
+        "<subagent_notification>\n"
+        + json.dumps(
+            {"agent_path": agent_id, "status": {"completed": "Audit complete."}}
+        )
+        + "\n</subagent_notification>"
+    )
+    with path.open("a") as handle:
+        for item in [
+            _line(
+                "response_item",
+                {
+                    "type": "custom_tool_call_output",
+                    "output": [
+                        {"type": "input_text", "text": "Script completed"},
+                        {
+                            "type": "input_text",
+                            "text": json.dumps(
+                                {"agent_id": agent_id, "nickname": "Faraday"}
+                            ),
+                        },
+                    ],
+                },
+            ),
+            _message("user", notification),
+        ]:
+            handle.write(json.dumps(item) + "\n")
+
+    provider = CodexProvider()
+    (session,) = await provider.scan_sessions(_account(tmp_path))
+    detail = await provider.load_transcript(_account(tmp_path), session)
+    update = next(event for event in detail.events if event.subagent_status)
+
+    assert update.subagent_name == "Faraday"
 
 
 async def test_completed_exec_session_is_injectable(tmp_path):
