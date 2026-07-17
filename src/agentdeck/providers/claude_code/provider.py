@@ -2,14 +2,17 @@
 
 Discovers sessions (live from the pid registry, idle from transcript files),
 reads their transcripts, surfaces per-account usage limits, and derives the
-claude.ai/code deep link for cloud/RC-spawned sessions. agentdeck is a
-read-only viewer — replies happen on claude.ai via the deep link, not here.
+claude.ai/code deep link for cloud/RC-spawned sessions. Existing CLI chats are
+read-only here (reply on claude.ai via the deep link); sessions the deck itself
+spawned as worker processes can be started and driven from the UI via the
+runtime service (new chat, send, steer, interrupt).
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -18,6 +21,7 @@ import httpx
 from ...models import (
     Account,
     Capability,
+    InjectResult,
     Session,
     SessionStatus,
     TokenTotals,
@@ -32,6 +36,7 @@ from . import kanban as kanban_mod
 from . import registry as registry_mod
 from . import transcripts as transcripts_mod
 from .usage import UsagePoller, fetch_usage_once
+from .worker_client import ClaudeWorkerClient
 
 # Max events rendered on a detail page; older ones fetched via "load earlier".
 DETAIL_WINDOW = 400
@@ -82,6 +87,10 @@ def _list_transcripts(config_dir: Path) -> dict[str, Path]:
 
 class ClaudeCodeProvider(SessionProvider):
     provider_id = "claude_code"
+    # New chats spawn deck-owned worker processes via the runtime service. When
+    # that service has no Claude workers (feature off), start_session returns a
+    # clean error and the provider stays a read-only transcript viewer.
+    supports_new_session = True
 
     def __init__(self) -> None:
         # (title, last_prompt, first_user, cwd, last_text) cache keyed by path,
@@ -98,6 +107,102 @@ class ClaudeCodeProvider(SessionProvider):
         self._ctx_cache: dict[str, tuple[float, int | None]] = {}
         # Resolves kanban dispatch prompts to real GitHub issue titles.
         self._kanban = kanban_mod.KanbanTitleCache()
+        # Deck-owned worker clients (one per account) — only populated when the
+        # runtime service actually serves Claude workers for that account.
+        self._workers: dict[str, ClaudeWorkerClient] = {}
+        self._states: dict[str, object] = {}
+        self._watch_tasks: dict[str, asyncio.Task] = {}
+
+    # --- deck-owned workers (optional; runtime-gated) ------------------
+
+    async def start_account(self, account: Account, state) -> None:
+        client = ClaudeWorkerClient(account, on_change=lambda: state.bus.publish("sessions"))
+        if not await client.probe():
+            # Workers disabled or runtime absent — stay a read-only viewer.
+            await client.stop()
+            return
+        self._workers[account.key] = client
+        self._states[account.key] = state
+        self._watch_tasks[account.key] = asyncio.create_task(
+            self._watch(account, client), name=f"claude-workers:{account.key}"
+        )
+
+    async def _watch(self, account: Account, client: ClaudeWorkerClient) -> None:
+        while True:
+            await asyncio.sleep(1.0)
+            try:
+                await client.refresh()  # publishes "sessions" itself on change
+            except Exception as exc:  # noqa: BLE001 -- reconnect on the next poll
+                log.debug("claude worker refresh failed for %s: %s", account.key, exc)
+
+    async def stop_account(self, account: Account) -> None:
+        task = self._watch_tasks.pop(account.key, None)
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        self._states.pop(account.key, None)
+        client = self._workers.pop(account.key, None)
+        if client is not None:
+            await client.stop()
+
+    async def start_session(
+        self,
+        account: Account,
+        cwd: Path,
+        message: str,
+        *,
+        timeout_s: float,
+        images: list[Path] | None = None,
+        sandbox: str | None = None,
+        model: str | None = None,
+        approval_policy: str | None = None,
+    ) -> InjectResult:
+        client = self._workers.get(account.key)
+        if client is None:
+            return InjectResult(False, "Claude workers are not enabled on the runtime service")
+        key = f"chat-{uuid.uuid4().hex[:8]}"
+        return await client.deliver(key, message, cwd=str(cwd), fresh=True)
+
+    async def _deliver_to_session(
+        self, account: Account, session: Session, message: str
+    ) -> InjectResult:
+        client = self._workers.get(account.key)
+        if client is None:
+            return InjectResult(False, "Claude workers are not enabled on the runtime service")
+        key = client.key_for(session.session_id)
+        if key is None:
+            return InjectResult(False, "this session is not a deck-owned worker")
+        return await client.deliver(key, message)
+
+    async def inject(
+        self,
+        account: Account,
+        session: Session,
+        message: str,
+        *,
+        timeout_s: float,
+        images: list[Path] | None = None,
+    ) -> InjectResult:
+        return await self._deliver_to_session(account, session, message)
+
+    async def steer(
+        self,
+        account: Account,
+        session: Session,
+        message: str,
+        *,
+        images: list[Path] | None = None,
+    ) -> InjectResult:
+        return await self._deliver_to_session(account, session, message)
+
+    async def interrupt(self, account: Account, session: Session) -> InjectResult:
+        client = self._workers.get(account.key)
+        if client is None:
+            return InjectResult(False, "Claude workers are not enabled on the runtime service")
+        key = client.key_for(session.session_id)
+        if key is None:
+            return InjectResult(False, "this session is not a deck-owned worker")
+        return await client.interrupt(key)
 
     def _cached_meta(self, path: Path) -> tuple[str | None, ...]:
         try:
@@ -259,6 +364,18 @@ class ClaudeCodeProvider(SessionProvider):
                 caps.add(Capability.TRANSCRIPT)  # readable from v0.2
             if deep_link is not None:
                 caps.add(Capability.DEEPLINK)
+
+            # Deck-owned worker sessions can be driven: send a message any time
+            # (deliver steers/queues/revives), and stop/steer while a turn runs.
+            # Headless workers don't appear in the CLI registry, so the worker's
+            # own turn state — not registry liveness — decides LIVE here.
+            workers = self._workers.get(account.key)
+            if workers is not None and workers.owns(sid):
+                caps.add(Capability.INJECT)
+                if workers.turn_active(sid):
+                    caps.update({Capability.STEER, Capability.INTERRUPT})
+                    status = SessionStatus.LIVE
+                    thinking = True
 
             wtype = worker_type(kref is not None, deep_link is not None)
 

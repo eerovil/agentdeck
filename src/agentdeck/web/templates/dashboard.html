@@ -8,7 +8,7 @@
 </div>
 {% if new_chat_enabled and new_chat_accounts %}
 <details class="new-chat">
-  <summary>＋ New Codex chat</summary>
+  <summary>＋ New chat</summary>
   <form hx-post="/sessions/new" hx-target="#new-session-result" hx-swap="outerHTML"
         hx-disabled-elt="find button" hx-encoding="multipart/form-data" data-clear-on-send
         data-agentdeck-action="new_session">

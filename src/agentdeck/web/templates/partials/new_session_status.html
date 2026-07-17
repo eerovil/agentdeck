@@ -2,10 +2,10 @@
 <div id="new-session-result" class="inject-result running"
      hx-get="/partials/new-session-status?account_key={{ account_key | urlencode }}"
      hx-trigger="load delay:2s" hx-swap="outerHTML">
-  Starting the Codex chat… It will appear in the session list shortly.
+  Starting the chat… It will appear in the session list shortly.
 </div>
 {% elif new_status and new_status.state == 'complete' %}
-<div id="new-session-result" class="inject-result complete">New Codex chat completed.</div>
+<div id="new-session-result" class="inject-result complete">New chat completed.</div>
 {% elif new_status and new_status.state == 'failed' %}
 <div id="new-session-result" class="inject-result failed">{{ new_status.reason or 'Could not start the chat.' }}</div>
 {% else %}
