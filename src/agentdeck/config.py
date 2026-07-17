@@ -102,6 +102,27 @@ class AssistantConfig(BaseModel):
         return value
 
 
+class ClaudeWorkersConfig(BaseModel):
+    """Deck-owned Claude worker processes (spawn/steer/revive via the runtime API)."""
+
+    enabled: bool = False
+    max_workers: int = 4  # per account; delivery to a live worker is exempt
+    permission_mode: str = ""  # e.g. "acceptEdits" / "bypassPermissions"; "" = CLI default
+    model: str = ""  # "" = account default model
+    state_dir: str = "~/.local/share/agentdeck/claude-workers"
+
+    @field_validator("max_workers")
+    @classmethod
+    def _positive_max_workers(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("claude_workers.max_workers must be positive")
+        return value
+
+    @property
+    def state_path(self) -> Path:
+        return Path(self.state_dir).expanduser()
+
+
 class AccountConfig(BaseModel):
     provider: str
     label: str
@@ -137,6 +158,7 @@ class AppConfig(BaseModel):
     history: HistoryConfig = HistoryConfig()
     inject: InjectConfig = InjectConfig()
     assistant: AssistantConfig = AssistantConfig()
+    claude_workers: ClaudeWorkersConfig = ClaudeWorkersConfig()
     accounts: list[AccountConfig] = []
 
     @model_validator(mode="after")

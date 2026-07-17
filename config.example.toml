@@ -46,6 +46,15 @@ max_sessions = 30                  # active first, then most recently active
 auto_answer = false
 auto_answer_confidence = 0.9
 
+# Deck-owned Claude worker processes (spawned/steered/revived through the
+# runtime service's /claude/... API). Off by default — see docs/worker-runtime.md.
+#[claude_workers]
+#enabled = true
+#max_workers = 4                # per account; steering a live worker is exempt
+#permission_mode = "acceptEdits" # or "bypassPermissions" for fully autonomous workers
+#model = ""                      # "" = account default
+#state_dir = "~/.local/share/agentdeck/claude-workers"
+
 # One [[accounts]] block per agent-CLI config dir. Labels must be unique,
 # lowercase slug-safe (they appear in URLs and cache filenames).
 [[accounts]]

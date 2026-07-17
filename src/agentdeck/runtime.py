@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from .config import AppConfig
 from .models import Account, InjectResult
+from .providers.claude_code.worker import ClaudeWorkerHost, DeliverResult
 from .providers.codex.appserver import CodexAppServer
 from .providers.codex.runtime_client import runtime_socket_path
 
@@ -56,6 +57,50 @@ class AnswerRequest(ActionRequest):
 
 def _result(result: InjectResult) -> dict[str, Any]:
     return asdict(result)
+
+
+class DeliverRequest(ActionRequest):
+    key: str
+    message: str
+    cwd: str | None = None
+    fresh: bool = False
+
+
+class ClaudeWorkerRuntime:
+    """Own deck-managed Claude worker hosts, one per claude_code account."""
+
+    def __init__(self, config: AppConfig) -> None:
+        self.settings = config.claude_workers
+        self.accounts = {
+            account.label: account
+            for account in config.build_accounts()
+            if account.provider_id == "claude_code"
+        }
+        self.hosts: dict[str, ClaudeWorkerHost] = {}
+
+    def host(self, label: str) -> ClaudeWorkerHost:
+        if not self.settings.enabled:
+            raise HTTPException(status_code=404, detail="claude workers are disabled")
+        account = self.accounts.get(label)
+        if account is None:
+            raise HTTPException(status_code=404, detail="unknown Claude account")
+        host = self.hosts.get(label)
+        if host is None:
+            host = ClaudeWorkerHost(
+                account,
+                state_dir=self.settings.state_path,
+                max_workers=self.settings.max_workers,
+                permission_mode=self.settings.permission_mode or None,
+                model=self.settings.model or None,
+            )
+            self.hosts[label] = host
+        return host
+
+    async def stop(self) -> None:
+        await asyncio.gather(
+            *(host.stop() for host in self.hosts.values()), return_exceptions=True
+        )
+        self.hosts.clear()
 
 
 async def _timed_action(
@@ -188,6 +233,7 @@ def _preserve_images(account: Account, values: list[str]) -> tuple[list[Path], P
 
 def create_runtime_app(config: AppConfig) -> FastAPI:
     runtime = CodexRuntime(config)
+    claude_workers = ClaudeWorkerRuntime(config)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -196,13 +242,47 @@ def create_runtime_app(config: AppConfig) -> FastAPI:
             yield
         finally:
             await runtime.stop()
+            await claude_workers.stop()
 
     app = FastAPI(title="agentdeck-codex-runtime", lifespan=lifespan)
     app.state.runtime = runtime
+    app.state.claude_workers = claude_workers
 
     @app.get("/healthz")
     async def healthz() -> dict[str, Any]:
         return {"ok": True, "accounts": sorted(runtime.clients)}
+
+    # --- deck-owned Claude workers (config-gated) ----------------------
+
+    def _deliver_result(result: DeliverResult) -> dict[str, Any]:
+        return asdict(result)
+
+    @app.get("/claude/accounts/{label}/workers")
+    async def claude_workers_state(label: str) -> dict[str, Any]:
+        return claude_workers.host(label).snapshot()
+
+    @app.post("/claude/accounts/{label}/deliver")
+    async def claude_deliver(label: str, body: DeliverRequest) -> dict[str, Any]:
+        host = claude_workers.host(label)
+        result = await _timed_action(
+            "claude_deliver",
+            label,
+            body.client_action_id,
+            lambda: host.deliver(body.key, body.message, cwd=body.cwd, fresh=body.fresh),
+        )
+        return _deliver_result(result)
+
+    @app.post("/claude/accounts/{label}/workers/{key}/interrupt")
+    async def claude_interrupt(label: str, key: str) -> dict[str, Any]:
+        return _deliver_result(await claude_workers.host(label).interrupt(key))
+
+    @app.post("/claude/accounts/{label}/workers/{key}/stop")
+    async def claude_stop(label: str, key: str) -> dict[str, Any]:
+        return _deliver_result(await claude_workers.host(label).stop_worker(key))
+
+    @app.delete("/claude/accounts/{label}/workers/{key}")
+    async def claude_forget(label: str, key: str) -> dict[str, Any]:
+        return {"removed": claude_workers.host(label).forget(key)}
 
     @app.get("/accounts/{label}/state")
     async def state(label: str) -> dict[str, Any]:
