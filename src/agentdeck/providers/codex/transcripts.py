@@ -135,12 +135,19 @@ def _text_content(content: object) -> str | None:
 def _strings(value: object, *, json_depth: int = 2):
     if isinstance(value, str):
         yield value
-        if json_depth and value.lstrip().startswith(("{", "[")):
-            try:
-                decoded = json.loads(value)
-            except (TypeError, ValueError):
-                return
-            yield from _strings(decoded, json_depth=json_depth - 1)
+        if json_depth:
+            candidates = [value]
+            if "\n" in value:
+                candidates.extend(value.splitlines())
+            for candidate in candidates:
+                candidate = candidate.strip()
+                if not candidate.startswith(("{", "[")):
+                    continue
+                try:
+                    decoded = json.loads(candidate)
+                except (TypeError, ValueError):
+                    continue
+                yield from _strings(decoded, json_depth=json_depth - 1)
     elif isinstance(value, list):
         for item in value:
             yield from _strings(item, json_depth=json_depth)

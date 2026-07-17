@@ -105,12 +105,11 @@ def test_delegated_session_keys_accepts_json_encoded_output_lines(tmp_path):
         "type": "response_item",
         "payload": {
             "type": "custom_tool_call_output",
-            "output": json.dumps(
+            "output": "=== 45285 ===\n"
+            + json.dumps(
                 {
-                    "output": (
-                        "AgentDeck delegation started.\\n"
-                        f"AgentDeck delegation: running (/sessions/{child_key})\\n"
-                    )
+                    "session_id": 45285,
+                    "output": f"AgentDeck delegation: running (/sessions/{child_key})\\n",
                 }
             ),
         },
