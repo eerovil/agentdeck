@@ -117,6 +117,44 @@ async def test_deliver_to_live_worker_steers_without_new_spawn(tmp_path):
     await host.stop()
 
 
+async def test_delivery_id_replay_is_deduplicated_across_restart(tmp_path):
+    host, spawned = _host(tmp_path)
+    first = await host.deliver(
+        "issue-1", "start", cwd=str(tmp_path), delivery_id="attempt-1"
+    )
+    replay = await host.deliver(
+        "issue-1", "start", cwd=str(tmp_path), delivery_id="attempt-1"
+    )
+
+    assert first.accepted and replay == first
+    assert len(spawned) == 1
+    assert len(spawned[0]["process"].stdin.lines) == 1
+    await host.stop()
+
+    reloaded, spawned_after_restart = _host(tmp_path)
+    replay_after_restart = await reloaded.deliver(
+        "issue-1", "start", cwd=str(tmp_path), delivery_id="attempt-1"
+    )
+    assert replay_after_restart == first
+    assert spawned_after_restart == []
+
+
+async def test_delivery_id_rejects_conflicting_payload(tmp_path):
+    host, spawned = _host(tmp_path)
+    await host.deliver(
+        "issue-1", "start", cwd=str(tmp_path), delivery_id="attempt-1"
+    )
+
+    conflict = await host.deliver(
+        "issue-1", "different", cwd=str(tmp_path), delivery_id="attempt-1"
+    )
+
+    assert not conflict.accepted
+    assert conflict.reason == "delivery_id_conflict"
+    assert len(spawned[0]["process"].stdin.lines) == 1
+    await host.stop()
+
+
 async def test_deliver_after_exit_revives_with_resume(tmp_path):
     host, spawned = _host(tmp_path)
     await host.deliver("issue-1", "start", cwd=str(tmp_path))
@@ -255,6 +293,43 @@ async def test_state_persists_across_host_restarts(tmp_path):
     assert result.accepted and result.action == "revived"
     assert "--resume" in spawned2[0]["args"]
     await reloaded.stop()
+
+
+async def test_park_frees_capacity_and_next_delivery_revives(tmp_path):
+    host, spawned = _host(tmp_path, max_workers=1)
+    await host.deliver("issue-1", "start", cwd=str(tmp_path))
+
+    parked = await host.park_worker("issue-1")
+    parked_again = await host.park_worker("issue-1")
+
+    assert parked.accepted and parked.action == "parked"
+    assert parked_again.accepted
+    assert host.snapshot()["live_count"] == 0
+    assert "issue-1" in host.snapshot()["workers"]
+
+    revived = await host.deliver("issue-1", "continue")
+    assert revived.accepted and revived.action == "revived"
+    assert "--resume" in spawned[1]["args"]
+    await host.stop()
+
+
+async def test_park_unknown_key_is_idempotently_accepted(tmp_path):
+    host, _ = _host(tmp_path)
+    result = await host.park_worker("already-gone")
+    assert result.accepted and result.action == "parked"
+
+
+async def test_release_is_idempotent_and_forgets_lineage(tmp_path):
+    host, spawned = _host(tmp_path)
+    await host.deliver("issue-1", "start", cwd=str(tmp_path))
+
+    released = await host.release_worker("issue-1")
+    released_again = await host.release_worker("issue-1")
+
+    assert released.accepted and released.action == "released"
+    assert released_again.accepted and released_again.action == "released"
+    assert spawned[0]["process"].returncode == 0
+    assert "issue-1" not in host.snapshot()["workers"]
 
 
 async def test_worker_command_includes_configured_flags(tmp_path):

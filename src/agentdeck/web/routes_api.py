@@ -92,6 +92,7 @@ class WorkerDeliverRequest(BaseModel):
     message: str
     cwd: str | None = None
     fresh: bool = False
+    delivery_id: str | None = None
 
 
 class WorkerKeyRequest(BaseModel):
@@ -141,6 +142,20 @@ async def claude_interrupt(request: Request, label: str, body: WorkerKeyRequest)
 async def claude_stop(request: Request, label: str, body: WorkerKeyRequest) -> dict:
     return await _runtime_proxy(
         request, "POST", f"/claude/accounts/{label}/stop", json=body.model_dump()
+    )
+
+
+@router.post("/claude/accounts/{label}/park")
+async def claude_park(request: Request, label: str, body: WorkerKeyRequest) -> dict:
+    return await _runtime_proxy(
+        request, "POST", f"/claude/accounts/{label}/park", json=body.model_dump()
+    )
+
+
+@router.post("/claude/accounts/{label}/release")
+async def claude_release(request: Request, label: str, body: WorkerKeyRequest) -> dict:
+    return await _runtime_proxy(
+        request, "POST", f"/claude/accounts/{label}/release", json=body.model_dump()
     )
 
 

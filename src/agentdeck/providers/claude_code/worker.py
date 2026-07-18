@@ -2,7 +2,7 @@
 
 Each worker is one long-lived ``claude -p --input-format stream-json`` process.
 The host keys workers by an opaque *dedupe key* and exposes one idempotent
-primitive — ``deliver(key, message)`` — which steers a live worker, revives a
+primitive — ``deliver(key, delivery_id, message)`` — which steers a live worker, revives a
 finished session (``--resume``), or spawns a fresh one. Callers (e.g. an
 external board poller) never track process state themselves.
 
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import mimetypes
@@ -50,7 +51,7 @@ class WorkerError(RuntimeError):
 @dataclass
 class DeliverResult:
     accepted: bool
-    action: str  # "spawned" | "revived" | "steered" | "queued" | "rejected"
+    action: str  # spawned/revived/steered/queued/parked/released/stopped/rejected
     reason: str | None = None
     session_id: str | None = None
 
@@ -65,6 +66,7 @@ class WorkerRecord:
     last_delivery_at: float = 0.0
     last_result_at: float = 0.0
     last_result_subtype: str | None = None
+    deliveries: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass
@@ -203,16 +205,34 @@ class ClaudeWorkerHost:
         images: list[str] | None = None,
         model: str | None = None,
         permission_mode: str | None = None,
+        delivery_id: str | None = None,
     ) -> DeliverResult:
-        """Idempotent work delivery: steer if live, revive if finished, else spawn."""
-        try:
-            image_blocks = [
-                await asyncio.to_thread(self._image_block, path) for path in images or []
-            ]
-        except WorkerError as exc:
-            return DeliverResult(False, "rejected", reason=str(exc))
+        """Idempotent work delivery: steer if live, revive if finished, else spawn.
+
+        ``delivery_id`` is optional for interactive callers, but durable dispatchers
+        should always provide one. An accepted id is persisted with a fingerprint and
+        its original result before the HTTP response is returned, so an ambiguous retry
+        cannot write the same message twice or replace a successfully spawned worker.
+        """
+        fingerprint = self._delivery_fingerprint(
+            message,
+            cwd=cwd,
+            fresh=fresh,
+            images=images or [],
+            model=model,
+            permission_mode=permission_mode,
+        )
         async with self._lock:
             rec = self._records.get(key)
+            cached = self._cached_delivery(rec, delivery_id, fingerprint)
+            if cached is not None:
+                return cached
+            try:
+                image_blocks = [
+                    await asyncio.to_thread(self._image_block, path) for path in images or []
+                ]
+            except WorkerError as exc:
+                return DeliverResult(False, "rejected", reason=str(exc))
             live = self._live.get(key)
 
             if live is not None and live.process.returncode is None and not fresh:
@@ -221,10 +241,12 @@ class ClaudeWorkerHost:
                 except WorkerError as exc:
                     return DeliverResult(False, "rejected", reason=str(exc))
                 rec.last_delivery_at = time.time()
-                self._save_state()
                 action = "steered" if live.turn_active else "queued"
                 live.turn_active = True
-                return DeliverResult(True, action, session_id=rec.session_id)
+                result = DeliverResult(True, action, session_id=rec.session_id)
+                self._remember_delivery(rec, delivery_id, fingerprint, result)
+                self._save_state()
+                return result
 
             admission_checked = False
             # A fresh delivery replaces the existing process atomically. Check
@@ -295,9 +317,71 @@ class ClaudeWorkerHost:
                     return DeliverResult(False, "rejected", reason=str(exc))
 
             rec.last_delivery_at = time.time()
-            self._save_state()
             action = "revived" if resumed else "spawned"
-            return DeliverResult(True, action, session_id=rec.session_id)
+            result = DeliverResult(True, action, session_id=rec.session_id)
+            self._remember_delivery(rec, delivery_id, fingerprint, result)
+            self._save_state()
+            return result
+
+    @staticmethod
+    def _delivery_fingerprint(
+        message: str,
+        *,
+        cwd: str | None,
+        fresh: bool,
+        images: list[str],
+        model: str | None,
+        permission_mode: str | None,
+    ) -> str:
+        payload = json.dumps(
+            {
+                "message": message,
+                "cwd": cwd,
+                "fresh": fresh,
+                "images": images,
+                "model": model,
+                "permission_mode": permission_mode,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(payload.encode()).hexdigest()
+
+    @staticmethod
+    def _cached_delivery(
+        rec: WorkerRecord | None,
+        delivery_id: str | None,
+        fingerprint: str,
+    ) -> DeliverResult | None:
+        if rec is None or not delivery_id:
+            return None
+        receipt = rec.deliveries.get(delivery_id)
+        if receipt is None:
+            return None
+        if receipt.get("fingerprint") != fingerprint:
+            return DeliverResult(False, "rejected", reason="delivery_id_conflict")
+        return DeliverResult(
+            True,
+            str(receipt.get("action") or "queued"),
+            session_id=receipt.get("session_id"),
+        )
+
+    @staticmethod
+    def _remember_delivery(
+        rec: WorkerRecord,
+        delivery_id: str | None,
+        fingerprint: str,
+        result: DeliverResult,
+    ) -> None:
+        if not delivery_id:
+            return
+        rec.deliveries[delivery_id] = {
+            "fingerprint": fingerprint,
+            "action": result.action,
+            "session_id": result.session_id,
+        }
+        while len(rec.deliveries) > 64:
+            rec.deliveries.pop(next(iter(rec.deliveries)))
 
     async def interrupt(self, key: str) -> DeliverResult:
         live = self._live.get(key)
@@ -324,12 +408,45 @@ class ClaudeWorkerHost:
         return DeliverResult(True, "interrupted", session_id=rec.session_id if rec else None)
 
     async def stop_worker(self, key: str) -> DeliverResult:
-        live = self._live.pop(key, None)
-        if live is None:
-            return DeliverResult(False, "rejected", reason="not_live")
-        await self._terminate(live)
-        rec = self._records.get(key)
-        return DeliverResult(True, "stopped", session_id=rec.session_id if rec else None)
+        async with self._lock:
+            live = self._live.pop(key, None)
+            if live is None:
+                return DeliverResult(False, "rejected", reason="not_live")
+            await self._terminate(live)
+            rec = self._records.get(key)
+            return DeliverResult(True, "stopped", session_id=rec.session_id if rec else None)
+
+    async def park_worker(self, key: str) -> DeliverResult:
+        """Terminate a process while retaining resumable session lineage.
+
+        Parking is idempotent: an already parked known key is accepted so callers
+        can safely retry after losing the response.
+        """
+        async with self._lock:
+            rec = self._records.get(key)
+            live = self._live.pop(key, None)
+            if live is not None:
+                await self._terminate(live)
+            # Unknown is already safely parked. Accept it so a caller that lost
+            # the original response (or survived state repair) never deadlocks
+            # its own durable lifecycle transition.
+            return DeliverResult(
+                True, "parked", session_id=rec.session_id if rec else None
+            )
+
+    async def release_worker(self, key: str) -> DeliverResult:
+        """Terminate and forget a key atomically; safe to retry after success."""
+        async with self._lock:
+            rec = self._records.get(key)
+            live = self._live.pop(key, None)
+            if live is not None:
+                await self._terminate(live)
+            if rec is not None:
+                self._records.pop(key, None)
+                self._save_state()
+            return DeliverResult(
+                True, "released", session_id=rec.session_id if rec else None
+            )
 
     def forget(self, key: str) -> bool:
         """Drop a finished key's record (its session lineage) from the registry."""

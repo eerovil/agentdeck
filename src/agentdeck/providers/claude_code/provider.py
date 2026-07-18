@@ -152,7 +152,14 @@ class ClaudeCodeProvider(SessionProvider):
         # read-only equivalent; workspace-write uses the account's configured
         # permission mode so interactive and autonomous accounts keep their
         # existing policy.
-        return "plan" if sandbox == "read-only" else None
+        if sandbox == "read-only":
+            return "plan"
+        if sandbox is None:
+            # Dashboard-created chats are interactive. Explicit machine
+            # delegations pass a sandbox value and may inherit the account's
+            # autonomous worker policy.
+            return "default"
+        return None
 
     async def start_session(
         self,

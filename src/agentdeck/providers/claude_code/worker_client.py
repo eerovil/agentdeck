@@ -124,6 +124,7 @@ class ClaudeWorkerClient:
         images: list[str] | None = None,
         model: str | None = None,
         permission_mode: str | None = None,
+        delivery_id: str | None = None,
     ) -> InjectResult:
         return await self._post(
             "deliver",
@@ -135,6 +136,7 @@ class ClaudeWorkerClient:
                 "images": images or [],
                 "model": model,
                 "permission_mode": permission_mode,
+                "delivery_id": delivery_id,
             },
         )
 

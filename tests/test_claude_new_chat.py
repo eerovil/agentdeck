@@ -79,6 +79,7 @@ async def test_client_maps_sessions_and_delivers():
         images=[],
         model=None,
         permission_mode=None,
+        delivery_id=None,
     )
     await client.stop()
 
@@ -196,7 +197,7 @@ async def test_start_session_spawns_fresh_worker():
     assert result.accepted
     kind, key, message, cwd, fresh, images, model, permission_mode = fake.calls[0]
     assert (kind, message, cwd, fresh) == ("deliver", "hello", "/tmp", True)
-    assert images == [] and model is None and permission_mode is None
+    assert images == [] and model is None and permission_mode == "default"
     assert key.startswith("chat-")  # generated key
 
 

@@ -95,6 +95,8 @@ async def test_deliver_and_key_endpoints_route_to_host():
     host.deliver = AsyncMock(return_value=DeliverResult(True, "spawned", session_id="s1"))
     host.interrupt = AsyncMock(return_value=DeliverResult(True, "interrupted"))
     host.stop_worker = AsyncMock(return_value=DeliverResult(True, "stopped"))
+    host.park_worker = AsyncMock(return_value=DeliverResult(True, "parked"))
+    host.release_worker = AsyncMock(return_value=DeliverResult(True, "released"))
     host.forget = MagicMock(return_value=True)
     app.state.claude_workers.hosts["main"] = host
 
@@ -103,10 +105,17 @@ async def test_deliver_and_key_endpoints_route_to_host():
     ) as client:
         d = await client.post(
             "/claude/accounts/main/deliver",
-            json={"key": "owner/repo#12", "message": "go", "cwd": "/tmp"},
+            json={
+                "key": "owner/repo#12",
+                "message": "go",
+                "cwd": "/tmp",
+                "delivery_id": "attempt-1",
+            },
         )
         i = await client.post("/claude/accounts/main/interrupt", json={"key": "owner/repo#12"})
         s = await client.post("/claude/accounts/main/stop", json={"key": "owner/repo#12"})
+        p = await client.post("/claude/accounts/main/park", json={"key": "owner/repo#12"})
+        r = await client.post("/claude/accounts/main/release", json={"key": "owner/repo#12"})
         f = await client.post("/claude/accounts/main/forget", json={"key": "owner/repo#12"})
 
     assert d.json() == {
@@ -124,12 +133,17 @@ async def test_deliver_and_key_endpoints_route_to_host():
         images=[],
         model=None,
         permission_mode=None,
+        delivery_id="attempt-1",
     )
     host.interrupt.assert_awaited_once_with("owner/repo#12")
     host.stop_worker.assert_awaited_once_with("owner/repo#12")
+    host.park_worker.assert_awaited_once_with("owner/repo#12")
+    host.release_worker.assert_awaited_once_with("owner/repo#12")
     host.forget.assert_called_once_with("owner/repo#12")
     assert i.json()["action"] == "interrupted"
     assert s.json()["action"] == "stopped"
+    assert p.json()["action"] == "parked"
+    assert r.json()["action"] == "released"
     assert f.json() == {"removed": True}
 
 

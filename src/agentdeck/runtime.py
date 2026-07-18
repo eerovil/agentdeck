@@ -68,6 +68,7 @@ class DeliverRequest(ActionRequest):
     images: list[str] = Field(default_factory=list)
     model: str | None = None
     permission_mode: str | None = None
+    delivery_id: str | None = None
 
 
 class WorkerKeyRequest(ActionRequest):
@@ -291,6 +292,7 @@ def create_runtime_app(config: AppConfig) -> FastAPI:
                 images=body.images,
                 model=body.model,
                 permission_mode=body.permission_mode,
+                delivery_id=body.delivery_id,
             ),
         )
         return _deliver_result(result)
@@ -302,6 +304,14 @@ def create_runtime_app(config: AppConfig) -> FastAPI:
     @app.post("/claude/accounts/{label}/stop")
     async def claude_stop(label: str, body: WorkerKeyRequest) -> dict[str, Any]:
         return _deliver_result(await claude_workers.host(label).stop_worker(body.key))
+
+    @app.post("/claude/accounts/{label}/park")
+    async def claude_park(label: str, body: WorkerKeyRequest) -> dict[str, Any]:
+        return _deliver_result(await claude_workers.host(label).park_worker(body.key))
+
+    @app.post("/claude/accounts/{label}/release")
+    async def claude_release(label: str, body: WorkerKeyRequest) -> dict[str, Any]:
+        return _deliver_result(await claude_workers.host(label).release_worker(body.key))
 
     @app.post("/claude/accounts/{label}/forget")
     async def claude_forget(label: str, body: WorkerKeyRequest) -> dict[str, Any]:

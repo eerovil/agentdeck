@@ -21,7 +21,7 @@ One worker = one long-lived `claude -p --input-format stream-json
 Transcripts land in `<CLAUDE_CONFIG_DIR>/projects/`, so the ordinary
 ClaudeCodeProvider scan displays deck-owned workers with no extra plumbing.
 
-## The one primitive: `deliver(key, message)`
+## The one primitive: `deliver(key, delivery_id, message)`
 
 Workers are keyed by an opaque **dedupe key** chosen by the caller (e.g.
 `kanban:owner/repo#123`). At most one live worker exists per key. `deliver`
@@ -34,6 +34,11 @@ is idempotent and picks the right mechanic itself:
 | exited, session known | revive: fresh process with `--resume` |
 | unknown | spawn fresh (requires `cwd`) |
 | revive fails (transcript gone, incompatible) | automatic fresh-spawn fallback |
+
+Durable dispatchers provide a stable `delivery_id`. Agentdeck persists accepted
+IDs and their original results, so retrying after an ambiguous HTTP failure
+returns that result without writing the message twice. Reusing an ID with a
+different payload is rejected.
 
 `fresh: true` forces a clean-slate spawn for a poisoned session. Capacity
 (`max_workers`, per account) applies only to (re)spawns — steering a live
@@ -49,15 +54,18 @@ runtime service so web redeploys never kill workers:
 
 ```
 GET    /claude/accounts/{label}/workers                  # registry snapshot
-POST   /claude/accounts/{label}/deliver                  # {key, message, cwd?, fresh?}
+POST   /claude/accounts/{label}/deliver                  # {key, delivery_id?, message, cwd?, fresh?}
 POST   /claude/accounts/{label}/interrupt                # {key}
 POST   /claude/accounts/{label}/stop                     # {key}; terminate, keep lineage
+POST   /claude/accounts/{label}/park                     # {key}; idempotent stop, keep lineage
+POST   /claude/accounts/{label}/release                  # {key}; idempotent stop + forget
 POST   /claude/accounts/{label}/forget                   # {key}; forget finished lineage
 ```
 
 `deliver` responds `{accepted, action, reason?, session_id}` with action one of
 `spawned | revived | steered | queued | rejected`. Callers need no other state:
-poll the snapshot each cycle and re-`deliver` anything that was rejected.
+poll the snapshot each cycle and re-`deliver` anything that was rejected. Reuse
+the same delivery ID until an accepted response is observed.
 
 ## Configuration
 
