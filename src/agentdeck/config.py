@@ -102,6 +102,27 @@ class AssistantConfig(BaseModel):
         return value
 
 
+class ClaudeWorkerOverrides(BaseModel):
+    """Per-account overrides for [claude_workers]; unset fields inherit the base.
+
+    Lets e.g. an autonomous worker account run with permission_mode =
+    "bypassPermissions" while interactive accounts keep the CLI default.
+    """
+
+    max_workers: int | None = None
+    permission_mode: str | None = None
+    model: str | None = None
+    usage_ceiling_pct: float | None = None
+    stall_after_s: float | None = None
+
+    @field_validator("max_workers")
+    @classmethod
+    def _positive_max_workers(cls, value: int | None) -> int | None:
+        if value is not None and value <= 0:
+            raise ValueError("claude_workers accounts max_workers must be positive")
+        return value
+
+
 class ClaudeWorkersConfig(BaseModel):
     """Deck-owned Claude worker processes (spawn/steer/revive via the runtime API)."""
 
@@ -114,6 +135,20 @@ class ClaudeWorkersConfig(BaseModel):
         0.0  # flag a live worker stalled after this many silent seconds; 0 disables
     )
     state_dir: str = "~/.local/share/agentdeck/claude-workers"
+    # Keyed by account label: [claude_workers.accounts.<label>]
+    accounts: dict[str, ClaudeWorkerOverrides] = {}
+
+    def for_account(self, label: str) -> ClaudeWorkersConfig:
+        """Effective settings for one account (base + that account's overrides)."""
+        override = self.accounts.get(label)
+        if override is None:
+            return self
+        merged = {
+            field: value
+            for field, value in override.model_dump().items()
+            if value is not None
+        }
+        return self.model_copy(update=merged)
 
     @field_validator("max_workers")
     @classmethod

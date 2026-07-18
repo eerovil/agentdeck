@@ -21,6 +21,50 @@ def _runtime_app(**worker_cfg):
     return create_runtime_app(cfg)
 
 
+def test_per_account_overrides_merge_over_base():
+    cfg = AppConfig.model_validate(
+        {
+            "claude_workers": {
+                "enabled": True,
+                "max_workers": 4,
+                "permission_mode": "",
+                "accounts": {
+                    "alt": {"permission_mode": "bypassPermissions", "max_workers": 3},
+                },
+            },
+            "accounts": [
+                {"provider": "claude_code", "label": "main", "config_dir": "~/.claude"},
+                {"provider": "claude_code", "label": "alt", "config_dir": "~/.claude2"},
+            ],
+        }
+    )
+    base = cfg.claude_workers.for_account("main")
+    assert base.permission_mode == "" and base.max_workers == 4
+    alt = cfg.claude_workers.for_account("alt")
+    assert alt.permission_mode == "bypassPermissions" and alt.max_workers == 3
+    # untouched fields inherit the base
+    assert alt.state_dir == base.state_dir and alt.enabled is True
+
+
+async def test_runtime_host_applies_account_overrides(tmp_path):
+    cfg = AppConfig.model_validate(
+        {
+            "claude_workers": {
+                "enabled": True,
+                "state_dir": str(tmp_path),
+                "accounts": {"alt": {"permission_mode": "bypassPermissions"}},
+            },
+            "accounts": [
+                {"provider": "claude_code", "label": "main", "config_dir": "~/.claude"},
+                {"provider": "claude_code", "label": "alt", "config_dir": "~/.claude2"},
+            ],
+        }
+    )
+    app = create_runtime_app(cfg)
+    assert app.state.claude_workers.host("alt").permission_mode == "bypassPermissions"
+    assert app.state.claude_workers.host("main").permission_mode is None
+
+
 async def test_deliver_endpoint_disabled_returns_404():
     app = create_runtime_app(AppConfig())  # claude_workers off by default
     async with httpx.AsyncClient(

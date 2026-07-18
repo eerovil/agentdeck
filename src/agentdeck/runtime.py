@@ -94,15 +94,16 @@ class ClaudeWorkerRuntime:
             raise HTTPException(status_code=404, detail="unknown Claude account")
         host = self.hosts.get(label)
         if host is None:
+            effective = self.settings.for_account(label)
             host = ClaudeWorkerHost(
                 account,
-                state_dir=self.settings.state_path,
-                max_workers=self.settings.max_workers,
-                permission_mode=self.settings.permission_mode or None,
-                model=self.settings.model or None,
-                usage_ceiling_pct=self.settings.usage_ceiling_pct,
+                state_dir=effective.state_path,
+                max_workers=effective.max_workers,
+                permission_mode=effective.permission_mode or None,
+                model=effective.model or None,
+                usage_ceiling_pct=effective.usage_ceiling_pct,
                 usage_cache_dir=self._usage_cache_dir,
-                stall_after_s=self.settings.stall_after_s,
+                stall_after_s=effective.stall_after_s,
             )
             self.hosts[label] = host
         return host
