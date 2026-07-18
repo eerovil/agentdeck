@@ -14,9 +14,12 @@ plumbing.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
+import mimetypes
 import os
+import signal
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -33,6 +36,7 @@ log = logging.getLogger(__name__)
 STDOUT_LINE_LIMIT = 16 * 1024 * 1024
 
 INTERRUPT_TIMEOUT_S = 15.0
+INIT_TIMEOUT_S = 30.0
 
 # Published usage snapshots older than this are treated as unknown rather than
 # trusted — a stalled collector must not permanently block (or greenlight) work.
@@ -67,8 +71,10 @@ class WorkerRecord:
 class _LiveWorker:
     process: asyncio.subprocess.Process
     reader_task: asyncio.Task
+    initialized: asyncio.Future[str]
     turn_active: bool = False
     started_at: float = field(default_factory=time.time)
+    last_event_at: float = field(default_factory=time.time)
 
 
 class ClaudeWorkerHost:
@@ -167,7 +173,8 @@ class ClaudeWorkerHost:
             stalled = (
                 turn_active
                 and self.stall_after_s > 0
-                and (now - rec.last_delivery_at) > self.stall_after_s
+                and (now - max(rec.last_delivery_at, live.last_event_at))
+                > self.stall_after_s
             )
             workers[key] = {
                 "session_id": rec.session_id,
@@ -193,28 +200,59 @@ class ClaudeWorkerHost:
         *,
         cwd: str | None = None,
         fresh: bool = False,
+        images: list[str] | None = None,
+        model: str | None = None,
+        permission_mode: str | None = None,
     ) -> DeliverResult:
         """Idempotent work delivery: steer if live, revive if finished, else spawn."""
+        try:
+            image_blocks = [
+                await asyncio.to_thread(self._image_block, path) for path in images or []
+            ]
+        except WorkerError as exc:
+            return DeliverResult(False, "rejected", reason=str(exc))
         async with self._lock:
             rec = self._records.get(key)
             live = self._live.get(key)
 
             if live is not None and live.process.returncode is None and not fresh:
-                await self._write_user_message(live, message)
+                try:
+                    await self._write_user_message(live, message, image_blocks)
+                except WorkerError as exc:
+                    return DeliverResult(False, "rejected", reason=str(exc))
                 rec.last_delivery_at = time.time()
                 self._save_state()
                 action = "steered" if live.turn_active else "queued"
                 live.turn_active = True
                 return DeliverResult(True, action, session_id=rec.session_id)
 
+            admission_checked = False
+            # A fresh delivery replaces the existing process atomically. Check
+            # admission first so a rejected replacement never destroys the
+            # healthy worker it was meant to replace.
+            if live is not None:
+                running = [
+                    worker
+                    for worker in self._live.values()
+                    if worker is not live and worker.process.returncode is None
+                ]
+                if len(running) >= self.max_workers:
+                    return DeliverResult(False, "rejected", reason="at_capacity")
+                if self._over_budget():
+                    return DeliverResult(False, "rejected", reason="over_budget")
+                admission_checked = True
+                self._live.pop(key, None)
+                await self._terminate(live)
+
             # Not live (or fresh requested) — this is a (re)spawn: admission
             # policy applies here only. Steering a live worker is always allowed
             # so in-flight work finishes even at the cap or over budget.
-            running = [w for w in self._live.values() if w.process.returncode is None]
-            if len(running) >= self.max_workers:
-                return DeliverResult(False, "rejected", reason="at_capacity")
-            if self._over_budget():
-                return DeliverResult(False, "rejected", reason="over_budget")
+            if not admission_checked:
+                running = [w for w in self._live.values() if w.process.returncode is None]
+                if len(running) >= self.max_workers:
+                    return DeliverResult(False, "rejected", reason="at_capacity")
+                if self._over_budget():
+                    return DeliverResult(False, "rejected", reason="over_budget")
 
             if rec is None or fresh or rec.cwd != (cwd or (rec.cwd if rec else None)):
                 if cwd is None and rec is None:
@@ -223,22 +261,42 @@ class ClaudeWorkerHost:
                 self._records[key] = rec
 
             resume_id = None if fresh else rec.session_id
+            resumed = resume_id is not None
             try:
-                live = await self._spawn(key, rec, resume_id=resume_id)
+                live = await self._spawn_and_deliver(
+                    key,
+                    rec,
+                    message,
+                    image_blocks,
+                    resume_id=resume_id,
+                    model=model,
+                    permission_mode=permission_mode,
+                )
             except WorkerError as exc:
                 if resume_id is not None:
                     # Revive fallback: session gone/incompatible → fresh spawn.
                     log.warning("revive of %s failed (%s); spawning fresh", key, exc)
                     rec.session_id = None
-                    live = await self._spawn(key, rec, resume_id=None)
+                    resumed = False
+                    self._save_state()
+                    try:
+                        live = await self._spawn_and_deliver(
+                            key,
+                            rec,
+                            message,
+                            image_blocks,
+                            resume_id=None,
+                            model=model,
+                            permission_mode=permission_mode,
+                        )
+                    except WorkerError as fallback_exc:
+                        return DeliverResult(False, "rejected", reason=str(fallback_exc))
                 else:
                     return DeliverResult(False, "rejected", reason=str(exc))
 
-            await self._write_user_message(live, message)
-            live.turn_active = True
             rec.last_delivery_at = time.time()
             self._save_state()
-            action = "revived" if resume_id is not None else "spawned"
+            action = "revived" if resumed else "spawned"
             return DeliverResult(True, action, session_id=rec.session_id)
 
     async def interrupt(self, key: str) -> DeliverResult:
@@ -289,7 +347,13 @@ class ClaudeWorkerHost:
 
     # --- process management ------------------------------------------------
 
-    def _command(self, resume_id: str | None) -> list[str]:
+    def _command(
+        self,
+        resume_id: str | None,
+        *,
+        model: str | None = None,
+        permission_mode: str | None = None,
+    ) -> list[str]:
         cmd = [
             "claude",
             "-p",
@@ -299,20 +363,32 @@ class ClaudeWorkerHost:
             "stream-json",
             "--verbose",
         ]
-        if self.model:
-            cmd += ["--model", self.model]
-        if self.permission_mode:
-            cmd += ["--permission-mode", self.permission_mode]
+        effective_model = model or self.model
+        effective_permission_mode = permission_mode or self.permission_mode
+        if effective_model:
+            cmd += ["--model", effective_model]
+        if effective_permission_mode:
+            cmd += ["--permission-mode", effective_permission_mode]
         if resume_id:
             cmd += ["--resume", resume_id]
         return cmd
 
-    async def _spawn(self, key: str, rec: WorkerRecord, *, resume_id: str | None) -> _LiveWorker:
+    async def _spawn(
+        self,
+        key: str,
+        rec: WorkerRecord,
+        *,
+        resume_id: str | None,
+        model: str | None = None,
+        permission_mode: str | None = None,
+    ) -> _LiveWorker:
         env = os.environ.copy()
         env["CLAUDE_CONFIG_DIR"] = str(self.account.root)
         try:
             process = await self._process_factory(
-                *self._command(resume_id),
+                *self._command(
+                    resume_id, model=model, permission_mode=permission_mode
+                ),
                 cwd=rec.cwd,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
@@ -323,27 +399,72 @@ class ClaudeWorkerHost:
             )
         except (OSError, ValueError) as exc:
             raise WorkerError(f"could not start claude worker: {exc}") from exc
-        live = _LiveWorker(process=process, reader_task=None)  # type: ignore[arg-type]
+        initialized: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        live = _LiveWorker(
+            process=process,
+            reader_task=None,  # type: ignore[arg-type]
+            initialized=initialized,
+        )
         live.reader_task = asyncio.create_task(
             self._read_loop(key, live), name=f"claude-worker:{self.account.key}:{key}"
         )
         self._live[key] = live
         return live
 
+    async def _spawn_and_deliver(
+        self,
+        key: str,
+        rec: WorkerRecord,
+        message: str,
+        image_blocks: list[dict[str, Any]],
+        *,
+        resume_id: str | None,
+        model: str | None,
+        permission_mode: str | None,
+    ) -> _LiveWorker:
+        live = await self._spawn(
+            key,
+            rec,
+            resume_id=resume_id,
+            model=model,
+            permission_mode=permission_mode,
+        )
+        try:
+            await self._write_user_message(live, message, image_blocks)
+            live.turn_active = True
+            await asyncio.wait_for(asyncio.shield(live.initialized), timeout=INIT_TIMEOUT_S)
+            return live
+        except (TimeoutError, WorkerError, OSError) as exc:
+            if self._live.get(key) is live:
+                self._live.pop(key, None)
+            await self._terminate(live)
+            if live.initialized.done() and not live.initialized.cancelled():
+                live.initialized.exception()  # consume shutdown error after timeout
+            if isinstance(exc, WorkerError):
+                raise
+            raise WorkerError(f"claude worker failed to initialize: {exc}") from exc
+
     async def _terminate(self, live: _LiveWorker) -> None:
         process = live.process
         if process.stdin is not None:
             process.stdin.close()
         if process.returncode is None:
+            pid = getattr(process, "pid", None)
             try:
-                process.terminate()
+                if isinstance(pid, int):
+                    os.killpg(pid, signal.SIGTERM)
+                else:  # test doubles without a pid
+                    process.terminate()
             except ProcessLookupError:
                 pass
             try:
                 await asyncio.wait_for(process.wait(), timeout=5.0)
             except TimeoutError:
                 try:
-                    process.kill()
+                    if isinstance(pid, int):
+                        os.killpg(pid, signal.SIGKILL)
+                    else:
+                        process.kill()
                 except ProcessLookupError:
                     pass
                 await process.wait()
@@ -355,15 +476,37 @@ class ClaudeWorkerHost:
         process = live.process
         if process.stdin is None or process.returncode is not None:
             raise WorkerError("worker process is not running")
-        process.stdin.write(json.dumps(message, separators=(",", ":")).encode() + b"\n")
-        await process.stdin.drain()
+        try:
+            process.stdin.write(json.dumps(message, separators=(",", ":")).encode() + b"\n")
+            await process.stdin.drain()
+        except (BrokenPipeError, ConnectionError, OSError) as exc:
+            raise WorkerError(f"could not write to claude worker: {exc}") from exc
 
-    async def _write_user_message(self, live: _LiveWorker, text: str) -> None:
+    @staticmethod
+    def _image_block(path_value: str) -> dict[str, Any]:
+        path = Path(path_value)
+        media_type, _ = mimetypes.guess_type(path.name)
+        if media_type not in {"image/png", "image/jpeg", "image/webp", "image/gif"}:
+            raise WorkerError(f"unsupported image type: {path.name}")
+        try:
+            data = base64.b64encode(path.read_bytes()).decode("ascii")
+        except OSError as exc:
+            raise WorkerError(f"could not read image {path.name}: {exc}") from exc
+        return {
+            "type": "image",
+            "source": {"type": "base64", "media_type": media_type, "data": data},
+        }
+
+    async def _write_user_message(
+        self, live: _LiveWorker, text: str, image_blocks: list[dict[str, Any]]
+    ) -> None:
+        content = list(image_blocks)
+        content.append({"type": "text", "text": text})
         await self._write(
             live,
             {
                 "type": "user",
-                "message": {"role": "user", "content": [{"type": "text", "text": text}]},
+                "message": {"role": "user", "content": content},
             },
         )
 
@@ -378,12 +521,17 @@ class ClaudeWorkerHost:
                     continue
                 if not isinstance(event, dict):
                     continue
+                live.last_event_at = time.time()
                 self._handle_event(key, live, event)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 -- reader failure only affects one worker
             log.exception("claude worker reader failed for %s:%s", self.account.key, key)
         finally:
+            if not live.initialized.done():
+                live.initialized.set_exception(
+                    WorkerError("claude worker exited before session initialization")
+                )
             if self._live.get(key) is live:
                 del self._live[key]
                 live.turn_active = False
@@ -396,6 +544,8 @@ class ClaudeWorkerHost:
             if rec is not None and isinstance(session_id, str):
                 rec.session_id = session_id
                 self._save_state()
+                if not live.initialized.done():
+                    live.initialized.set_result(session_id)
         elif etype == "result":
             live.turn_active = False
             if rec is not None:

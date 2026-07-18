@@ -122,6 +122,22 @@ class ClaudeWorkerOverrides(BaseModel):
             raise ValueError("claude_workers accounts max_workers must be positive")
         return value
 
+    @field_validator("usage_ceiling_pct")
+    @classmethod
+    def _usage_ceiling_range(cls, value: float | None) -> float | None:
+        if value is not None and not 0 <= value <= 100:
+            raise ValueError(
+                "claude_workers accounts usage_ceiling_pct must be between 0 and 100"
+            )
+        return value
+
+    @field_validator("stall_after_s")
+    @classmethod
+    def _non_negative_stall(cls, value: float | None) -> float | None:
+        if value is not None and value < 0:
+            raise ValueError("claude_workers accounts stall_after_s must be non-negative")
+        return value
+
 
 class ClaudeWorkersConfig(BaseModel):
     """Deck-owned Claude worker processes (spawn/steer/revive via the runtime API)."""

@@ -107,8 +107,8 @@ class ClaudeCodeProvider(SessionProvider):
         self._ctx_cache: dict[str, tuple[float, int | None]] = {}
         # Resolves kanban dispatch prompts to real GitHub issue titles.
         self._kanban = kanban_mod.KanbanTitleCache()
-        # Deck-owned worker clients (one per account) — only populated when the
-        # runtime service actually serves Claude workers for that account.
+        # Deck-owned worker clients (one per account). Each tracks runtime
+        # availability so new-chat capability can change without a web restart.
         self._workers: dict[str, ClaudeWorkerClient] = {}
         self._states: dict[str, object] = {}
         self._watch_tasks: dict[str, asyncio.Task] = {}
@@ -117,12 +117,9 @@ class ClaudeCodeProvider(SessionProvider):
 
     async def start_account(self, account: Account, state) -> None:
         client = ClaudeWorkerClient(account, on_change=lambda: state.bus.publish("sessions"))
-        if not await client.probe():
-            # Workers disabled or runtime absent — stay a read-only viewer.
-            await client.stop()
-            return
         self._workers[account.key] = client
         self._states[account.key] = state
+        await client.probe()
         self._watch_tasks[account.key] = asyncio.create_task(
             self._watch(account, client), name=f"claude-workers:{account.key}"
         )
@@ -145,6 +142,18 @@ class ClaudeCodeProvider(SessionProvider):
         if client is not None:
             await client.stop()
 
+    def can_start_session(self, account: Account) -> bool:
+        client = self._workers.get(account.key)
+        return bool(client and client.available)
+
+    @staticmethod
+    def _delegation_permission_mode(sandbox: str | None) -> str | None:
+        # Claude has no Codex-style filesystem sandbox. Plan mode is its native
+        # read-only equivalent; workspace-write uses the account's configured
+        # permission mode so interactive and autonomous accounts keep their
+        # existing policy.
+        return "plan" if sandbox == "read-only" else None
+
     async def start_session(
         self,
         account: Account,
@@ -161,10 +170,22 @@ class ClaudeCodeProvider(SessionProvider):
         if client is None:
             return InjectResult(False, "Claude workers are not enabled on the runtime service")
         key = f"chat-{uuid.uuid4().hex[:8]}"
-        return await client.deliver(key, message, cwd=str(cwd), fresh=True)
+        return await client.deliver(
+            key,
+            message,
+            cwd=str(cwd),
+            fresh=True,
+            images=[str(path) for path in images or []],
+            model=model,
+            permission_mode=self._delegation_permission_mode(sandbox),
+        )
 
     async def _deliver_to_session(
-        self, account: Account, session: Session, message: str
+        self,
+        account: Account,
+        session: Session,
+        message: str,
+        images: list[Path] | None = None,
     ) -> InjectResult:
         client = self._workers.get(account.key)
         if client is None:
@@ -172,7 +193,9 @@ class ClaudeCodeProvider(SessionProvider):
         key = client.key_for(session.session_id)
         if key is None:
             return InjectResult(False, "this session is not a deck-owned worker")
-        return await client.deliver(key, message)
+        return await client.deliver(
+            key, message, images=[str(path) for path in images or []]
+        )
 
     async def inject(
         self,
@@ -183,7 +206,7 @@ class ClaudeCodeProvider(SessionProvider):
         timeout_s: float,
         images: list[Path] | None = None,
     ) -> InjectResult:
-        return await self._deliver_to_session(account, session, message)
+        return await self._deliver_to_session(account, session, message, images)
 
     async def steer(
         self,
@@ -193,7 +216,7 @@ class ClaudeCodeProvider(SessionProvider):
         *,
         images: list[Path] | None = None,
     ) -> InjectResult:
-        return await self._deliver_to_session(account, session, message)
+        return await self._deliver_to_session(account, session, message, images)
 
     async def interrupt(self, account: Account, session: Session) -> InjectResult:
         client = self._workers.get(account.key)
@@ -203,6 +226,30 @@ class ClaudeCodeProvider(SessionProvider):
         if key is None:
             return InjectResult(False, "this session is not a deck-owned worker")
         return await client.interrupt(key)
+
+    async def wait_for_session(
+        self,
+        account: Account,
+        session_id: str,
+        *,
+        timeout_s: float,
+    ) -> InjectResult:
+        client = self._workers.get(account.key)
+        if client is None or not client.owns(session_id):
+            return InjectResult(False, "this session is not a deck-owned worker")
+        return await client.wait_for_turn(session_id, timeout_s=timeout_s)
+
+    async def session_result(self, account: Account, session_id: str) -> str | None:
+        path = _list_transcripts(account.root).get(session_id)
+        if path is None:
+            return None
+        meta = await asyncio.to_thread(transcripts_mod.transcript_meta, path)
+        last_text, last_role = meta[4], meta[5]
+        return last_text if last_role == "agent" else None
+
+    def owns_session(self, account: Account, session: Session) -> bool:
+        client = self._workers.get(account.key)
+        return bool(client and client.owns(session.session_id))
 
     def _cached_meta(self, path: Path) -> tuple[str | None, ...]:
         try:
@@ -370,12 +417,15 @@ class ClaudeCodeProvider(SessionProvider):
             # Headless workers don't appear in the CLI registry, so the worker's
             # own turn state — not registry liveness — decides LIVE here.
             workers = self._workers.get(account.key)
-            if workers is not None and workers.owns(sid):
+            owned = workers is not None and workers.owns(sid)
+            show_when_idle = False
+            if owned:
                 caps.add(Capability.INJECT)
+                show_when_idle = True
+                status = SessionStatus.LIVE if workers.live(sid) else SessionStatus.IDLE
+                thinking = workers.turn_active(sid)
                 if workers.turn_active(sid):
                     caps.update({Capability.STEER, Capability.INTERRUPT})
-                    status = SessionStatus.LIVE
-                    thinking = True
 
             wtype = worker_type(kref is not None, deep_link is not None)
 
@@ -407,6 +457,7 @@ class ClaudeCodeProvider(SessionProvider):
                     context_tokens=context_tokens,
                     deep_link=deep_link,
                     deep_link_label="open in claude.ai" if deep_link else None,
+                    show_when_idle=show_when_idle,
                     capabilities=frozenset(caps),
                 )
             )
@@ -417,9 +468,13 @@ class ClaudeCodeProvider(SessionProvider):
         (busy) state from the open turn, so both update between full scans."""
         entries = {e.session_id: e for e in registry_mod.read_registry(account.root)}
         changed: list[Session] = []
+        workers = self._workers.get(account.key)
         for s in sessions:
             entry = entries.get(s.session_id)
-            live_now = bool(entry and registry_mod.is_alive(entry))
+            owned = workers is not None and workers.owns(s.session_id)
+            live_now = workers.live(s.session_id) if owned else bool(
+                entry and registry_mod.is_alive(entry)
+            )
             status_now = SessionStatus.LIVE if live_now else SessionStatus.IDLE
             activity_now = None
             last_prompt_now = s.last_prompt
@@ -452,11 +507,20 @@ class ClaudeCodeProvider(SessionProvider):
                 # Idle: no fresh read this sweep — keep whatever the last full scan
                 # surfaced rather than recomputing from stale text.
                 question_now = s.question
-            thinking_now = activity_now is not None
+            thinking_now = workers.turn_active(s.session_id) if owned else activity_now is not None
             pid_now = entry.pid if (entry and live_now) else None
             deep_link_now = (
                 registry_mod.session_deep_link(entry.pid) if (entry and live_now) else None
             )
+            capabilities_now = set(s.capabilities)
+            if owned:
+                capabilities_now.add(Capability.INJECT)
+                if thinking_now:
+                    capabilities_now.update({Capability.STEER, Capability.INTERRUPT})
+                else:
+                    capabilities_now.difference_update(
+                        {Capability.STEER, Capability.INTERRUPT}
+                    )
             if (
                 status_now != s.status
                 or thinking_now != s.thinking
@@ -468,6 +532,8 @@ class ClaudeCodeProvider(SessionProvider):
                 or context_now != s.context_tokens
                 or pid_now != s.pid
                 or deep_link_now != s.deep_link
+                or frozenset(capabilities_now) != s.capabilities
+                or (owned and not s.show_when_idle)
             ):
                 s.status = status_now
                 s.thinking = thinking_now
@@ -479,6 +545,8 @@ class ClaudeCodeProvider(SessionProvider):
                 s.context_tokens = context_now
                 s.pid = pid_now
                 s.deep_link = deep_link_now
+                s.show_when_idle = owned or s.show_when_idle
+                s.capabilities = frozenset(capabilities_now)
                 s.kind = entry.kind if entry else s.kind
                 changed.append(s)
         return changed

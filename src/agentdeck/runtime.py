@@ -65,6 +65,9 @@ class DeliverRequest(ActionRequest):
     message: str
     cwd: str | None = None
     fresh: bool = False
+    images: list[str] = Field(default_factory=list)
+    model: str | None = None
+    permission_mode: str | None = None
 
 
 class WorkerKeyRequest(ActionRequest):
@@ -280,7 +283,15 @@ def create_runtime_app(config: AppConfig) -> FastAPI:
             "claude_deliver",
             label,
             body.client_action_id,
-            lambda: host.deliver(body.key, body.message, cwd=body.cwd, fresh=body.fresh),
+            lambda: host.deliver(
+                body.key,
+                body.message,
+                cwd=body.cwd,
+                fresh=body.fresh,
+                images=body.images,
+                model=body.model,
+                permission_mode=body.permission_mode,
+            ),
         )
         return _deliver_result(result)
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
+import pytest
+from pydantic import ValidationError
 
 from agentdeck.config import AppConfig
 from agentdeck.providers.claude_code.worker import DeliverResult
@@ -65,6 +67,17 @@ async def test_runtime_host_applies_account_overrides(tmp_path):
     assert app.state.claude_workers.host("main").permission_mode is None
 
 
+@pytest.mark.parametrize(
+    "field,value",
+    [("usage_ceiling_pct", -1), ("usage_ceiling_pct", 101), ("stall_after_s", -1)],
+)
+def test_per_account_overrides_validate_policy_ranges(field, value):
+    with pytest.raises(ValidationError):
+        AppConfig.model_validate(
+            {"claude_workers": {"accounts": {"alt": {field: value}}}}
+        )
+
+
 async def test_deliver_endpoint_disabled_returns_404():
     app = create_runtime_app(AppConfig())  # claude_workers off by default
     async with httpx.AsyncClient(
@@ -103,7 +116,15 @@ async def test_deliver_and_key_endpoints_route_to_host():
         "session_id": "s1",
     }
     # key with '#' and '/' survives because it travels in the body, not the path
-    host.deliver.assert_awaited_once_with("owner/repo#12", "go", cwd="/tmp", fresh=False)
+    host.deliver.assert_awaited_once_with(
+        "owner/repo#12",
+        "go",
+        cwd="/tmp",
+        fresh=False,
+        images=[],
+        model=None,
+        permission_mode=None,
+    )
     host.interrupt.assert_awaited_once_with("owner/repo#12")
     host.stop_worker.assert_awaited_once_with("owner/repo#12")
     host.forget.assert_called_once_with("owner/repo#12")

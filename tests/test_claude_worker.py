@@ -58,6 +58,11 @@ def _host(tmp_path: Path, **kwargs) -> tuple[ClaudeWorkerHost, list]:
     async def factory(*args, **fkwargs):
         process = FakeProcess()
         spawned.append({"args": args, "kwargs": fkwargs, "process": process})
+        session_id = f"sid-auto-{len(spawned)}"
+        asyncio.get_running_loop().call_soon(
+            process.stdout.emit,
+            {"type": "system", "subtype": "init", "session_id": session_id},
+        )
         return process
 
     host = ClaudeWorkerHost(
@@ -85,6 +90,7 @@ async def test_deliver_spawns_and_captures_session_id(tmp_path):
     host, spawned = _host(tmp_path)
     result = await host.deliver("issue-1", "work it", cwd=str(tmp_path))
     assert result.accepted and result.action == "spawned"
+    assert result.session_id == "sid-auto-1"
     proc = spawned[0]["process"]
     assert spawned[0]["kwargs"]["env"]["CLAUDE_CONFIG_DIR"] == str(tmp_path / "cfg")
     assert spawned[0]["kwargs"]["cwd"] == str(tmp_path)
@@ -129,8 +135,46 @@ async def test_deliver_after_exit_revives_with_resume(tmp_path):
     await host.stop()
 
 
+async def test_failed_resume_falls_back_to_fresh_spawn(tmp_path):
+    original, spawned = _host(tmp_path)
+    await original.deliver("issue-1", "start", cwd=str(tmp_path))
+    spawned[0]["process"].stdout.emit(
+        {"type": "system", "subtype": "init", "session_id": "sid-old"}
+    )
+    await _settle()
+    await original.stop()
+
+    attempts = []
+
+    async def factory(*args, **kwargs):
+        process = FakeProcess()
+        attempts.append({"args": args, "process": process})
+        if "--resume" in args:
+            asyncio.get_running_loop().call_soon(process.stdout.queue.put_nowait, b"")
+        else:
+            asyncio.get_running_loop().call_soon(
+                process.stdout.emit,
+                {"type": "system", "subtype": "init", "session_id": "sid-fresh"},
+            )
+        return process
+
+    host = ClaudeWorkerHost(
+        Account("claude_code:test", "claude_code", "test", tmp_path / "cfg"),
+        state_dir=tmp_path / "state",
+        process_factory=factory,
+    )
+    result = await host.deliver("issue-1", "recover")
+
+    assert result.accepted and result.action == "spawned"
+    assert len(attempts) == 2
+    assert "--resume" in attempts[0]["args"]
+    assert "--resume" not in attempts[1]["args"]
+    assert result.session_id == "sid-fresh"
+    await host.stop()
+
+
 async def test_fresh_spawns_without_resume(tmp_path):
-    host, spawned = _host(tmp_path)
+    host, spawned = _host(tmp_path, max_workers=1)
     await host.deliver("issue-1", "start", cwd=str(tmp_path))
     spawned[0]["process"].stdout.emit(
         {"type": "system", "subtype": "init", "session_id": "sid-abc"}
@@ -139,6 +183,26 @@ async def test_fresh_spawns_without_resume(tmp_path):
     result = await host.deliver("issue-1", "clean slate", cwd=str(tmp_path), fresh=True)
     assert result.accepted and result.action == "spawned"
     assert "--resume" not in spawned[1]["args"]
+    assert spawned[0]["process"].returncode == 0
+    assert host.snapshot()["live_count"] == 1
+    await host.stop()
+
+
+async def test_image_delivery_encodes_anthropic_content_block(tmp_path):
+    host, spawned = _host(tmp_path)
+    image = tmp_path / "sample.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\nimage")
+
+    result = await host.deliver(
+        "issue-1", "inspect it", cwd=str(tmp_path), images=[str(image)]
+    )
+
+    assert result.accepted
+    content = spawned[0]["process"].stdin.lines[0]["message"]["content"]
+    assert content[0]["type"] == "image"
+    assert content[0]["source"]["type"] == "base64"
+    assert content[0]["source"]["media_type"] == "image/png"
+    assert content[1] == {"type": "text", "text": "inspect it"}
     await host.stop()
 
 
@@ -218,6 +282,19 @@ async def test_over_budget_rejects_spawn_but_not_steer(tmp_path):
     await host.stop()
 
 
+async def test_over_budget_fresh_replacement_keeps_existing_worker(tmp_path):
+    host, spawned = _host(tmp_path, usage_ceiling_pct=90.0, usage_reader=lambda: 10.0)
+    await host.deliver("issue-1", "start", cwd=str(tmp_path))
+    host._usage_reader = lambda: 95.0
+
+    rejected = await host.deliver("issue-1", "replace", fresh=True)
+
+    assert not rejected.accepted and rejected.reason == "over_budget"
+    assert spawned[0]["process"].returncode is None
+    assert host.snapshot()["live_count"] == 1
+    await host.stop()
+
+
 async def test_under_ceiling_allows_spawn(tmp_path):
     host, spawned = _host(tmp_path, usage_ceiling_pct=90.0, usage_reader=lambda: 42.0)
     result = await host.deliver("issue-1", "start", cwd=str(tmp_path))
@@ -268,6 +345,7 @@ async def test_stalled_flag_after_threshold(tmp_path):
     await host.deliver("issue-1", "start", cwd=str(tmp_path))
     # backdate the delivery so the live turn looks silent
     host._records["issue-1"].last_delivery_at -= 200
+    host._live["issue-1"].last_event_at -= 200
     assert host.snapshot()["workers"]["issue-1"]["stalled"] is True
     await host.stop()
 

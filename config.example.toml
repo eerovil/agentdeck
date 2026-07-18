@@ -47,7 +47,7 @@ auto_answer = false
 auto_answer_confidence = 0.9
 
 # Deck-owned Claude worker processes (spawned/steered/revived through the
-# runtime service's /claude/... API). Off by default — see docs/worker-runtime.md.
+# runtime service's /claude/... API). Off by default — see docs/WORKER_RUNTIME.md.
 #[claude_workers]
 #enabled = true
 #max_workers = 4                # per account; steering a live worker is exempt
@@ -56,6 +56,11 @@ auto_answer_confidence = 0.9
 #usage_ceiling_pct = 90         # refuse new/revived workers at/above this 5h-or-7d usage %; 0 disables
 #stall_after_s = 3600           # flag a live worker "stalled" after this many silent seconds; 0 disables
 #state_dir = "~/.local/share/agentdeck/claude-workers"
+# Per-account fields inherit from the base section when omitted.
+#[claude_workers.accounts.alt]
+#permission_mode = "bypassPermissions"
+#max_workers = 3
+#usage_ceiling_pct = 90
 
 # One [[accounts]] block per agent-CLI config dir. Labels must be unique,
 # lowercase slug-safe (they appear in URLs and cache filenames).

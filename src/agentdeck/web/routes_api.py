@@ -27,13 +27,18 @@ def _delegation_account(request: Request, account_key: str | None):
     supported = [
         account
         for account in get_accounts(request)
-        if PROVIDERS[account.provider_id].supports_new_session
+        if PROVIDERS[account.provider_id].can_start_session(account)
     ]
     if account_key is not None:
         account = next((item for item in supported if item.key == account_key), None)
         if account is None:
             raise HTTPException(status_code=404, detail="unknown delegation account")
         return account
+    # Preserve the CLI's historical account-free behavior: machine delegation
+    # means Codex unless the caller explicitly chooses another provider.
+    codex = [account for account in supported if account.provider_id == "codex"]
+    if len(codex) == 1:
+        return codex[0]
     if len(supported) != 1:
         choices = ", ".join(account.key for account in supported) or "none"
         raise HTTPException(

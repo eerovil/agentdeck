@@ -8,6 +8,7 @@ provider can light up inject/steer/interrupt for the sessions the deck owns.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 
 import httpx
@@ -32,7 +33,7 @@ class ClaudeWorkerClient:
             base_url="http://agentdeck-runtime",
             timeout=httpx.Timeout(30.0, read=None),
         )
-        # session_id -> {"key", "turn_active", "stalled"}
+        # session_id -> worker snapshot fields used by provider capabilities.
         self._owned: dict[str, dict] = {}
         self.available = False
 
@@ -46,11 +47,17 @@ class ClaudeWorkerClient:
         try:
             response = await self._http.get(f"{self._base}/workers")
         except httpx.HTTPError:
-            self.available = False
+            if self.available:
+                self.available = False
+                self._on_change()
             return False
-        self.available = response.status_code == 200
+        available = response.status_code == 200
+        changed = available != self.available
+        self.available = available
         if self.available:
             self._ingest(response.json())
+        if changed:
+            self._on_change()
         return self.available
 
     async def refresh(self) -> bool:
@@ -59,8 +66,16 @@ class ClaudeWorkerClient:
             response = await self._http.get(f"{self._base}/workers")
             response.raise_for_status()
         except httpx.HTTPError:
+            if self.available:
+                self.available = False
+                self._on_change()
             return False
-        return self._ingest(response.json())
+        availability_changed = not self.available
+        self.available = True
+        changed = self._ingest(response.json())
+        if availability_changed:
+            self._on_change()
+        return changed or availability_changed
 
     def _ingest(self, data: object) -> bool:
         owned: dict[str, dict] = {}
@@ -73,8 +88,10 @@ class ClaudeWorkerClient:
                 if isinstance(session_id, str):
                     owned[session_id] = {
                         "key": key,
+                        "live": bool(worker.get("live")),
                         "turn_active": bool(worker.get("turn_active")),
                         "stalled": bool(worker.get("stalled")),
+                        "last_result_at": worker.get("last_result_at", 0.0),
                     }
         changed = owned != self._owned
         self._owned = owned
@@ -93,15 +110,56 @@ class ClaudeWorkerClient:
         entry = self._owned.get(session_id)
         return bool(entry and entry["turn_active"])
 
+    def live(self, session_id: str) -> bool:
+        entry = self._owned.get(session_id)
+        return bool(entry and entry["live"])
+
     async def deliver(
-        self, key: str, message: str, *, cwd: str | None = None, fresh: bool = False
+        self,
+        key: str,
+        message: str,
+        *,
+        cwd: str | None = None,
+        fresh: bool = False,
+        images: list[str] | None = None,
+        model: str | None = None,
+        permission_mode: str | None = None,
     ) -> InjectResult:
         return await self._post(
-            "deliver", {"key": key, "message": message, "cwd": cwd, "fresh": fresh}
+            "deliver",
+            {
+                "key": key,
+                "message": message,
+                "cwd": cwd,
+                "fresh": fresh,
+                "images": images or [],
+                "model": model,
+                "permission_mode": permission_mode,
+            },
         )
 
     async def interrupt(self, key: str) -> InjectResult:
         return await self._post("interrupt", {"key": key})
+
+    async def wait_for_turn(self, session_id: str, *, timeout_s: float) -> InjectResult:
+        """Wait until the owned worker's current turn finishes or exits."""
+        deadline = asyncio.get_running_loop().time() + timeout_s
+        while True:
+            try:
+                response = await self._http.get(f"{self._base}/workers")
+                response.raise_for_status()
+            except httpx.HTTPError as exc:
+                return InjectResult(False, f"claude worker runtime unavailable: {exc}")
+            self._ingest(response.json())
+            entry = self._owned.get(session_id)
+            if entry is None:
+                return InjectResult(False, "claude worker session is no longer registered")
+            if not entry["turn_active"]:
+                return InjectResult(True, session_id=session_id)
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return InjectResult(False, "Claude turn timed out", session_id=session_id)
+            await asyncio.sleep(min(0.2, remaining))
 
     async def _post(self, action: str, payload: dict) -> InjectResult:
         try:

@@ -16,6 +16,7 @@ One worker = one long-lived `claude -p --input-format stream-json
 - `control_request {subtype: interrupt}` → immediate turn abort with an ack
 - `result` events → turn completion + subtype
 - `--resume <session-id>` in a fresh process → full-context revival
+- image content blocks on the stream input → PNG/JPEG/WebP/GIF attachments
 
 Transcripts land in `<CLAUDE_CONFIG_DIR>/projects/`, so the ordinary
 ClaudeCodeProvider scan displays deck-owned workers with no extra plumbing.
@@ -49,9 +50,9 @@ runtime service so web redeploys never kill workers:
 ```
 GET    /claude/accounts/{label}/workers                  # registry snapshot
 POST   /claude/accounts/{label}/deliver                  # {key, message, cwd?, fresh?}
-POST   /claude/accounts/{label}/workers/{key}/interrupt
-POST   /claude/accounts/{label}/workers/{key}/stop       # terminate process, keep lineage
-DELETE /claude/accounts/{label}/workers/{key}            # forget a finished lineage
+POST   /claude/accounts/{label}/interrupt                # {key}
+POST   /claude/accounts/{label}/stop                     # {key}; terminate, keep lineage
+POST   /claude/accounts/{label}/forget                   # {key}; forget finished lineage
 ```
 
 `deliver` responds `{accepted, action, reason?, session_id}` with action one of
@@ -67,15 +68,24 @@ max_workers = 4                 # per account; steering is exempt
 permission_mode = "acceptEdits" # or "bypassPermissions" for fully autonomous workers
 model = ""                      # "" = account default
 state_dir = "~/.local/share/agentdeck/claude-workers"
+
+[claude_workers.accounts.autonomous]
+permission_mode = "bypassPermissions"
+max_workers = 3
+usage_ceiling_pct = 90
 ```
 
 Workers run under the account's `CLAUDE_CONFIG_DIR` (the `config_dir` of the
 matching `[[accounts]]` entry), so per-account usage limits, skills, and
 settings apply as they would to any session of that account.
 
-## Roadmap
+The web process proxies the poller-facing routes under `/api/claude/...` with
+the core bodies shown above. The internal runtime delivery additionally accepts
+`images` (host paths), plus per-spawn `model` and `permission_mode` overrides
+used by the dashboard and explicit machine delegations. Keys always travel in
+JSON bodies because they may contain `#` and `/`.
 
-- Admission policy: refuse spawns when the account is over a usage ceiling
-  (reusing the deck's per-account `UsageSnapshot` poller).
-- Stalled-worker detection as lifecycle policy (idle/silent too long).
-- Deck UI steering controls for owned workers (capabilities: STEER/INTERRUPT).
+Admission rejects new/revived workers at `max_workers` or at the configured
+usage ceiling; steering remains exempt. Missing or stale usage is treated as
+unknown and allowed. `stall_after_s` reports an active worker as stalled only
+after both input delivery and output events have been quiet for the threshold.
