@@ -18,8 +18,6 @@ from pydantic import BaseModel, Field
 
 from .config import AppConfig
 from .models import Account, InjectResult
-from .providers.claude_code.usage import shared_cache_dir
-from .providers.claude_code.worker import ClaudeWorkerHost, DeliverResult
 from .providers.codex.appserver import CodexAppServer
 from .providers.codex.runtime_client import runtime_socket_path
 
@@ -58,65 +56,6 @@ class AnswerRequest(ActionRequest):
 
 def _result(result: InjectResult) -> dict[str, Any]:
     return asdict(result)
-
-
-class DeliverRequest(ActionRequest):
-    key: str
-    message: str
-    cwd: str | None = None
-    fresh: bool = False
-    images: list[str] = Field(default_factory=list)
-    model: str | None = None
-    permission_mode: str | None = None
-    delivery_id: str | None = None
-
-
-class WorkerKeyRequest(ActionRequest):
-    # Keys are opaque and may contain '#' or '/' (e.g. "owner/repo#12"), which
-    # are unsafe in a URL path — always carry the key in the body.
-    key: str
-
-
-class ClaudeWorkerRuntime:
-    """Own deck-managed Claude worker hosts, one per claude_code account."""
-
-    def __init__(self, config: AppConfig) -> None:
-        self.settings = config.claude_workers
-        self._usage_cache_dir = shared_cache_dir(config.usage.shared_cache_dir)
-        self.accounts = {
-            account.label: account
-            for account in config.build_accounts()
-            if account.provider_id == "claude_code"
-        }
-        self.hosts: dict[str, ClaudeWorkerHost] = {}
-
-    def host(self, label: str) -> ClaudeWorkerHost:
-        if not self.settings.enabled:
-            raise HTTPException(status_code=404, detail="claude workers are disabled")
-        account = self.accounts.get(label)
-        if account is None:
-            raise HTTPException(status_code=404, detail="unknown Claude account")
-        host = self.hosts.get(label)
-        if host is None:
-            effective = self.settings.for_account(label)
-            host = ClaudeWorkerHost(
-                account,
-                state_dir=effective.state_path,
-                max_workers=effective.max_workers,
-                permission_mode=effective.permission_mode or None,
-                model=effective.model or None,
-                usage_ceiling_pct=effective.usage_ceiling_pct,
-                usage_cache_dir=self._usage_cache_dir,
-                stall_after_s=effective.stall_after_s,
-            )
-            self.hosts[label] = host
-        return host
-
-    async def stop(self) -> None:
-        await asyncio.gather(
-            *(host.stop() for host in self.hosts.values()), return_exceptions=True
-        )
-        self.hosts.clear()
 
 
 async def _timed_action(
@@ -249,7 +188,6 @@ def _preserve_images(account: Account, values: list[str]) -> tuple[list[Path], P
 
 def create_runtime_app(config: AppConfig) -> FastAPI:
     runtime = CodexRuntime(config)
-    claude_workers = ClaudeWorkerRuntime(config)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -258,64 +196,13 @@ def create_runtime_app(config: AppConfig) -> FastAPI:
             yield
         finally:
             await runtime.stop()
-            await claude_workers.stop()
 
     app = FastAPI(title="agentdeck-codex-runtime", lifespan=lifespan)
     app.state.runtime = runtime
-    app.state.claude_workers = claude_workers
 
     @app.get("/healthz")
     async def healthz() -> dict[str, Any]:
         return {"ok": True, "accounts": sorted(runtime.clients)}
-
-    # --- deck-owned Claude workers (config-gated) ----------------------
-
-    def _deliver_result(result: DeliverResult) -> dict[str, Any]:
-        return asdict(result)
-
-    @app.get("/claude/accounts/{label}/workers")
-    async def claude_workers_state(label: str) -> dict[str, Any]:
-        return claude_workers.host(label).snapshot()
-
-    @app.post("/claude/accounts/{label}/deliver")
-    async def claude_deliver(label: str, body: DeliverRequest) -> dict[str, Any]:
-        host = claude_workers.host(label)
-        result = await _timed_action(
-            "claude_deliver",
-            label,
-            body.client_action_id,
-            lambda: host.deliver(
-                body.key,
-                body.message,
-                cwd=body.cwd,
-                fresh=body.fresh,
-                images=body.images,
-                model=body.model,
-                permission_mode=body.permission_mode,
-                delivery_id=body.delivery_id,
-            ),
-        )
-        return _deliver_result(result)
-
-    @app.post("/claude/accounts/{label}/interrupt")
-    async def claude_interrupt(label: str, body: WorkerKeyRequest) -> dict[str, Any]:
-        return _deliver_result(await claude_workers.host(label).interrupt(body.key))
-
-    @app.post("/claude/accounts/{label}/stop")
-    async def claude_stop(label: str, body: WorkerKeyRequest) -> dict[str, Any]:
-        return _deliver_result(await claude_workers.host(label).stop_worker(body.key))
-
-    @app.post("/claude/accounts/{label}/park")
-    async def claude_park(label: str, body: WorkerKeyRequest) -> dict[str, Any]:
-        return _deliver_result(await claude_workers.host(label).park_worker(body.key))
-
-    @app.post("/claude/accounts/{label}/release")
-    async def claude_release(label: str, body: WorkerKeyRequest) -> dict[str, Any]:
-        return _deliver_result(await claude_workers.host(label).release_worker(body.key))
-
-    @app.post("/claude/accounts/{label}/forget")
-    async def claude_forget(label: str, body: WorkerKeyRequest) -> dict[str, Any]:
-        return {"removed": claude_workers.host(label).forget(body.key)}
 
     @app.get("/accounts/{label}/state")
     async def state(label: str) -> dict[str, Any]:

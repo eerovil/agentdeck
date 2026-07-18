@@ -90,14 +90,6 @@ class SessionProvider(ABC):
         """Stop optional provider-owned runtime services for one account."""
         return None
 
-    def can_start_session(self, account: Account) -> bool:
-        """Whether this configured account can start sessions right now.
-
-        Most providers have a static capability. Providers backed by optional
-        runtime services can override this with account-scoped availability.
-        """
-        return self.supports_new_session
-
     async def inject(
         self,
         account: Account,

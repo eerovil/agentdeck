@@ -587,7 +587,7 @@ async def test_new_session_route_and_enter_to_send_ui(tmp_path, monkeypatch):
     monkeypatch.setattr(PROVIDERS["codex"], "start_session", fake_start)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         dashboard = await client.get("/")
-        assert "New chat" in dashboard.text
+        assert "New Codex chat" in dashboard.text
         assert 'class="send-on-enter"' in dashboard.text
         detail = await client.get("/sessions/codex:test:sid")
         assert "Enter to send" in detail.text
@@ -602,7 +602,7 @@ async def test_new_session_route_and_enter_to_send_ui(tmp_path, monkeypatch):
             headers={"origin": "http://test"},
         )
         assert response.status_code == 202
-        assert "Starting the chat" in response.text
+        assert "Starting the Codex chat" in response.text
         release.set()
         for _ in range(10):
             await asyncio.sleep(0)
@@ -612,7 +612,7 @@ async def test_new_session_route_and_enter_to_send_ui(tmp_path, monkeypatch):
         status_response = await client.get(
             "/partials/new-session-status?account_key=codex:test"
         )
-        assert "New chat completed" in status_response.text
+        assert "New Codex chat completed" in status_response.text
     await app.state.injector.stop()
 
 
