@@ -609,8 +609,11 @@ body.bg-paused *, body.bg-paused *::before, body.bg-paused *::after {
      only moves the chat layer, so returning to the list has no network wait and
      preserves its exact scroll position. */
   body.session-page main { padding-bottom: 0; }
+  /* --app-height tracks the *visual* viewport (set by mobile_session_stack.js)
+     so the sticky composer sits above the on-screen keyboard; dvh does not
+     shrink for the keyboard on iOS (issue #17). Falls back to dvh pre-JS. */
   body.session-stack-page { display: flex; flex-direction: column; height: 100vh; height: 100dvh;
-    overflow: hidden; }
+    height: var(--app-height, 100dvh); overflow: hidden; }
   body.session-stack-page .topbar { flex: none; }
   body.session-stack-page main { position: relative; flex: 1; min-height: 0; width: 100%;
     max-width: 760px; padding: 0; overflow: hidden; }

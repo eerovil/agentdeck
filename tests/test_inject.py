@@ -1006,6 +1006,68 @@ async def test_composer_buttons_keep_textarea_focus(tmp_path):
         await browser.close()
 
 
+async def test_mobile_chat_height_tracks_the_visual_viewport(tmp_path):
+    # Issue #17: the mobile chat height follows the *visual* viewport so the
+    # sticky composer floats above the on-screen keyboard instead of behind it
+    # (dvh doesn't shrink for the keyboard on iOS).
+    app = _web_app(tmp_path)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/sessions/codex:test:sid")
+
+    static_dir = Path(__file__).parents[1] / "src/agentdeck/web/static"
+    scripts = {
+        "/static/mobile_session_stack.js": (
+            static_dir / "mobile_session_stack.js"
+        ).read_text(),
+    }
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        context = await browser.new_context(
+            viewport={"width": 320, "height": 800}, service_workers="block"
+        )
+        page = await context.new_page()
+        await page.add_init_script(
+            """
+            var fake = new EventTarget();
+            fake.width = window.innerWidth; fake.height = window.innerHeight; fake.offsetTop = 0;
+            Object.defineProperty(window, 'visualViewport',
+              {configurable: true, get: function(){ return fake; }});
+            window.__setViewportHeight = function (h) {
+              fake.height = h; fake.dispatchEvent(new Event('resize'));
+            };
+            window.EventSource = class extends EventTarget { constructor(){ super(); } close(){} };
+            """
+        )
+
+        async def serve(route, request):
+            path = request.url.split("?", 1)[0].removeprefix("http://agentdeck.test")
+            if path == "/sessions/codex:test:sid":
+                await route.fulfill(status=200, content_type="text/html", body=response.text)
+            elif path in scripts:
+                await route.fulfill(
+                    status=200, content_type="text/javascript", body=scripts[path]
+                )
+            else:
+                await route.fulfill(status=204, body="")
+
+        await page.route("http://agentdeck.test/**", serve)
+        await page.goto("http://agentdeck.test/sessions/codex:test:sid")
+
+        def app_height():
+            return page.evaluate(
+                "document.documentElement.style.getPropertyValue('--app-height')"
+            )
+
+        # keyboard opens → visual viewport shrinks → app height tracks it
+        await page.evaluate("window.__setViewportHeight(520)")
+        assert await app_height() == "520px"
+        # keyboard closes → back to full height
+        await page.evaluate("window.__setViewportHeight(800)")
+        assert await app_height() == "800px"
+        await browser.close()
+
+
 async def test_browser_action_timing_covers_htmx_response_and_sse_reconciliation(tmp_path):
     app = _web_app(tmp_path)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

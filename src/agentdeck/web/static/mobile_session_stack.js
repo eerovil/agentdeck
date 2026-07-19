@@ -121,6 +121,28 @@
   detail.addEventListener('pointerup', finishDrag);
   detail.addEventListener('pointercancel', resetDrag);
 
+  // Keep the chat's usable height equal to the *visual* viewport so the sticky
+  // composer — and its Send/Stop buttons — sits above the on-screen keyboard
+  // instead of behind it. `dvh` doesn't shrink for the keyboard on iOS, so a
+  // bottom-anchored composer otherwise falls under it (issue #17). One observer,
+  // no timeouts, per the mobile-keyboard contract in AGENTS.md.
+  var viewport = window.visualViewport;
+  if (viewport) {
+    var applyHeight = function () {
+      if (mobile.matches) {
+        document.documentElement.style.setProperty(
+          '--app-height', Math.round(viewport.height) + 'px'
+        );
+      } else {
+        document.documentElement.style.removeProperty('--app-height');
+      }
+    };
+    viewport.addEventListener('resize', applyHeight);
+    viewport.addEventListener('scroll', applyHeight);
+    if (mobile.addEventListener) mobile.addEventListener('change', applyHeight);
+    applyHeight();
+  }
+
   initialize();
   if (mobile.addEventListener) mobile.addEventListener('change', initialize);
 })();
