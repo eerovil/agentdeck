@@ -939,6 +939,73 @@ async def test_idle_composer_hides_stop_button(tmp_path):
     assert 'aria-label="Stop active turn"' not in page.text
 
 
+async def test_composer_buttons_keep_textarea_focus(tmp_path):
+    # Issue #17: pressing Send/Stop must not blur the message textarea. On mobile
+    # a blur drops the keyboard and the afterRequest refocus re-shows it — a jump.
+    # Enter stays smooth because it never blurs; the buttons must match.
+    app = _web_app(tmp_path)
+    session = app.state.app_state.sessions["codex:test:sid"]
+    session.capabilities = frozenset(
+        {Capability.TRANSCRIPT, Capability.INJECT, Capability.INTERRUPT}
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/sessions/codex:test:sid")
+    assert ">Stop</button>" in response.text  # both buttons present
+
+    static_dir = Path(__file__).parents[1] / "src/agentdeck/web/static"
+    scripts = {
+        "/static/htmx.min.js": (static_dir / "htmx.min.js").read_text(),
+        "/static/sse.js": (static_dir / "sse.js").read_text(),
+    }
+
+    async def press_and_check_focus(page, label):
+        await page.locator("#inject-message").focus()
+        assert await page.evaluate("document.activeElement.id") == "inject-message"
+        btn = page.locator("#composer-controls button", has_text=label)
+        box = await btn.bounding_box()
+        await page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        await page.mouse.down()  # native mousedown — the moment focus would be stolen
+        focused = await page.evaluate("document.activeElement.id")
+        await page.mouse.up()
+        return focused
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        context = await browser.new_context(
+            viewport={"width": 320, "height": 800}, service_workers="block"
+        )
+        page = await context.new_page()
+        await page.add_init_script(
+            "window.EventSource = class extends EventTarget "
+            "{ constructor(){ super(); } close(){} };"
+        )
+
+        async def serve(route, request):
+            path = request.url.split("?", 1)[0].removeprefix("http://agentdeck.test")
+            if request.method == "POST":
+                await route.fulfill(
+                    status=202,
+                    content_type="text/html",
+                    body='<div id="inject-result" class="inject-result"></div>',
+                )
+            elif path == "/sessions/codex:test:sid":
+                await route.fulfill(status=200, content_type="text/html", body=response.text)
+            elif path in scripts:
+                await route.fulfill(
+                    status=200, content_type="text/javascript", body=scripts[path]
+                )
+            else:
+                await route.fulfill(status=204, body="")
+
+        await page.route("http://agentdeck.test/**", serve)
+        await page.goto("http://agentdeck.test/sessions/codex:test:sid")
+        await page.locator("#inject-message").fill("hello")
+
+        assert await press_and_check_focus(page, "Send") == "inject-message"
+        assert await press_and_check_focus(page, "Stop") == "inject-message"
+        await browser.close()
+
+
 async def test_browser_action_timing_covers_htmx_response_and_sse_reconciliation(tmp_path):
     app = _web_app(tmp_path)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

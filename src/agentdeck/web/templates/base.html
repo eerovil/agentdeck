@@ -570,6 +570,17 @@
       event.preventDefault();
       input.form.requestSubmit();
     });
+    // Keep the mobile keyboard up when tapping the composer's Send/Stop buttons.
+    // A plain <button> takes focus off the message textarea on press, so mobile
+    // dismisses the keyboard and the afterRequest refocus below then re-shows it
+    // — a visible jump (issue #17). Enter never blurs, so it stays smooth; match
+    // that by not letting the button steal focus. preventDefault on mousedown
+    // keeps focus on the textarea while the click still fires and submits.
+    document.addEventListener('mousedown', function (event) {
+      if (event.target.closest('form.inject-form button[type="submit"]')) {
+        event.preventDefault();
+      }
+    });
     document.body.addEventListener('htmx:beforeRequest', function (event) {
       var form = event.detail && event.detail.elt;
       if (!form || !form.matches('form[data-clear-on-send]')) return;
