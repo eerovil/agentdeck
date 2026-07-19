@@ -82,9 +82,9 @@ def create_app(config: AppConfig) -> FastAPI:
         on_change=lambda _session_key: state.bus.publish("sessions"),
         on_delegation_started=state.mark_delegated_session,
     )
-    assistant = AssistantService(config, state)
-    titles = TitleService(config, state)
     push = PushService(config.push, db)
+    assistant = AssistantService(config, state, push=push)
+    titles = TitleService(config, state)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

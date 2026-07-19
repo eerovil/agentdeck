@@ -24,6 +24,7 @@ from .deckhand_runner import run_codex_json
 from .git_context import GitContext, GitContextResolver
 from .models import Account, PendingInteraction, Session
 from .providers import PROVIDERS
+from .push import PushService
 from .state import AppState
 from .triage import (
     AssistantInsight,
@@ -86,10 +87,14 @@ class AssistantService:
         *,
         runner: Runner = run_codex,
         context_resolver: GitContextResolver | None = None,
+        push: PushService | None = None,
     ) -> None:
         self.config = config.assistant
         self.state = state
         self.accounts = config.build_accounts()
+        self.push = push
+        # Fire-and-forget push sends (issue #7/#13); kept referenced until done.
+        self._push_tasks: set[asyncio.Task] = set()
         self.runner = runner
         self.context_resolver = context_resolver or GitContextResolver()
         self.contexts: dict[str, GitContext] = {}
@@ -475,6 +480,7 @@ class AssistantService:
     ) -> None:
         self._signatures = signatures
         changed = view != self.view
+        self._notify_new_insights(self.view, view)
         self.view = view
         self._save_checkpoint()
         if manual:
@@ -483,6 +489,40 @@ class AssistantService:
             )
         if changed or manual:
             self.state.bus.publish("assistant")
+
+    def _notify_new_insights(self, old: AssistantView, new: AssistantView) -> None:
+        """Web-push each attention item that just appeared (issue #7/#13).
+
+        Identity is (session_key, headline): a card that changes what it says
+        (e.g. "ready for review" → "blocked") notifies again, while an unchanged
+        card that survives a refresh does not. Handled cards never reach the view,
+        so acknowledging one silences it. On restart the checkpoint restores the
+        prior insights, so nothing re-notifies. No-op unless push is enabled."""
+        if not (self.push and self.push.enabled):
+            return
+        seen = {(i.session_key, i.headline) for i in old.insights}
+        for insight in new.insights:
+            if (insight.session_key, insight.headline) in seen:
+                continue
+            self._dispatch_push(insight)
+
+    def _dispatch_push(self, insight: AssistantInsight) -> None:
+        # send_to_all is blocking (HTTP to each push service), so run it off the
+        # event loop and don't await — a slow push service can't stall triage.
+        try:
+            task = asyncio.create_task(
+                asyncio.to_thread(
+                    self.push.send_to_all,
+                    insight.headline,
+                    insight.detail or "",
+                    f"/sessions/{insight.session_key}",
+                ),
+                name=f"push:{insight.session_key}",
+            )
+        except RuntimeError:  # no running loop (e.g. a synchronous unit test)
+            return
+        self._push_tasks.add(task)
+        task.add_done_callback(self._push_tasks.discard)
 
     # --- handled / undo ------------------------------------------------
 

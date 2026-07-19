@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from unittest.mock import AsyncMock
 
@@ -315,3 +316,84 @@ def test_run_codex_is_exported():
 def test_view_and_insight_are_importable_from_assistant():
     view = AssistantView(state="ready", insights=(AssistantInsight("k", "waiting", "h", "d"),))
     assert replace(view, summary="x").summary == "x"
+
+
+class _FakePush:
+    def __init__(self, *, enabled=True):
+        self.enabled = enabled
+        self.sent: list[tuple[str, str, str]] = []
+
+    def send_to_all(self, title, body="", url="/"):
+        self.sent.append((title, body, url))
+        return 1
+
+
+def _push_service(tmp_path, push):
+    return AssistantService(
+        _config(tmp_path),
+        AppState(),
+        runner=AsyncMock(),
+        context_resolver=_StubResolver(),
+        push=push,
+    )
+
+
+async def _drain(svc):
+    for _ in range(200):
+        if not svc._push_tasks:
+            return
+        await asyncio.sleep(0)
+
+
+def _view(*insights):
+    return AssistantView(state="ready", insights=tuple(insights))
+
+
+def _commit(svc, *insights):
+    svc._commit_view(_view(*insights), {i.session_key: "s" for i in insights}, manual=False)
+
+
+async def test_new_deckhand_insight_triggers_one_push_and_dedupes(tmp_path):
+    # Issue #7 (#13): a newly-appeared attention item pushes once; an unchanged
+    # one on the next refresh does not; a genuinely new one pushes again.
+    push = _FakePush()
+    svc = _push_service(tmp_path, push)
+    a = AssistantInsight("codex:test:a", "waiting", "Asked you a question", "answer it")
+
+    svc._commit_view(_view(a), {"codex:test:a": "s"}, manual=False)
+    await _drain(svc)
+    assert push.sent == [("Asked you a question", "answer it", "/sessions/codex:test:a")]
+
+    # same insight again → no new push
+    svc._commit_view(_view(a), {"codex:test:a": "s"}, manual=False)
+    await _drain(svc)
+    assert len(push.sent) == 1
+
+    # a different session's insight → another push (the existing one stays quiet)
+    b = AssistantInsight("codex:test:b", "finished", "PR #9 ready for review", "look")
+    svc._commit_view(
+        _view(a, b),
+        {"codex:test:a": "s", "codex:test:b": "s"},
+        manual=False,
+    )
+    await _drain(svc)
+    assert push.sent[1] == ("PR #9 ready for review", "look", "/sessions/codex:test:b")
+    assert len(push.sent) == 2
+
+
+async def test_changed_headline_notifies_again(tmp_path):
+    push = _FakePush()
+    svc = _push_service(tmp_path, push)
+    _commit(svc, AssistantInsight("s:1", "finished", "PR ready", "d"))
+    await _drain(svc)
+    _commit(svc, AssistantInsight("s:1", "blocked", "PR blocked", "d"))
+    await _drain(svc)
+    assert [t for t, _, _ in push.sent] == ["PR ready", "PR blocked"]
+
+
+async def test_no_push_when_disabled(tmp_path):
+    push = _FakePush(enabled=False)
+    svc = _push_service(tmp_path, push)
+    _commit(svc, AssistantInsight("s:1", "waiting", "h", "d"))
+    await _drain(svc)
+    assert push.sent == []
