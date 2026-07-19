@@ -143,7 +143,12 @@
     // Installed as a PWA, mobile freezes the app in the background and tears the
     // SSE socket down without reliably firing pagehide/onerror. On return, give
     // any in-flight reconnect a moment, then reload if the stream is stale.
+    // Pause continuous CSS animations (spinners, marquee) while backgrounded so
+    // a frozen/hidden PWA doesn't keep the compositor busy draining battery.
+    function applyBgPause() { document.body.classList.toggle('bg-paused', document.hidden); }
+    applyBgPause();
     document.addEventListener('visibilitychange', function () {
+      applyBgPause();
       if (document.visibilityState === 'visible') setTimeout(recover, 2000);
     });
     // And a watchdog while visible, to catch a socket that silently died mid-use
@@ -203,6 +208,18 @@
         inner.appendChild(line);
       });
       if (t && !found) typing.delete(key);          // its message scrolled out of the window
+    }
+    function pruneStale() {
+      // Bound the per-card JS state to sessions still in the list, so feed/
+      // lastSeen/typing/expanded don't grow unboundedly as sessions churn.
+      var live = new Set();
+      document.querySelectorAll('a.session').forEach(function (c) {
+        var h = c.getAttribute('href'); if (h) live.add(h);
+      });
+      [feed, lastSeen, typing].forEach(function (m) {
+        m.forEach(function (_v, k) { if (!live.has(k)) m.delete(k); });
+      });
+      expanded.forEach(function (k) { if (!live.has(k)) expanded.delete(k); });
     }
     function setup(scope) {
       (scope || document).querySelectorAll('[data-marquee]').forEach(function (box) {
@@ -264,12 +281,15 @@
                              // leftover offset + transform hides the text (blank card)
         toBottom(box, inner);                     // keep the newest text in view
       });
+      ensureTick();   // (re)start the typewriter loop only if a card is now typing
+      pruneStale();   // drop JS state for sessions no longer in the DOM
     }
     // Advance every active typewriter at a fixed 300 WPM (standard 5 chars/word
     // = 25 chars/sec), timed off requestAnimationFrame elapsed-ms so it's smooth
     // and reliable on mobile (setInterval gets throttled). t.shown is fractional.
     var CHARS_PER_MS = 300 * 5 / 60 / 1000;  // 300 wpm
     var lastTs = null;
+    var ticking = false;
     function tick(ts) {
       var dt = lastTs == null ? 16 : Math.min(200, ts - lastTs);
       lastTs = ts;
@@ -281,9 +301,14 @@
         if (t.box && t.inner) toBottom(t.box, t.inner);
         if (n >= t.full.length) typing.delete(key);
       });
-      requestAnimationFrame(tick);
+      // Self-stop when nothing is animating, so an idle dashboard costs zero
+      // frames instead of waking the main thread ~60x/s forever.
+      if (typing.size) { requestAnimationFrame(tick); }
+      else { ticking = false; lastTs = null; }
     }
-    requestAnimationFrame(tick);
+    function ensureTick() {
+      if (!ticking && typing.size) { ticking = true; lastTs = null; requestAnimationFrame(tick); }
+    }
 
     // Run synchronously on swap (before paint) so a reorder never flashes.
     window.addEventListener('load', function () { requestAnimationFrame(function () { setup(); }); });
