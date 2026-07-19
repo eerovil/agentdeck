@@ -18,7 +18,7 @@ its own port, DB, usage cache, and Codex control socket.
 | Codex socket  | `$XDG_RUNTIME_DIR/agentdeck/…sock`     | `$XDG_RUNTIME_DIR/agentdeck-staging/…sock`      |
 | systemd       | `agentdeck{,-codex}.service`           | `agentdeck-staging{,-codex}.service`           |
 | Phone / TLS   | `https://<tailnet-host>/` (:443)       | `https://<tailnet-host>:8758/`                 |
-| Inject        | on                                     | **off** (shared account dirs stay read-only)   |
+| Inject        | on                                     | **on** (required by the New Claude chat feature) |
 
 The Codex socket is isolated purely via the `AGENTDECK_CODEX_SOCKET` env var
 (honored by both the runtime binder and the web client) plus a per-service
@@ -60,16 +60,17 @@ on start, exactly as staging validated.
 ## Safety notes
 
 - Staging shares the live `~/.claude` / `~/.claude2` / `~/.codex` account dirs.
-  **Monitoring** is read-only and `inject.enabled = false` keeps staging from
-  steering pre-existing real sessions — but this is *not* a fully read-only
-  sandbox: with `[claude_workers]` enabled, a staging-spawned Claude worker is a
-  real `claude` process running under the live account (`permission_mode =
-  bypassPermissions` = allow-all), so it **edits files in its cwd and consumes
-  the live account's token budget**. `usage_ceiling_pct = 90` refuses new/revived
-  workers once the account is at/above 90 % usage so a canary can't drain the
-  budget; delivering to an already-live worker stays exempt so in-flight work
-  finishes. Spawn workers against throwaway cwds, not real repos, unless you mean
-  it.
+  **Monitoring** is read-only, but staging is *not* a read-only sandbox. The
+  "New Claude chat" runtime feature is **inject-gated**, so it needs
+  `inject.enabled = true` — which also allows manual inject into pre-existing
+  sessions (no automatic action; `assistant.auto_answer` stays false). With
+  `[claude_workers]` enabled, a staging-spawned Claude worker is a real `claude`
+  process running under the live account (`permission_mode = bypassPermissions`
+  = allow-all), so it **edits files in its cwd and consumes the live account's
+  token budget**. `usage_ceiling_pct = 90` refuses new/revived workers once the
+  account is at/above 90 % usage so a canary can't drain the budget; delivering
+  to an already-live worker stays exempt so in-flight work finishes. Spawn
+  workers against throwaway cwds, not real repos, unless you mean it.
 - Staging owns only the Codex/Claude workers **it** spawns (tracked in its own DB
   + `state_dir`); live delegation (`/use-codex`, kanban) targets the live
   port/socket and is unaffected.

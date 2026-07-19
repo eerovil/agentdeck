@@ -7,7 +7,9 @@
 #   - port 8757 (live: 8756)               -> both run at once
 #   - own history DB (agentdeck-staging.db) -> schema changes can't touch live history
 #   - own usage cache dir                   -> a changed cache format can't clobber live
-#   - inject DISABLED                        -> shares live account dirs; stays read-only
+#   - inject ENABLED                         -> REQUIRED for the "New Claude chat" runtime
+#                                               feature (start_new is inject-gated). Runtime
+#                                               safety is permission_mode + usage_ceiling + cwd.
 # The Codex control socket is isolated via AGENTDECK_CODEX_SOCKET in the systemd units.
 
 [server]
@@ -28,7 +30,9 @@ db_path = "~/.local/share/agentdeck/agentdeck-staging.db"
 usage_retention_days = 30
 
 [inject]
-enabled = false            # SAFETY: shared live account dirs; on only to test inject
+enabled = true             # REQUIRED for the "New Claude chat" runtime feature (start_new is
+                           # inject-gated). Also allows manual inject into pre-existing sessions
+                           # (no automatic action; assistant auto_answer stays false).
 
 [assistant]
 enabled = true
