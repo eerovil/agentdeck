@@ -315,6 +315,12 @@ body.usage-open .limit-bars { display: flex; }
 .dh-review  { color: var(--remote); } /* finished, work awaiting your review */
 .dh-done    { color: var(--live); }   /* finished, nothing left for you */
 .dh-unknown { color: var(--muted); }  /* not classified yet */
+/* Brief highlight when a Deckhand insight scrolls its row into view (deckhand_focus.js). */
+@keyframes dh-focus-flash {
+  0%   { box-shadow: 0 0 0 2px var(--remote); }
+  100% { box-shadow: 0 0 0 2px transparent; }
+}
+.session.dh-focus-flash { animation: dh-focus-flash 1.4s ease-out; }
 .st-open { color: var(--live); }
 .st-merged, .st-done { color: var(--wt-cloud); }
 .st-closed { color: var(--crit); }

@@ -596,6 +596,67 @@ async def test_deckhand_pill_fits_narrow_mobile(tmp_path):
     assert size["cardOverflow"] <= 1
 
 
+async def test_deckhand_insight_click_focuses_row_instead_of_opening(tmp_path):
+    app = _app_with_state(tmp_path)
+    app.state.assistant.config.enabled = True
+    app.state.app_state.update_session(
+        Session(
+            key="claude_code:test:focus1", account_key="claude_code:test",
+            session_id="focus1", status=SessionStatus.LIVE,
+            title="Focus target", last_role="agent", question="Ready to ship?",
+        )
+    )
+    app.state.assistant.view = AssistantView(
+        state="ready",
+        summary="One agent needs your attention.",
+        insights=(
+            AssistantInsight(
+                session_key="claude_code:test:focus1",
+                kind="waiting",
+                headline="Asked you a question",
+                detail="Ready to ship?",
+            ),
+        ),
+    )
+    async with _client(app) as client:
+        response = await client.get("/")
+    static_dir = Path(__file__).parents[1] / "src/agentdeck/web/static"
+    css = (static_dir / "app.css").read_text()
+    timing_js = (static_dir / "action_timing.js").read_text()
+    focus_js = (static_dir / "deckhand_focus.js").read_text()
+    # A <base> so the insight link's "/sessions/..." href resolves (set_content
+    # runs on about:blank); navigation is still prevented, so location won't move.
+    html = response.text.replace("<head>", '<head><base href="http://localhost/">', 1)
+    html = html.replace("</head>", f"<style>{css}</style></head>")
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        page = await browser.new_page(viewport={"width": 900, "height": 600})
+        await page.set_content(html)
+        await page.add_script_tag(content=timing_js)
+        await page.add_script_tag(content=focus_js)
+        sel = '.session[data-session-key="claude_code:test:focus1"]'
+        present = await page.evaluate(
+            "(sel) => ({link: !!document.querySelector('.assistant-insight-link'),"
+            " card: !!document.querySelector(sel)})",
+            sel,
+        )
+        assert present["link"] and present["card"]
+        before = await page.evaluate("() => location.href")
+        await page.locator(".assistant-insight-link").first.click()
+        after = await page.evaluate(
+            "(sel) => ({href: location.href,"
+            " flashed: document.querySelector(sel).classList.contains('dh-focus-flash'),"
+            " opening: !!document.querySelector('.assistant-insight-link.opening')})",
+            sel,
+        )
+        await browser.close()
+    # Clicking the insight did NOT navigate to the chat...
+    assert after["href"] == before
+    # ...it focused the row in the list (flash highlight) and skipped the open spinner.
+    assert after["flashed"]
+    assert not after["opening"]
+
+
 async def test_long_card_title_gets_full_width_three_line_layout(tmp_path):
     app = _app_with_state(tmp_path)
     long_title = (
