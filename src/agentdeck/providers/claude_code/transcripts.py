@@ -421,6 +421,10 @@ _QUESTION_MIN_LEN = 8
 # block has no full stops, so a newline is often the only boundary before a
 # trailing "So, what's next?".
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|[\r\n]+")
+# Markdown emphasis / quote / bracket characters that can wrap a question so it
+# ends in "?**" or '?"' rather than a bare "?". Stripped from both ends before
+# judging (and off the returned text) so a bolded question still registers.
+_QUESTION_WRAP = "*_`~\"'”’)]}>"
 
 
 def trailing_question(text: str | None) -> str | None:
@@ -429,16 +433,19 @@ def trailing_question(text: str | None) -> str | None:
     Heuristic: split into sentences (also on line breaks) and return the final
     one ending in ``?`` — skipping short or code-like fragments (a lone token, a
     ternary, a URL query string) that end in a question mark without being a
-    question. Used to surface "the agent is waiting on an answer" on the card."""
+    question. A trailing markdown wrapper (``**…?**``, ``_…?_``, ``"…?"``) is
+    peeled off first, so an emphasised question is not missed. Used to surface
+    "the agent is waiting on an answer" on the card."""
     if not text or "?" not in text:
         return None
     for part in reversed(_SENTENCE_SPLIT.split(text)):
         p = " ".join(part.split())  # flatten any internal whitespace
+        core = p.rstrip(_QUESTION_WRAP)  # peel a bold/quote wrapper: "…?**" -> "…?"
         # A real question ends "word?"; a ternary ("a ? b") has a space before
         # the mark, and a URL query keeps the "?" mid-sentence (so the split
         # never ends a segment there).
-        if p.endswith("?") and len(p) >= _QUESTION_MIN_LEN and p[-2] != " ":
-            return p
+        if core.endswith("?") and len(core) >= _QUESTION_MIN_LEN and core[-2] != " ":
+            return core.lstrip(_QUESTION_WRAP + " ")
     return None
 
 

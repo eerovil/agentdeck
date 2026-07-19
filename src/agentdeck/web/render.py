@@ -282,8 +282,13 @@ def deckhand_pill(session, status_map: dict | None) -> dict | None:
     result):
 
     - subagent/background chats never carry a pill;
-    - a pending question is always ``waiting`` — read straight off the session so a
-      handled/stale attention view can't drop it;
+    - an explicit ``done`` (you dismissed the card) wins even over a pending
+      question: ``session.question`` is part of the evidence signature, so a
+      surviving dismissal is current — the next turn auto-clears it — not stale.
+      That lets a waiting item be marked done (merged, being automatic, stays
+      below the question so a fresh question still overrides "shipped");
+    - a pending question is otherwise always ``waiting`` — read straight off the
+      session so a stale attention view can't drop it;
     - otherwise the resolved status from ``session_deckhand_status``
       (blocked/finished/done/merged), but a non-live status (stored verdict, manual
       dismissal, or PR state) is hidden while the chat is working, since it judged
@@ -295,13 +300,15 @@ def deckhand_pill(session, status_map: dict | None) -> dict | None:
     the pill text, and ``title`` its tooltip."""
     if session.is_delegated:
         return None
+    dh = (status_map or {}).get(session.key)
+    if dh and dh["state"] == "done" and not session.thinking:
+        return {"state": "done", "label": "done", "title": "Deckhand: " + dh["headline"]}
     if session.question:
         return {
             "state": "waiting",
             "label": "waiting",
             "title": "Deckhand: the agent asked you a question",
         }
-    dh = (status_map or {}).get(session.key)
     if dh and (dh["live"] or not session.thinking):
         return {"state": dh["state"], "label": dh["state"], "title": "Deckhand: " + dh["headline"]}
     if not session.thinking:

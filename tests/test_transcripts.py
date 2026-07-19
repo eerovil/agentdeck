@@ -31,6 +31,15 @@ def test_trailing_question():
     # Guards: a URL query or a ternary must not register as a question.
     assert tq("Fetching /static/app.css?v=abc now.") is None
     assert tq("The value is a ? b : c in that branch.") is None
+    # A markdown-wrapped question (bold/italic/quoted) still registers — the
+    # trailing "**", "_", or quote is peeled before judging and off the result.
+    assert tq("My question still stands: **how can I help?**") == (
+        "My question still stands: **how can I help?")
+    assert tq("So, _what should we do next?_") == "So, _what should we do next?"
+    assert tq('Confirm: "is this the final answer?"') == 'Confirm: "is this the final answer?'
+    # Wrappers must not turn a non-question into one, nor rescue a short fragment.
+    assert tq("All shipped and verified.**") is None
+    assert tq("ok?**") is None
 
 
 def test_recent_conversation_reads_bounded_tail_and_filters_tools(tmp_path):

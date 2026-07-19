@@ -548,6 +548,12 @@ def test_deckhand_pill_resolves_every_branch():
     assert p["state"] == "done" and p["title"] == "Deckhand: Shipped"
     # A merged pill renders on a resting chat.
     assert deckhand_pill(sess("m"), status)["state"] == "merged"
+    # An explicit done dismissal beats a pending question — a waiting item you
+    # marked done reads "done", not "waiting".
+    assert deckhand_pill(sess("v", question="Which?"), status)["state"] == "done"
+    # But merged is automatic, so it stays below a pending question: a fresh
+    # question still wins over "shipped".
+    assert deckhand_pill(sess("m", question="Which?"), status)["state"] == "waiting"
     # A live insight shows even while the chat is thinking.
     assert deckhand_pill(sess("i", thinking=True), status)["state"] == "blocked"
     # A non-live (stored) verdict is suppressed mid-turn.
