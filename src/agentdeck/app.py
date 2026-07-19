@@ -7,6 +7,7 @@ import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -17,6 +18,7 @@ from .collector import Collector
 from .config import AppConfig
 from .db import make_db
 from .inject import InjectionService
+from .providers.codex.runtime_client import runtime_socket_path
 from .state import AppState
 from .titles import TitleService
 from .web import render as render_mod
@@ -80,6 +82,13 @@ def create_app(config: AppConfig) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # Proxy channel to the long-lived runtime service (deck-owned Claude
+        # workers). Lazy per-request use; unreachable → the route returns 503.
+        app.state.runtime_http = httpx.AsyncClient(
+            transport=httpx.AsyncHTTPTransport(uds=str(runtime_socket_path())),
+            base_url="http://agentdeck-runtime",
+            timeout=httpx.Timeout(30.0, read=None),
+        )
         await collector.start()
         await titles.start()
         await assistant.start()
@@ -90,6 +99,7 @@ def create_app(config: AppConfig) -> FastAPI:
             await titles.stop()
             await injector.stop()
             await collector.stop()
+            await app.state.runtime_http.aclose()
             db.close()
 
     app = FastAPI(title="agentdeck", version=VERSION, lifespan=lifespan)

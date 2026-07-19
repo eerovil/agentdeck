@@ -105,6 +105,96 @@ class AssistantConfig(BaseModel):
         return value
 
 
+class ClaudeWorkerOverrides(BaseModel):
+    """Per-account overrides for [claude_workers]; unset fields inherit the base.
+
+    Lets e.g. an autonomous worker account run with permission_mode =
+    "bypassPermissions" while interactive accounts keep the CLI default.
+    """
+
+    max_workers: int | None = None
+    permission_mode: str | None = None
+    model: str | None = None
+    usage_ceiling_pct: float | None = None
+    stall_after_s: float | None = None
+
+    @field_validator("max_workers")
+    @classmethod
+    def _positive_max_workers(cls, value: int | None) -> int | None:
+        if value is not None and value <= 0:
+            raise ValueError("claude_workers accounts max_workers must be positive")
+        return value
+
+    @field_validator("usage_ceiling_pct")
+    @classmethod
+    def _usage_ceiling_range(cls, value: float | None) -> float | None:
+        if value is not None and not 0 <= value <= 100:
+            raise ValueError(
+                "claude_workers accounts usage_ceiling_pct must be between 0 and 100"
+            )
+        return value
+
+    @field_validator("stall_after_s")
+    @classmethod
+    def _non_negative_stall(cls, value: float | None) -> float | None:
+        if value is not None and value < 0:
+            raise ValueError("claude_workers accounts stall_after_s must be non-negative")
+        return value
+
+
+class ClaudeWorkersConfig(BaseModel):
+    """Deck-owned Claude worker processes (spawn/steer/revive via the runtime API)."""
+
+    enabled: bool = False
+    max_workers: int = 4  # per account; delivery to a live worker is exempt
+    permission_mode: str = ""  # e.g. "acceptEdits" / "bypassPermissions"; "" = CLI default
+    model: str = ""  # "" = account default model
+    usage_ceiling_pct: float = 0.0  # refuse (re)spawns at/above this 5h-or-7d usage %; 0 disables
+    stall_after_s: float = (
+        0.0  # flag a live worker stalled after this many silent seconds; 0 disables
+    )
+    state_dir: str = "~/.local/share/agentdeck/claude-workers"
+    # Keyed by account label: [claude_workers.accounts.<label>]
+    accounts: dict[str, ClaudeWorkerOverrides] = {}
+
+    def for_account(self, label: str) -> ClaudeWorkersConfig:
+        """Effective settings for one account (base + that account's overrides)."""
+        override = self.accounts.get(label)
+        if override is None:
+            return self
+        merged = {
+            field: value
+            for field, value in override.model_dump().items()
+            if value is not None
+        }
+        return self.model_copy(update=merged)
+
+    @field_validator("max_workers")
+    @classmethod
+    def _positive_max_workers(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("claude_workers.max_workers must be positive")
+        return value
+
+    @field_validator("usage_ceiling_pct")
+    @classmethod
+    def _usage_ceiling_range(cls, value: float) -> float:
+        if not 0 <= value <= 100:
+            raise ValueError("claude_workers.usage_ceiling_pct must be between 0 and 100")
+        return value
+
+    @field_validator("stall_after_s")
+    @classmethod
+    def _non_negative_stall(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("claude_workers.stall_after_s must be non-negative")
+        return value
+
+    @property
+    def state_path(self) -> Path:
+        return Path(self.state_dir).expanduser()
+
+
 class AccountConfig(BaseModel):
     provider: str
     label: str
@@ -140,6 +230,7 @@ class AppConfig(BaseModel):
     history: HistoryConfig = HistoryConfig()
     inject: InjectConfig = InjectConfig()
     assistant: AssistantConfig = AssistantConfig()
+    claude_workers: ClaudeWorkersConfig = ClaudeWorkersConfig()
     accounts: list[AccountConfig] = []
 
     @model_validator(mode="after")

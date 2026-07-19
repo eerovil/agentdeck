@@ -1,0 +1,719 @@
+"""Deck-owned Claude Code worker processes (stream-json control channel).
+
+Each worker is one long-lived ``claude -p --input-format stream-json`` process.
+The host keys workers by an opaque *dedupe key* and exposes one idempotent
+primitive — ``deliver(key, delivery_id, message)`` — which steers a live worker, revives a
+finished session (``--resume``), or spawns a fresh one. Callers (e.g. an
+external board poller) never track process state themselves.
+
+Transcripts are written by the CLI into ``<account root>/projects/``, so the
+ordinary ClaudeCodeProvider scan picks deck-owned workers up with no extra
+plumbing.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import hashlib
+import json
+import logging
+import mimetypes
+import os
+import signal
+import time
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from ...models import Account
+
+log = logging.getLogger(__name__)
+
+# One JSON event per stdout line; large tool results can exceed asyncio's
+# default 64 KiB StreamReader limit (same rationale as the Codex app-server).
+STDOUT_LINE_LIMIT = 16 * 1024 * 1024
+
+INTERRUPT_TIMEOUT_S = 15.0
+INIT_TIMEOUT_S = 30.0
+
+# Published usage snapshots older than this are treated as unknown rather than
+# trusted — a stalled collector must not permanently block (or greenlight) work.
+USAGE_MAX_AGE_S = 1800.0
+
+
+class WorkerError(RuntimeError):
+    """A Claude worker process could not complete a request."""
+
+
+@dataclass
+class DeliverResult:
+    accepted: bool
+    action: str  # spawned/revived/steered/queued/parked/released/stopped/rejected
+    reason: str | None = None
+    session_id: str | None = None
+
+
+@dataclass
+class WorkerRecord:
+    """Durable per-key state — survives runtime restarts via the state file."""
+
+    key: str
+    cwd: str
+    session_id: str | None = None
+    last_delivery_at: float = 0.0
+    last_result_at: float = 0.0
+    last_result_subtype: str | None = None
+    deliveries: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+
+@dataclass
+class _LiveWorker:
+    process: asyncio.subprocess.Process
+    reader_task: asyncio.Task
+    initialized: asyncio.Future[str]
+    turn_active: bool = False
+    started_at: float = field(default_factory=time.time)
+    last_event_at: float = field(default_factory=time.time)
+    # request_ids of interrupts awaiting a control_response on this worker, so
+    # the reader can fail them fast if the process exits before acking.
+    pending_interrupts: set[str] = field(default_factory=set)
+
+
+class ClaudeWorkerHost:
+    """Own all deck-managed Claude worker processes for one account."""
+
+    def __init__(
+        self,
+        account: Account,
+        *,
+        state_dir: Path,
+        max_workers: int = 4,
+        permission_mode: str | None = None,
+        model: str | None = None,
+        usage_ceiling_pct: float = 0.0,
+        usage_cache_dir: Path | None = None,
+        stall_after_s: float = 0.0,
+        process_factory=None,
+        usage_reader=None,
+    ) -> None:
+        self.account = account
+        self.max_workers = max_workers
+        self.permission_mode = permission_mode
+        self.model = model
+        self.usage_ceiling_pct = usage_ceiling_pct
+        self.stall_after_s = stall_after_s
+        self._usage_cache_dir = usage_cache_dir
+        self._usage_reader = usage_reader or self._read_published_usage
+        self._process_factory = process_factory or asyncio.create_subprocess_exec
+        self._state_path = state_dir / f"{account.label}.json"
+        self._records: dict[str, WorkerRecord] = {}
+        self._live: dict[str, _LiveWorker] = {}
+        self._interrupt_waiters: dict[str, asyncio.Future] = {}
+        self._key_locks: dict[str, asyncio.Lock] = {}
+        self._load_state()
+
+    def _key_lock(self, key: str) -> asyncio.Lock:
+        """Per-key serialization lock.
+
+        Deliveries and lifecycle ops (stop/park/release) on ONE key are mutually
+        exclusive, but operations on *different* keys run concurrently — so
+        stopping a stalled worker never blocks behind another key's up-to-30s
+        spawn. Host-wide admission (``max_workers``) is therefore advisory under
+        this scheme; a transient off-by-one at the cap is immaterial on a single
+        host and never destroys a healthy worker (the fresh-replace path checks
+        admission before terminating anything).
+        """
+        lock = self._key_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._key_locks[key] = lock
+        return lock
+
+    # --- admission policy --------------------------------------------------
+
+    def _read_published_usage(self) -> float | None:
+        """Max(5h, 7d) utilization % from the shared usage cache, or None if
+        missing/unparseable/stale — the collector publishes ``usage-<label>.json``."""
+        if self._usage_cache_dir is None:
+            return None
+        try:
+            raw = json.loads(
+                (self._usage_cache_dir / f"usage-{self.account.label}.json").read_text()
+            )
+        except (OSError, ValueError):
+            return None
+        fetched = raw.get("fetched_at")
+        if isinstance(fetched, str):
+            try:
+                age = time.time() - datetime.fromisoformat(fetched).timestamp()
+            except ValueError:
+                age = None
+            if age is not None and age > USAGE_MAX_AGE_S:
+                return None
+        pcts = [raw.get("five_hour_pct"), raw.get("seven_day_pct")]
+        known = [p for p in pcts if isinstance(p, (int, float))]
+        return max(known) if known else None
+
+    def _over_budget(self) -> bool:
+        if self.usage_ceiling_pct <= 0:
+            return False
+        pct = self._usage_reader()
+        return pct is not None and pct >= self.usage_ceiling_pct
+
+    # --- state persistence -------------------------------------------------
+
+    def _load_state(self) -> None:
+        try:
+            raw = json.loads(self._state_path.read_text())
+        except (OSError, ValueError):
+            return
+        for item in raw.get("workers", []):
+            try:
+                rec = WorkerRecord(**item)
+            except TypeError:
+                continue
+            self._records[rec.key] = rec
+
+    def _save_state(self) -> None:
+        self._state_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"workers": [vars(rec) for rec in self._records.values()]}
+        tmp = self._state_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, indent=1))
+        tmp.replace(self._state_path)
+
+    # --- public API --------------------------------------------------------
+
+    def snapshot(self) -> dict[str, Any]:
+        now = time.time()
+        workers = {}
+        for key, rec in self._records.items():
+            live = self._live.get(key)
+            alive = live is not None and live.process.returncode is None
+            turn_active = bool(alive and live.turn_active)
+            stalled = (
+                turn_active
+                and self.stall_after_s > 0
+                and (now - max(rec.last_delivery_at, live.last_event_at))
+                > self.stall_after_s
+            )
+            workers[key] = {
+                "session_id": rec.session_id,
+                "cwd": rec.cwd,
+                "live": alive,
+                "turn_active": turn_active,
+                "stalled": stalled,
+                "last_delivery_at": rec.last_delivery_at,
+                "last_result_at": rec.last_result_at,
+                "last_result_subtype": rec.last_result_subtype,
+            }
+        return {
+            "workers": workers,
+            "live_count": sum(
+                1 for w in self._live.values() if w.process.returncode is None
+            ),
+            "usage_pct": self._usage_reader(),
+            "over_budget": self._over_budget(),
+        }
+
+    async def deliver(
+        self,
+        key: str,
+        message: str,
+        *,
+        cwd: str | None = None,
+        fresh: bool = False,
+        images: list[str] | None = None,
+        model: str | None = None,
+        permission_mode: str | None = None,
+        delivery_id: str | None = None,
+    ) -> DeliverResult:
+        """Idempotent work delivery: steer if live, revive if finished, else spawn.
+
+        ``delivery_id`` is optional for interactive callers, but durable dispatchers
+        should always provide one. An accepted id is persisted with a fingerprint and
+        its original result before the HTTP response is returned, so an ambiguous retry
+        cannot write the same message twice or replace a successfully spawned worker.
+        """
+        fingerprint = self._delivery_fingerprint(
+            message,
+            cwd=cwd,
+            fresh=fresh,
+            images=images or [],
+            model=model,
+            permission_mode=permission_mode,
+        )
+        async with self._key_lock(key):
+            rec = self._records.get(key)
+            cached = self._cached_delivery(rec, delivery_id, fingerprint)
+            if cached is not None:
+                return cached
+            try:
+                image_blocks = [
+                    await asyncio.to_thread(self._image_block, path) for path in images or []
+                ]
+            except WorkerError as exc:
+                return DeliverResult(False, "rejected", reason=str(exc))
+            live = self._live.get(key)
+
+            if live is not None and live.process.returncode is None and not fresh:
+                try:
+                    await self._write_user_message(live, message, image_blocks)
+                except WorkerError as exc:
+                    return DeliverResult(False, "rejected", reason=str(exc))
+                rec.last_delivery_at = time.time()
+                action = "steered" if live.turn_active else "queued"
+                live.turn_active = True
+                result = DeliverResult(True, action, session_id=rec.session_id)
+                self._remember_delivery(rec, delivery_id, fingerprint, result)
+                self._save_state()
+                return result
+
+            admission_checked = False
+            # A fresh delivery replaces the existing process atomically. Check
+            # admission first so a rejected replacement never destroys the
+            # healthy worker it was meant to replace.
+            if live is not None:
+                running = [
+                    worker
+                    for worker in self._live.values()
+                    if worker is not live and worker.process.returncode is None
+                ]
+                if len(running) >= self.max_workers:
+                    return DeliverResult(False, "rejected", reason="at_capacity")
+                if self._over_budget():
+                    return DeliverResult(False, "rejected", reason="over_budget")
+                admission_checked = True
+                self._live.pop(key, None)
+                await self._terminate(live)
+
+            # Not live (or fresh requested) — this is a (re)spawn: admission
+            # policy applies here only. Steering a live worker is always allowed
+            # so in-flight work finishes even at the cap or over budget.
+            if not admission_checked:
+                running = [w for w in self._live.values() if w.process.returncode is None]
+                if len(running) >= self.max_workers:
+                    return DeliverResult(False, "rejected", reason="at_capacity")
+                if self._over_budget():
+                    return DeliverResult(False, "rejected", reason="over_budget")
+
+            if rec is None or fresh or rec.cwd != (cwd or (rec.cwd if rec else None)):
+                if cwd is None and rec is None:
+                    return DeliverResult(False, "rejected", reason="cwd_required")
+                rec = WorkerRecord(key=key, cwd=cwd or rec.cwd)
+                self._records[key] = rec
+
+            resume_id = None if fresh else rec.session_id
+            resumed = resume_id is not None
+            try:
+                live = await self._spawn_and_deliver(
+                    key,
+                    rec,
+                    message,
+                    image_blocks,
+                    resume_id=resume_id,
+                    model=model,
+                    permission_mode=permission_mode,
+                )
+            except WorkerError as exc:
+                if resume_id is not None:
+                    # Revive fallback: session gone/incompatible → fresh spawn.
+                    log.warning("revive of %s failed (%s); spawning fresh", key, exc)
+                    rec.session_id = None
+                    resumed = False
+                    self._save_state()
+                    try:
+                        live = await self._spawn_and_deliver(
+                            key,
+                            rec,
+                            message,
+                            image_blocks,
+                            resume_id=None,
+                            model=model,
+                            permission_mode=permission_mode,
+                        )
+                    except WorkerError as fallback_exc:
+                        return DeliverResult(False, "rejected", reason=str(fallback_exc))
+                else:
+                    return DeliverResult(False, "rejected", reason=str(exc))
+
+            rec.last_delivery_at = time.time()
+            action = "revived" if resumed else "spawned"
+            result = DeliverResult(True, action, session_id=rec.session_id)
+            self._remember_delivery(rec, delivery_id, fingerprint, result)
+            self._save_state()
+            return result
+
+    @staticmethod
+    def _delivery_fingerprint(
+        message: str,
+        *,
+        cwd: str | None,
+        fresh: bool,
+        images: list[str],
+        model: str | None,
+        permission_mode: str | None,
+    ) -> str:
+        payload = json.dumps(
+            {
+                "message": message,
+                "cwd": cwd,
+                "fresh": fresh,
+                "images": images,
+                "model": model,
+                "permission_mode": permission_mode,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(payload.encode()).hexdigest()
+
+    @staticmethod
+    def _cached_delivery(
+        rec: WorkerRecord | None,
+        delivery_id: str | None,
+        fingerprint: str,
+    ) -> DeliverResult | None:
+        if rec is None or not delivery_id:
+            return None
+        receipt = rec.deliveries.get(delivery_id)
+        if receipt is None:
+            return None
+        if receipt.get("fingerprint") != fingerprint:
+            return DeliverResult(False, "rejected", reason="delivery_id_conflict")
+        return DeliverResult(
+            True,
+            str(receipt.get("action") or "queued"),
+            session_id=receipt.get("session_id"),
+        )
+
+    @staticmethod
+    def _remember_delivery(
+        rec: WorkerRecord,
+        delivery_id: str | None,
+        fingerprint: str,
+        result: DeliverResult,
+    ) -> None:
+        if not delivery_id:
+            return
+        rec.deliveries[delivery_id] = {
+            "fingerprint": fingerprint,
+            "action": result.action,
+            "session_id": result.session_id,
+        }
+        while len(rec.deliveries) > 64:
+            rec.deliveries.pop(next(iter(rec.deliveries)))
+
+    async def interrupt(self, key: str) -> DeliverResult:
+        live = self._live.get(key)
+        if live is None or live.process.returncode is not None:
+            return DeliverResult(False, "rejected", reason="not_live")
+        request_id = f"int-{uuid.uuid4().hex[:8]}"
+        waiter: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._interrupt_waiters[request_id] = waiter
+        live.pending_interrupts.add(request_id)
+        try:
+            await self._write(
+                live,
+                {
+                    "type": "control_request",
+                    "request_id": request_id,
+                    "request": {"subtype": "interrupt"},
+                },
+            )
+            # The reader resolves the waiter with the control_response, or with
+            # None if the process exits first (see _read_loop) — so a turn that
+            # finishes concurrently returns immediately instead of hanging.
+            response = await asyncio.wait_for(waiter, timeout=INTERRUPT_TIMEOUT_S)
+        except TimeoutError:
+            return DeliverResult(False, "rejected", reason="interrupt_timeout")
+        except WorkerError as exc:
+            return DeliverResult(False, "rejected", reason=str(exc))
+        finally:
+            self._interrupt_waiters.pop(request_id, None)
+            live.pending_interrupts.discard(request_id)
+        if response is None:
+            return DeliverResult(False, "rejected", reason="worker_exited")
+        rec = self._records.get(key)
+        return DeliverResult(True, "interrupted", session_id=rec.session_id if rec else None)
+
+    async def stop_worker(self, key: str) -> DeliverResult:
+        async with self._key_lock(key):
+            live = self._live.pop(key, None)
+            if live is None:
+                return DeliverResult(False, "rejected", reason="not_live")
+            await self._terminate(live)
+            rec = self._records.get(key)
+            return DeliverResult(True, "stopped", session_id=rec.session_id if rec else None)
+
+    async def park_worker(self, key: str) -> DeliverResult:
+        """Terminate a process while retaining resumable session lineage.
+
+        Parking is idempotent: an already parked known key is accepted so callers
+        can safely retry after losing the response.
+        """
+        async with self._key_lock(key):
+            rec = self._records.get(key)
+            live = self._live.pop(key, None)
+            if live is not None:
+                await self._terminate(live)
+            # Unknown is already safely parked. Accept it so a caller that lost
+            # the original response (or survived state repair) never deadlocks
+            # its own durable lifecycle transition.
+            return DeliverResult(
+                True, "parked", session_id=rec.session_id if rec else None
+            )
+
+    async def release_worker(self, key: str) -> DeliverResult:
+        """Terminate and forget a key atomically; safe to retry after success."""
+        async with self._key_lock(key):
+            rec = self._records.get(key)
+            live = self._live.pop(key, None)
+            if live is not None:
+                await self._terminate(live)
+            if rec is not None:
+                self._records.pop(key, None)
+                self._save_state()
+            return DeliverResult(
+                True, "released", session_id=rec.session_id if rec else None
+            )
+
+    def forget(self, key: str) -> bool:
+        """Drop a finished key's record (its session lineage) from the registry."""
+        if key in self._live:
+            return False
+        removed = self._records.pop(key, None) is not None
+        self._key_locks.pop(key, None)
+        if removed:
+            self._save_state()
+        return removed
+
+    async def stop(self) -> None:
+        live = list(self._live.values())
+        self._live.clear()
+        await asyncio.gather(*(self._terminate(w) for w in live), return_exceptions=True)
+
+    # --- process management ------------------------------------------------
+
+    def _command(
+        self,
+        resume_id: str | None,
+        *,
+        model: str | None = None,
+        permission_mode: str | None = None,
+    ) -> list[str]:
+        cmd = [
+            "claude",
+            "-p",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+        ]
+        effective_model = model or self.model
+        effective_permission_mode = permission_mode or self.permission_mode
+        if effective_model:
+            cmd += ["--model", effective_model]
+        if effective_permission_mode:
+            cmd += ["--permission-mode", effective_permission_mode]
+        if resume_id:
+            cmd += ["--resume", resume_id]
+        return cmd
+
+    async def _spawn(
+        self,
+        key: str,
+        rec: WorkerRecord,
+        *,
+        resume_id: str | None,
+        model: str | None = None,
+        permission_mode: str | None = None,
+    ) -> _LiveWorker:
+        env = os.environ.copy()
+        env["CLAUDE_CONFIG_DIR"] = str(self.account.root)
+        try:
+            process = await self._process_factory(
+                *self._command(
+                    resume_id, model=model, permission_mode=permission_mode
+                ),
+                cwd=rec.cwd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                env=env,
+                start_new_session=True,
+                limit=STDOUT_LINE_LIMIT,
+            )
+        except (OSError, ValueError) as exc:
+            raise WorkerError(f"could not start claude worker: {exc}") from exc
+        initialized: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        live = _LiveWorker(
+            process=process,
+            reader_task=None,  # type: ignore[arg-type]
+            initialized=initialized,
+        )
+        live.reader_task = asyncio.create_task(
+            self._read_loop(key, live), name=f"claude-worker:{self.account.key}:{key}"
+        )
+        self._live[key] = live
+        return live
+
+    async def _spawn_and_deliver(
+        self,
+        key: str,
+        rec: WorkerRecord,
+        message: str,
+        image_blocks: list[dict[str, Any]],
+        *,
+        resume_id: str | None,
+        model: str | None,
+        permission_mode: str | None,
+    ) -> _LiveWorker:
+        live = await self._spawn(
+            key,
+            rec,
+            resume_id=resume_id,
+            model=model,
+            permission_mode=permission_mode,
+        )
+        try:
+            await self._write_user_message(live, message, image_blocks)
+            live.turn_active = True
+            await asyncio.wait_for(asyncio.shield(live.initialized), timeout=INIT_TIMEOUT_S)
+            return live
+        except (TimeoutError, WorkerError, OSError) as exc:
+            if self._live.get(key) is live:
+                self._live.pop(key, None)
+            await self._terminate(live)
+            if live.initialized.done() and not live.initialized.cancelled():
+                live.initialized.exception()  # consume shutdown error after timeout
+            if isinstance(exc, WorkerError):
+                raise
+            raise WorkerError(f"claude worker failed to initialize: {exc}") from exc
+
+    async def _terminate(self, live: _LiveWorker) -> None:
+        process = live.process
+        if process.stdin is not None:
+            process.stdin.close()
+        if process.returncode is None:
+            pid = getattr(process, "pid", None)
+            try:
+                if isinstance(pid, int):
+                    os.killpg(pid, signal.SIGTERM)
+                else:  # test doubles without a pid
+                    process.terminate()
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(process.wait(), timeout=5.0)
+            except TimeoutError:
+                try:
+                    if isinstance(pid, int):
+                        os.killpg(pid, signal.SIGKILL)
+                    else:
+                        process.kill()
+                except ProcessLookupError:
+                    pass
+                await process.wait()
+        if live.reader_task is not None and live.reader_task is not asyncio.current_task():
+            live.reader_task.cancel()
+            await asyncio.gather(live.reader_task, return_exceptions=True)
+
+    async def _write(self, live: _LiveWorker, message: dict[str, Any]) -> None:
+        process = live.process
+        if process.stdin is None or process.returncode is not None:
+            raise WorkerError("worker process is not running")
+        try:
+            process.stdin.write(json.dumps(message, separators=(",", ":")).encode() + b"\n")
+            await process.stdin.drain()
+        except (BrokenPipeError, ConnectionError, OSError) as exc:
+            raise WorkerError(f"could not write to claude worker: {exc}") from exc
+
+    @staticmethod
+    def _image_block(path_value: str) -> dict[str, Any]:
+        path = Path(path_value)
+        media_type, _ = mimetypes.guess_type(path.name)
+        if media_type not in {"image/png", "image/jpeg", "image/webp", "image/gif"}:
+            raise WorkerError(f"unsupported image type: {path.name}")
+        try:
+            data = base64.b64encode(path.read_bytes()).decode("ascii")
+        except OSError as exc:
+            raise WorkerError(f"could not read image {path.name}: {exc}") from exc
+        return {
+            "type": "image",
+            "source": {"type": "base64", "media_type": media_type, "data": data},
+        }
+
+    async def _write_user_message(
+        self, live: _LiveWorker, text: str, image_blocks: list[dict[str, Any]]
+    ) -> None:
+        content = list(image_blocks)
+        content.append({"type": "text", "text": text})
+        await self._write(
+            live,
+            {
+                "type": "user",
+                "message": {"role": "user", "content": content},
+            },
+        )
+
+    async def _read_loop(self, key: str, live: _LiveWorker) -> None:
+        process = live.process
+        assert process.stdout is not None
+        try:
+            while line := await process.stdout.readline():
+                try:
+                    event = json.loads(line)
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                live.last_event_at = time.time()
+                self._handle_event(key, live, event)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- reader failure only affects one worker
+            log.exception("claude worker reader failed for %s:%s", self.account.key, key)
+        finally:
+            if not live.initialized.done():
+                live.initialized.set_exception(
+                    WorkerError("claude worker exited before session initialization")
+                )
+            # The process is gone: fail any interrupt still waiting on an ack for
+            # this worker with None, so interrupt() returns at once instead of
+            # blocking for the full INTERRUPT_TIMEOUT_S.
+            for request_id in list(live.pending_interrupts):
+                waiter = self._interrupt_waiters.get(request_id)
+                if waiter is not None and not waiter.done():
+                    waiter.set_result(None)
+            live.pending_interrupts.clear()
+            if self._live.get(key) is live:
+                del self._live[key]
+                live.turn_active = False
+
+    def _handle_event(self, key: str, live: _LiveWorker, event: dict[str, Any]) -> None:
+        etype = event.get("type")
+        rec = self._records.get(key)
+        if etype == "system" and event.get("subtype") == "init":
+            session_id = event.get("session_id")
+            if rec is not None and isinstance(session_id, str):
+                rec.session_id = session_id
+                self._save_state()
+                if not live.initialized.done():
+                    live.initialized.set_result(session_id)
+        elif etype == "result":
+            live.turn_active = False
+            if rec is not None:
+                rec.last_result_at = time.time()
+                subtype = event.get("subtype")
+                rec.last_result_subtype = subtype if isinstance(subtype, str) else None
+                self._save_state()
+        elif etype == "control_response":
+            response = event.get("response")
+            request_id = response.get("request_id") if isinstance(response, dict) else None
+            waiter = self._interrupt_waiters.get(request_id)
+            if waiter is not None and not waiter.done():
+                waiter.set_result(response)

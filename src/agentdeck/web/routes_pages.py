@@ -61,7 +61,7 @@ async def dashboard(request: Request) -> HTMLResponse:
     new_chat_accounts = [
         account
         for account in accounts
-        if PROVIDERS[account.provider_id].supports_new_session
+        if PROVIDERS[account.provider_id].can_start_session(account)
     ]
     new_chat_account_keys = {account.key for account in new_chat_accounts}
     cwd_options = sorted(

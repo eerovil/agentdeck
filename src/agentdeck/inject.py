@@ -229,7 +229,7 @@ class InjectionService:
     ) -> InjectResult:
         if not self.config.enabled:
             return InjectResult(False, "message injection is disabled")
-        if not provider.supports_new_session:
+        if not provider.can_start_session(account):
             return InjectResult(False, "this provider cannot start sessions")
         message = message.strip()
         if not message:
@@ -339,7 +339,7 @@ class InjectionService:
         """Start a machine-oriented delegation and retain a pollable result."""
         if not self.config.enabled:
             return InjectResult(False, "message injection is disabled"), None
-        if not provider.supports_new_session:
+        if not provider.can_start_session(account):
             return InjectResult(False, "this provider cannot start sessions"), None
         message = message.strip()
         if not message:
