@@ -49,6 +49,9 @@ class InjectConfig(BaseModel):
     max_image_bytes: int = 10 * 1024 * 1024
     max_image_total_bytes: int = 20 * 1024 * 1024
     max_images: int = 4
+    # When set, always prefills the New-chat "working directory" field with this
+    # path (overriding the remembered last-used cwd). Empty = remember last-used.
+    new_chat_default_cwd: str = ""
 
     @field_validator("timeout_s")
     @classmethod

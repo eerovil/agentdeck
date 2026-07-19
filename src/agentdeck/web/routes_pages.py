@@ -74,7 +74,11 @@ async def dashboard(request: Request) -> HTMLResponse:
     manual_cwd = get_db(request).load_manual_new_chat_cwd()
     if manual_cwd and manual_cwd not in cwd_options:
         cwd_options.insert(0, manual_cwd)
-    default_cwd = manual_cwd or (cwd_options[0] if cwd_options else "")
+    # A configured default always wins over the remembered last-used cwd.
+    configured_default = request.app.state.config.inject.new_chat_default_cwd
+    default_cwd = configured_default or manual_cwd or (cwd_options[0] if cwd_options else "")
+    if default_cwd and default_cwd not in cwd_options:
+        cwd_options.insert(0, default_cwd)
 
     resp = templates.TemplateResponse(
         request,
