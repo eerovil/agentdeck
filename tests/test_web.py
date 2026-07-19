@@ -1901,6 +1901,62 @@ async def test_partial_limit_bars(tmp_path):
     assert "7%" in r.text
 
 
+def test_usage_stale_is_age_based_not_last_poll(tmp_path):
+    # Issue #6: "stale" reflects data age, not a single rate-limited poll.
+    from dataclasses import replace
+    from datetime import timedelta
+
+    from agentdeck.models import Account
+    from agentdeck.state import AppState
+    from agentdeck.web.render import _usage_rows
+
+    state = AppState()
+    state.usage_stale_after_s = 300.0
+    acc = Account("claude_code:main", "claude_code", "main", tmp_path)
+    now = datetime.now(UTC)
+    fresh_but_failed = UsageSnapshot(
+        account_key=acc.key,
+        five_hour_pct=90.0,
+        five_hour_resets_at=None,
+        seven_day_pct=42.0,
+        seven_day_resets_at=None,
+        fetched_at=now - timedelta(seconds=60),
+        stale=True,  # last poll 429'd, but the numbers are a minute old
+    )
+    state.usage[acc.key] = fresh_but_failed
+    assert _usage_rows([acc], state)[0]["stale"] is False
+
+    # Genuinely old data reads as stale even if the last poll succeeded.
+    state.usage[acc.key] = replace(
+        fresh_but_failed, fetched_at=now - timedelta(seconds=400), stale=False
+    )
+    row = _usage_rows([acc], state)[0]
+    assert row["stale"] is True
+    assert row["stale_after"] == 300.0
+
+
+async def test_old_usage_renders_stale_badge_and_threshold_attr(tmp_path):
+    from datetime import timedelta
+
+    app = _app_with_state(tmp_path)
+    # threshold = max(3 * usage_interval_s, 300) = 900s for the default config
+    app.state.app_state.set_usage(
+        UsageSnapshot(
+            account_key="claude_code:test",
+            five_hour_pct=90.0,
+            five_hour_resets_at=None,
+            seven_day_pct=42.0,
+            seven_day_resets_at=None,
+            fetched_at=datetime.now(UTC) - timedelta(seconds=1000),
+        )
+    )
+    async with _client(app) as c:
+        r = await c.get("/partials/limit-bars")
+    assert r.status_code == 200
+    assert "stale-tag" in r.text  # server marks the aged snapshot stale
+    assert 'data-stale-after="900.0"' in r.text  # client can flip it live
+
+
 async def test_session_detail_renders_transcript(tmp_path):
     app = _app_with_state(tmp_path, with_transcript=True)
     async with _client(app) as c:

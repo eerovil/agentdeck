@@ -40,6 +40,10 @@ class AppState:
         self.db = db
         self.sessions: dict[str, Session] = {}
         self.usage: dict[str, UsageSnapshot] = {}
+        # A usage snapshot is shown as "stale" only once it is older than this
+        # (seconds) — data age, not a single failed poll (issue #6). Resolved
+        # from the poll interval at app startup; this is the safe default.
+        self.usage_stale_after_s: float = 300.0
         self.host_stats: HostStats | None = None
         self.transcript_offsets: dict[str, tuple[int, int]] = {}  # v0.2: (byte_offset, seq)
         # child_key -> delegating parent_key, discovered from delegation markers

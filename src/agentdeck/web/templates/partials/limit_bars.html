@@ -3,7 +3,7 @@
    the phone screen); tapping toggles body.usage-open (persisted, JS in base). #}
 <button class="usage-mini" type="button" aria-label="toggle usage details">
   {% for row in rows %}{% set u = row.usage %}
-  <span class="mini-acct{% if u and u.stale %} stale{% endif %}">
+  <span class="mini-acct{% if row.stale %} stale{% endif %}"{% if u %} data-since="{{ row.fetched_epoch }}" data-stale-after="{{ row.stale_after }}"{% endif %}>
     <span class="mini-label">{{ row.account.label }}</span>
     {% if u and u.five_hour_pct is not none %}
     <b class="mini-pct {% if u.five_hour_pct >= 90 %}crit{% elif u.five_hour_pct >= 70 %}warn{% endif %}">{{ u.five_hour_pct | round | int }}%</b>
@@ -27,12 +27,11 @@
 <div class="limit-bars">
   {% for row in rows %}
   {% set u = row.usage %}
-  <div class="acct {% if u and u.stale %}stale{% endif %}">
+  <div class="acct {% if row.stale %}stale{% endif %}">
     <div class="acct-label">
       <span>{{ row.account.label }}</span>
-      {% if u %}<span class="upd-tag {% if u.stale %}stale-tag{% endif %}" data-since="{{ row.fetched_epoch }}">
-        {%- if u.stale %}stale · {% endif -%}
-        updated <span class="upd-rel">{{ row.stale_age }}</span></span>{% endif %}
+      {% if u %}<span class="upd-tag {% if row.stale %}stale-tag{% endif %}" data-since="{{ row.fetched_epoch }}" data-stale-after="{{ row.stale_after }}">
+        <span class="upd-stale">stale · </span>updated <span class="upd-rel">{{ row.stale_age }}</span></span>{% endif %}
     </div>
     {% if u %}
       {% for kind, pct, resets in [('5h', u.five_hour_pct, u.five_hour_resets_at),

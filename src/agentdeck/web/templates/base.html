@@ -411,12 +411,27 @@
       var d = Math.floor(h / 24); h = h % 24;
       return d + 'd ' + h + 'h ago';
     }
+    // Flip "stale" purely on data age (issue #6), not on a single failed poll —
+    // so a transient 429 on fresh data never shows stale, and the badge appears
+    // once the numbers are genuinely old, live between server pushes.
+    function isStale(el, now) {
+      var since = parseFloat(el.getAttribute('data-since'));
+      var after = parseFloat(el.getAttribute('data-stale-after'));
+      return !!(since && after) && (now - since) > after;
+    }
     setInterval(function () {
       var now = Date.now() / 1000;
       document.querySelectorAll('.upd-tag[data-since]').forEach(function (el) {
         var since = parseFloat(el.getAttribute('data-since'));
         var rel = el.querySelector('.upd-rel');
         if (since && rel) rel.textContent = fmtAge(now - since);
+        var stale = isStale(el, now);
+        el.classList.toggle('stale-tag', stale);
+        var acct = el.closest('.acct');
+        if (acct) acct.classList.toggle('stale', stale);
+      });
+      document.querySelectorAll('.mini-acct[data-since]').forEach(function (el) {
+        el.classList.toggle('stale', isStale(el, now));
       });
     }, 1000);
   })();

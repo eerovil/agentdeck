@@ -63,6 +63,9 @@ def create_app(config: AppConfig) -> FastAPI:
         config.history.enabled, config.history.db_path, config.history.usage_retention_days
     )
     state = AppState(db=db)
+    # Show "stale" usage only when the data is genuinely old — at least a few
+    # poll cycles behind — rather than after a single rate-limited poll (issue #6).
+    state.usage_stale_after_s = max(3 * config.polling.usage_interval_s, 300.0)
     templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
     render_mod.register_filters(templates)
     templates.env.globals["app_version"] = VERSION

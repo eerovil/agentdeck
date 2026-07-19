@@ -154,6 +154,8 @@ body.usage-open .limit-bars { display: flex; }
 .acct-label { font-weight: 600; font-size: 13px; margin-bottom: 4px; display: flex; justify-content: space-between; }
 .upd-tag { color: var(--muted); font-weight: 400; font-size: 11px; }
 .stale-tag { color: var(--warn); font-weight: 400; font-size: 11px; }
+.upd-stale { display: none; }
+.upd-tag.stale-tag .upd-stale { display: inline; }
 .bar-row { display: grid; grid-template-columns: 22px 1fr 40px auto; align-items: center; gap: 6px; margin: 3px 0; }
 .bar-kind { color: var(--muted); font-size: 12px; }
 .bar { background: var(--line); border-radius: 5px; height: 8px; overflow: hidden; }

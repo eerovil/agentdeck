@@ -137,7 +137,17 @@ def tool_label(value: str | None) -> str:
     }.get(name.casefold(), name.title())
 
 
+def _is_stale(snap, stale_after_s: float) -> bool:
+    """Age-based staleness (issue #6): the displayed numbers are old, not just
+    that the last poll attempt was rate-limited. Fresh data stays un-stale even
+    when the endpoint is 429-ing."""
+    if snap is None:
+        return False
+    return (_now() - snap.fetched_at).total_seconds() > stale_after_s
+
+
 def _usage_rows(accounts: list[Account], state: AppState) -> list[dict]:
+    stale_after = state.usage_stale_after_s
     rows = []
     for acc in accounts:
         snap = state.usage.get(acc.key)
@@ -145,10 +155,13 @@ def _usage_rows(accounts: list[Account], state: AppState) -> list[dict]:
             {
                 "account": acc,
                 "usage": snap,
+                "stale": _is_stale(snap, stale_after),
                 "stale_age": reltime_age(snap),
-                # epoch seconds of the fetch, so the client can tick "updated Ns
-                # ago" every second without waiting on a server re-render.
+                # epoch seconds of the fetch + the stale threshold, so the client
+                # ticks "updated Ns ago" and flips the stale badge every second
+                # without waiting on a server re-render.
                 "fetched_epoch": (snap.fetched_at.timestamp() if snap else ""),
+                "stale_after": stale_after,
             }
         )
     return rows
