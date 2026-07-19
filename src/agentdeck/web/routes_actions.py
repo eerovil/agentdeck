@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -17,11 +18,14 @@ from .deps import (
     get_config,
     get_db,
     get_injector,
+    get_state,
     get_templates,
     require_access,
     resolve_session,
 )
 from .uploads import ImageUploadError, cleanup_image_files, save_uploaded_images
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[Depends(require_access)])
 
@@ -348,7 +352,7 @@ async def new_session(request: Request) -> HTMLResponse:
 
 @router.get("/partials/new-session-status", response_class=HTMLResponse)
 async def new_session_status(request: Request, account_key: str) -> HTMLResponse:
-    _account_provider(request, account_key)
+    account, provider = _account_provider(request, account_key)
     status = get_injector(request).new_status(account_key)
     response = _render_new_status(
         request,
@@ -356,5 +360,20 @@ async def new_session_status(request: Request, account_key: str) -> HTMLResponse
         status,
     )
     if status is not None and status.state == "complete" and status.session_key:
+        # The periodic scan loop may not have discovered the freshly started
+        # session yet, in which case its detail page 404s "unknown session"
+        # until the next scan lands (issue #4). Run one targeted scan now so the
+        # redirect target is resolvable the instant the browser follows it.
+        state = get_state(request)
+        if state.sessions.get(status.session_key) is None:
+            try:
+                sessions = await provider.scan_sessions(account)
+                state.replace_account_sessions(account.key, sessions)
+            except Exception:  # noqa: BLE001 -- the scan loop will still catch up
+                log.warning(
+                    "on-demand scan after new session failed for %s",
+                    account.key,
+                    exc_info=True,
+                )
         response.headers["HX-Redirect"] = f"/sessions/{status.session_key}"
     return response

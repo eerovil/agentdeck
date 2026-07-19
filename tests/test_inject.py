@@ -616,6 +616,64 @@ async def test_new_session_route_and_enter_to_send_ui(tmp_path, monkeypatch):
     await app.state.injector.stop()
 
 
+async def test_new_session_status_redirect_target_resolves_before_next_scan(
+    tmp_path, monkeypatch
+):
+    """Regression for issue #4: the redirect fired after a new chat completes
+    must land on a resolvable session even though the periodic scan loop has not
+    run yet. The completion poll does an on-demand scan so /sessions/<key> does
+    not 404 "unknown session"."""
+    app = _web_app(tmp_path)
+    new_key = "codex:test:newsid"
+
+    async def fake_start(account, cwd, message, *, timeout_s):
+        return InjectResult(True, session_id="newsid")
+
+    async def fake_scan(account):
+        return [
+            Session(
+                new_key,
+                "codex:test",
+                "newsid",
+                SessionStatus.IDLE,
+                cwd=tmp_path,
+                capabilities=frozenset({Capability.TRANSCRIPT, Capability.INJECT}),
+            )
+        ]
+
+    from agentdeck.providers import PROVIDERS
+
+    monkeypatch.setattr(PROVIDERS["codex"], "start_session", fake_start)
+    monkeypatch.setattr(PROVIDERS["codex"], "scan_sessions", fake_scan)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/sessions/new",
+            data={
+                "account_key": "codex:test",
+                "cwd": str(tmp_path),
+                "message": "build a new thing",
+            },
+            headers={"origin": "http://test"},
+        )
+        assert response.status_code == 202
+        for _ in range(10):
+            await asyncio.sleep(0)
+            status = app.state.injector.new_status("codex:test")
+            if status and status.state == "complete":
+                break
+        # The periodic scan loop is not running in this test, so the new session
+        # is absent from state until the completion poll forces a scan.
+        assert app.state.app_state.sessions.get(new_key) is None
+        status_response = await client.get(
+            "/partials/new-session-status?account_key=codex:test"
+        )
+        assert status_response.headers.get("HX-Redirect") == f"/sessions/{new_key}"
+        assert app.state.app_state.sessions.get(new_key) is not None
+        detail = await client.get(f"/sessions/{new_key}")
+        assert detail.status_code == 200
+    await app.state.injector.stop()
+
+
 async def test_manual_new_session_cwd_is_shared_and_delegation_does_not_change_it(
     tmp_path, monkeypatch
 ):
