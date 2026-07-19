@@ -221,6 +221,19 @@ def session_labels(accounts: list[Account]) -> dict[str, str]:
     return {acc.key: acc.label for acc in accounts}
 
 
+def session_deckhand_status(assistant) -> dict[str, dict]:
+    """Map ``session_key -> {kind, headline}`` for each session's current Deckhand
+    attention verdict, mirroring the cards shown in the Deckhand panel. Sessions
+    Deckhand judged ``done`` (or has not triaged yet) are simply absent — those
+    rows render no pill."""
+    if assistant is None:
+        return {}
+    return {
+        insight.session_key: {"kind": insight.kind, "headline": insight.headline}
+        for insight in assistant.view.insights
+    }
+
+
 def session_queue_summaries(sessions, injector: InjectionService) -> dict[str, dict]:
     """Pending turn summaries rendered on cards after leaving a chat page."""
     summaries = {}
@@ -272,6 +285,7 @@ def render_session_list(
     *,
     selected_session_key: str | None = None,
     injector: InjectionService | None = None,
+    assistant=None,
 ) -> str:
     top, children = state.session_tree()
     return templates.get_template("partials/session_list.html").render(
@@ -279,6 +293,7 @@ def render_session_list(
         children_of=children,
         labels=session_labels(accounts),
         selected_session_key=selected_session_key,
+        deckhand_status=session_deckhand_status(assistant),
         queue_summaries=(
             session_queue_summaries(state.visible_sessions(), injector) if injector else {}
         ),

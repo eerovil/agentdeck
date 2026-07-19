@@ -427,6 +427,42 @@ async def test_card_colour_class_and_direct_claudeai_button(tmp_path):
     assert "Should I push both commits?" in r.text
 
 
+async def test_session_card_shows_deckhand_verdict_pill(tmp_path):
+    app = _app_with_state(tmp_path)
+    app.state.assistant.config.enabled = True
+    # A triaged session gets a pill; a second, untriaged session gets none.
+    for sid in ("dh1", "dh2"):
+        app.state.app_state.update_session(
+            Session(
+                key=f"claude_code:test:{sid}",
+                account_key="claude_code:test",
+                session_id=sid,
+                status=SessionStatus.LIVE,
+                title=f"Session {sid}",
+                last_role="agent",
+            )
+        )
+    app.state.assistant.view = AssistantView(
+        state="ready",
+        summary="One agent needs your attention.",
+        insights=(
+            AssistantInsight(
+                session_key="claude_code:test:dh1",
+                kind="stalled",
+                headline="No progress for 12 min",
+                detail="It may be hung.",
+            ),
+        ),
+    )
+    async with _client(app) as c:
+        r = await c.get("/")
+    # The triaged session shows its verdict kind as a pill, with the headline on hover.
+    assert 'class="dh-pill dh-stalled"' in r.text
+    assert 'title="Deckhand: No progress for 12 min"' in r.text
+    # Exactly one pill: the untriaged (done/absent) session renders none.
+    assert r.text.count("dh-pill") == 1
+
+
 async def test_long_card_title_gets_full_width_three_line_layout(tmp_path):
     app = _app_with_state(tmp_path)
     long_title = (

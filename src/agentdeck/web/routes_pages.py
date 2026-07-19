@@ -56,7 +56,12 @@ async def dashboard(request: Request) -> HTMLResponse:
     accounts = get_accounts(request)
     state = get_state(request)
     from ..providers import PROVIDERS
-    from .render import _usage_rows, session_labels, session_queue_summaries
+    from .render import (
+        _usage_rows,
+        session_deckhand_status,
+        session_labels,
+        session_queue_summaries,
+    )
 
     new_chat_accounts = [
         account
@@ -99,6 +104,7 @@ async def dashboard(request: Request) -> HTMLResponse:
             "new_chat_default_cwd": default_cwd,
             "assistant": request.app.state.assistant,
             "assistant_sessions": state.sessions,
+            "deckhand_status": session_deckhand_status(request.app.state.assistant),
             "working_count": sum(1 for s in state.visible_sessions() if s.thinking),
         },
     )

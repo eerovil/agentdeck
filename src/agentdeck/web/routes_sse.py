@@ -83,7 +83,13 @@ async def _stream(request: Request) -> AsyncIterator[str]:
             )
         return format_sse(
             "sessions",
-            render_session_list(templates, accounts, state, injector=injector),
+            render_session_list(
+                templates,
+                accounts,
+                state,
+                injector=injector,
+                assistant=request.app.state.assistant,
+            ),
         )
 
     loop = asyncio.get_event_loop()
@@ -107,6 +113,10 @@ async def _stream(request: Request) -> AsyncIterator[str]:
             # even while sessions churn (which would otherwise starve the timeout).
             if loop.time() - last_usage_push >= USAGE_REFRESH_S:
                 dirty.add("usage")
+            # A Deckhand verdict change moves the per-session pills, so re-render
+            # the list whenever the assistant view does.
+            if "assistant" in dirty:
+                dirty.add("sessions")
             if not dirty:
                 yield ": ping\n\n"
                 continue
@@ -169,6 +179,7 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
                 state,
                 selected_session_key=session_key,
                 injector=injector,
+                assistant=request.app.state.assistant,
             ),
         )
         yield format_sse(
@@ -234,7 +245,7 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
             sidebar_dirty = set()
             while (item := sidebar_sub.get_nowait()) is not None:
                 sidebar_dirty.add(item[0])
-            if "sessions" in sidebar_dirty:
+            if "sessions" in sidebar_dirty or "assistant" in sidebar_dirty:
                 yield format_sse(
                     "sessions",
                     render_session_list(
@@ -243,6 +254,7 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
                         state,
                         selected_session_key=session_key,
                         injector=injector,
+                        assistant=request.app.state.assistant,
                     ),
                 )
             if "assistant" in sidebar_dirty:

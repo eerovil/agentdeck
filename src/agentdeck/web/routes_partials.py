@@ -47,6 +47,7 @@ async def sessions(request: Request) -> HTMLResponse:
             get_accounts(request),
             get_state(request),
             injector=get_injector(request),
+            assistant=request.app.state.assistant,
         )
     )
 
