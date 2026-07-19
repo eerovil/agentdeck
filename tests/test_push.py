@@ -29,6 +29,20 @@ def test_push_generates_and_persists_vapid_keys(tmp_path):
     assert svc2.public_key == key
 
 
+def test_vapid_key_is_signable(tmp_path):
+    # Regression (issue #7): the loaded VAPID key must be usable by pywebpush's
+    # signer. Passing a raw PEM *string* to webpush routes through
+    # Vapid.from_string and fails ("could not deserialize key data"); we hold a
+    # Vapid instance, so it must be able to sign the auth header.
+    svc, _ = _svc(tmp_path)
+    svc.start()
+    assert svc._vapid is not None
+    headers = svc._vapid.sign(
+        {"sub": "mailto:you@example.com", "aud": "https://push.example", "exp": 9999999999}
+    )
+    assert headers.get("Authorization")
+
+
 def test_push_disabled_is_noop(tmp_path):
     svc, db = _svc(tmp_path, enabled=False)
     svc.start()

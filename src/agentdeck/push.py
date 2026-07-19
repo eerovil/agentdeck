@@ -30,13 +30,13 @@ class PushService:
     def __init__(self, config: PushConfig, db) -> None:
         self.config = config
         self.db = db
-        self._private_pem: str | None = None
+        self._vapid: Vapid | None = None  # signing key, passed to webpush as-is
         self._public_key: str | None = None  # base64url application server key
 
     @property
     def enabled(self) -> bool:
         """Configured on *and* a usable keypair is loaded."""
-        return bool(self.config.enabled and self._public_key and self._private_pem)
+        return bool(self.config.enabled and self._public_key and self._vapid)
 
     @property
     def public_key(self) -> str | None:
@@ -52,8 +52,19 @@ class PushService:
             keys = self._generate_keys()
             if keys is not None:
                 self.db.save_vapid_keys(*keys)
-        if keys is not None:
-            self._public_key, self._private_pem = keys
+        if keys is None:
+            return
+        public_key, private_pem = keys
+        # pywebpush's `vapid_private_key=<PEM string>` path routes through
+        # Vapid.from_string, which expects a *raw* key, not a PEM — it fails with
+        # "could not deserialize key data". Passing a Vapid instance is the
+        # supported path, so build it once here.
+        try:
+            self._vapid = Vapid.from_pem(private_pem.encode())
+            self._public_key = public_key
+        except Exception as exc:  # noqa: BLE001 -- a bad stored key disables push, never crashes
+            log.warning("loading VAPID key failed: %s", exc)
+            self._vapid = None
 
     @staticmethod
     def _generate_keys() -> tuple[str, str] | None:
@@ -107,7 +118,7 @@ class PushService:
             webpush(
                 subscription_info=sub,
                 data=payload,
-                vapid_private_key=self._private_pem,
+                vapid_private_key=self._vapid,
                 vapid_claims={"sub": subject},
             )
             return True
