@@ -436,12 +436,15 @@ async def test_session_card_shows_deckhand_status_pill(tmp_path):
     #   live    — a live attention insight (shows even while thinking)
     #   done    — only a durable verdict, resting (verdict pill)
     #   working — a durable verdict but mid-turn (verdict suppressed, no pill)
-    #   idle    — resting, never classified ("?")
+    #   idle    — resting, never classified (falls back to a "done" pill)
     sessions = {
         "live": dict(last_role="agent", thinking=False),
         "done": dict(last_role="agent", thinking=False),
         "working": dict(last_role="agent", thinking=True),
         "idle": dict(last_role="agent", thinking=False),
+        # A pending question -> waiting, computed straight from the session and
+        # immune to a handled/stale insight view (no verdict, no insight here).
+        "asking": dict(last_role="agent", thinking=False, question="Which option?"),
     }
     for sid, extra in sessions.items():
         app.state.app_state.update_session(
@@ -475,11 +478,16 @@ async def test_session_card_shows_deckhand_status_pill(tmp_path):
     # Live insight -> mapped to a blocked pill, headline on hover.
     assert 'class="dh-pill dh-blocked"' in r.text
     assert 'title="Deckhand: No progress for 12 min"' in r.text
-    # Durable done verdict on a resting chat.
+    # Durable done verdict on a resting chat, with its summary on hover.
     assert 'class="dh-pill dh-done"' in r.text
     assert 'title="Deckhand: All shipped and verified"' in r.text
-    # Never-classified resting chat -> question mark.
-    assert 'class="dh-pill dh-unknown"' in r.text
+    # Never-classified resting chat -> falls back to a "done" pill (no "?"), with
+    # the fallback tooltip rather than a verdict summary.
+    assert 'title="Deckhand has no attention item for this chat"' in r.text
+    assert "dh-unknown" not in r.text
+    # A pending question always resolves to waiting, regardless of insight state.
+    assert 'class="dh-pill dh-waiting"' in r.text
+    assert 'title="Deckhand: the agent asked you a question"' in r.text
     # The working chat's stale "review" verdict is suppressed mid-turn: no review
     # pill renders anywhere, and its headline never appears.
     assert "dh-review" not in r.text
