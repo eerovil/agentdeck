@@ -74,7 +74,11 @@ self.addEventListener('notificationclick', (event) => {
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
       for (const client of clientList) {
         if (client.url && new URL(client.url).origin === self.location.origin) {
-          if (client.navigate) client.navigate(target);
+          // Chain navigate -> focus so waitUntil keeps the worker alive until the
+          // existing tab has actually moved to the target (not just focused).
+          if (client.navigate) {
+            return client.navigate(target).catch(() => null).then(() => client.focus());
+          }
           return client.focus();
         }
       }

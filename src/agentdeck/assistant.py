@@ -210,9 +210,15 @@ class AssistantService:
             )
 
     async def stop(self) -> None:
-        tasks = tuple(t for t in (self._task, self._session_watch_task) if t is not None)
+        # Include in-flight push sends so they don't outlive the event loop / DB.
+        tasks = tuple(
+            t
+            for t in (self._task, self._session_watch_task, *self._push_tasks)
+            if t is not None
+        )
         self._task = None
         self._session_watch_task = None
+        self._push_tasks.clear()
         for task in tasks:
             task.cancel()
         if tasks:

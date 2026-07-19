@@ -69,9 +69,12 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(sub),
+        }).then(function (res) {
+          if (res && res.ok) { setState('on'); return; }
+          // Server didn't store it — roll back the browser subscription so a
+          // later refresh can't read "on" while the server knows nothing.
+          return sub.unsubscribe().catch(function () {}).then(function () { setState('off'); });
         });
-      }).then(function (res) {
-        setState(res && res.ok ? 'on' : 'off');
       }).catch(function () { setState('off'); });
     }).catch(function () { setState('off'); });
   }

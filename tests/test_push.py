@@ -52,6 +52,17 @@ def test_push_disabled_is_noop(tmp_path):
     assert db.load_vapid_keys() is None  # no keys generated while disabled
 
 
+def test_push_stays_disabled_without_a_db():
+    # push needs the DB to persist keys + subscriptions; with history off it must
+    # report disabled rather than accept subscribers and deliver nothing.
+    from agentdeck.db import NullDb
+
+    svc = PushService(PushConfig(enabled=True, subject="mailto:you@example.com"), NullDb())
+    svc.start()
+    assert not svc.enabled
+    assert svc.public_key is None
+
+
 def test_subscribe_and_unsubscribe(tmp_path):
     svc, db = _svc(tmp_path)
     svc.start()

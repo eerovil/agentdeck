@@ -425,9 +425,10 @@ class Db:
 
     def load_vapid_keys(self) -> tuple[str, str] | None:
         try:
-            row = self._conn.execute(
-                "SELECT public_key, private_pem FROM push_vapid WHERE singleton = 1"
-            ).fetchone()
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT public_key, private_pem FROM push_vapid WHERE singleton = 1"
+                ).fetchone()
         except sqlite3.Error as exc:
             log.debug("load_vapid_keys failed: %s", exc)
             return None
@@ -449,9 +450,10 @@ class Db:
     def load_push_subscriptions(self) -> list[dict]:
         """Subscriptions in the ``subscription_info`` shape pywebpush expects."""
         try:
-            rows = self._conn.execute(
-                "SELECT endpoint, p256dh, auth FROM push_subscriptions"
-            ).fetchall()
+            with self._lock:
+                rows = self._conn.execute(
+                    "SELECT endpoint, p256dh, auth FROM push_subscriptions"
+                ).fetchall()
         except sqlite3.Error as exc:
             log.debug("load_push_subscriptions failed: %s", exc)
             return []

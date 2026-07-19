@@ -47,6 +47,12 @@ class PushService:
         Idempotent and a no-op when push is disabled."""
         if not self.config.enabled:
             return
+        if not getattr(self.db, "enabled", True):
+            # No DB (history off) → subscriptions and the keypair can't persist,
+            # so push would accept subscribers and silently deliver nothing. Stay
+            # disabled and say why, rather than pretend to work.
+            log.warning("push is enabled but [history] is off — disabling push (needs the DB)")
+            return
         keys = self.db.load_vapid_keys()
         if keys is None:
             keys = self._generate_keys()
