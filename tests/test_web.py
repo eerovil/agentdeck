@@ -1706,6 +1706,53 @@ async def test_subagent_count_renders_on_card_and_detail_header(tmp_path):
     assert "Found one status-normalization bug." in detail.text
 
 
+async def test_nested_subagents_collapse_by_default_with_toggle(tmp_path):
+    # Issue #5: nested sub-agent rows render collapsed by default, behind a
+    # count-pill toggle on the parent card, with an activity hint when a child
+    # is working. The rows stay in the DOM (collapse is CSS only).
+    app = _app_with_state(tmp_path)
+    state = app.state.app_state
+    state.update_session(
+        Session(
+            key="claude_code:test:childA",
+            account_key="claude_code:test",
+            session_id="childA",
+            status=SessionStatus.LIVE,
+            title="Scout the parser",
+            parent_session_key="claude_code:test:sid1",
+            thinking=True,  # a working child → the pill shows the working hint
+        )
+    )
+    state.update_session(
+        Session(
+            key="claude_code:test:childB",
+            account_key="claude_code:test",
+            session_id="childB",
+            status=SessionStatus.IDLE,
+            title="Audit the boundary",
+            parent_session_key="claude_code:test:sid1",
+            show_when_idle=True,  # finished/idle children stay nested
+        )
+    )
+
+    async with _client(app) as client:
+        dashboard = await client.get("/")
+
+    text = dashboard.text
+    # Collapsed by default, tied to the parent key.
+    assert 'class="subagent-children collapsed" data-subagents-of="claude_code:test:sid1"' in text
+    # Count-pill toggle affordance, collapsed (aria-expanded=false).
+    assert 'class="subagent-toggle"' in text
+    assert 'data-key="claude_code:test:sid1"' in text
+    assert 'aria-expanded="false"' in text
+    assert "2 sub-agents" in text
+    # A working child surfaces the activity hint even while collapsed.
+    assert "subagent-hint working" in text
+    # The rows themselves are still rendered (hidden via CSS, not omitted).
+    assert "Scout the parser" in text
+    assert "Audit the boundary" in text
+
+
 def test_subagent_notification_renders_as_compact_expandable_row(tmp_path):
     from agentdeck.models import TranscriptEvent
     from agentdeck.web.render import render_transcript_events

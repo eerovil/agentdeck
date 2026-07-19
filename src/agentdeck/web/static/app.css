@@ -211,6 +211,20 @@ body.usage-open .limit-bars { display: flex; }
   line-height: 1; white-space: nowrap; padding: 3px 7px; border: 1px solid currentColor;
   border-radius: 999px; text-transform: uppercase; letter-spacing: .03em;
   background: color-mix(in srgb, var(--wt-cloud) 10%, transparent); }
+/* Clickable pill that collapses/expands a parent's nested sub-agent rows (issue #5). */
+.subagent-toggle { flex: none; display: inline-flex; align-items: center; gap: 5px;
+  color: var(--wt-cloud); font-size: 10px; font-weight: 700; line-height: 1;
+  white-space: nowrap; padding: 3px 7px; border: 1px solid currentColor;
+  border-radius: 999px; text-transform: uppercase; letter-spacing: .03em; cursor: pointer;
+  background: color-mix(in srgb, var(--wt-cloud) 10%, transparent); }
+.subagent-toggle:hover { background: color-mix(in srgb, var(--wt-cloud) 22%, transparent); }
+.subagent-toggle .subagent-caret { font-size: 9px; line-height: 1; }
+.subagent-hint { display: inline-flex; align-items: center; text-transform: none;
+  letter-spacing: 0; }
+.subagent-hint.waiting { color: var(--warn); }
+.subagent-hint.working { width: 7px; height: 7px; border-radius: 50%; background: var(--live);
+  animation: pulse 2s ease-out infinite; }
+@media (prefers-reduced-motion: reduce) { .subagent-hint.working { animation: none; } }
 .status-tag.thinking { color: var(--live); }
 @media (prefers-reduced-motion: reduce) {
   .dot.thinking, .assistant-gear, .subagent-row .subagent-state { animation: none; }
@@ -503,6 +517,7 @@ body.bg-paused *, body.bg-paused *::before, body.bg-paused *::after {
 /* Subagent tree: compact child rows nested under their parent card. */
 .subagent-children { display: flex; flex-direction: column; gap: 2px; margin: 2px 0 8px 18px;
   padding-left: 10px; border-left: 2px solid var(--border, #333); }
+.subagent-children.collapsed { display: none; }
 .session.subagent-row { display: flex; align-items: center; gap: 6px; padding: 4px 8px;
   font-size: 12px; min-height: 0; opacity: .9; }
 .session.subagent-row .card-title { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis;

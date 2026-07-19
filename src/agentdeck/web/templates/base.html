@@ -167,6 +167,7 @@
     var feed = new Map();        // href -> [{role, text}]
     var lastSeen = new Map();    // href -> {prompt, text}
     var expanded = new Set();    // hrefs whose card is expanded inline (persists across swaps)
+    var subOpen = new Set();     // parent session keys whose sub-agent rows are expanded (default collapsed; persists across swaps, resets on reload)
     var typing = new Map();      // href -> {full, shown, el, box, inner, md} — active typewriter
 
     // Read the current latest from stable data-attributes on the box — NOT from
@@ -220,6 +221,28 @@
         m.forEach(function (_v, k) { if (!live.has(k)) m.delete(k); });
       });
       expanded.forEach(function (k) { if (!live.has(k)) expanded.delete(k); });
+      // sub-agent open state is keyed by parent session key, not href
+      var parents = new Set();
+      document.querySelectorAll('[data-subagents-of]').forEach(function (el) {
+        parents.add(el.getAttribute('data-subagents-of'));
+      });
+      subOpen.forEach(function (k) { if (!parents.has(k)) subOpen.delete(k); });
+    }
+    // Re-apply the (client-only) sub-agent expand state after every list swap —
+    // the server always renders the rows collapsed (issue #5).
+    function applySubagents(scope) {
+      var root = scope && scope.querySelectorAll ? scope : document;
+      root.querySelectorAll('.subagent-children[data-subagents-of]').forEach(function (box) {
+        box.classList.toggle('collapsed', !subOpen.has(box.getAttribute('data-subagents-of')));
+      });
+      root.querySelectorAll('.subagent-toggle[data-key]').forEach(function (btn) {
+        var open = subOpen.has(btn.getAttribute('data-key'));
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        btn.setAttribute('aria-label', open ? 'hide sub-agents' : 'show sub-agents');
+        btn.setAttribute('title', open ? 'hide sub-agents' : 'show sub-agents');
+        var caret = btn.querySelector('.subagent-caret');
+        if (caret) caret.textContent = open ? '▾' : '▸';
+      });
     }
     function setup(scope) {
       (scope || document).querySelectorAll('[data-marquee]').forEach(function (box) {
@@ -282,6 +305,7 @@
         toBottom(box, inner);                     // keep the newest text in view
       });
       ensureTick();   // (re)start the typewriter loop only if a card is now typing
+      applySubagents(scope);   // restore sub-agent expand state after a list swap
       pruneStale();   // drop JS state for sessions no longer in the DOM
     }
     // Advance every active typewriter at a fixed 300 WPM (standard 5 chars/word
@@ -325,6 +349,29 @@
       if (!key) return;
       if (expanded.has(key)) expanded.delete(key); else expanded.add(key);
       setup(card);
+    });
+
+    // Sub-agent collapse/expand toggle (issue #5). The pill sits inside the card
+    // <a>, so stop it navigating; toggle the persisted set and re-apply. Its rows
+    // live in a sibling of the card, so re-apply document-wide.
+    function toggleSubagents(el) {
+      var key = el && el.getAttribute('data-key');
+      if (!key) return;
+      if (subOpen.has(key)) subOpen.delete(key); else subOpen.add(key);
+      applySubagents(document);
+    }
+    document.addEventListener('click', function (e) {
+      var t = e.target.closest('.subagent-toggle');
+      if (!t) return;
+      e.preventDefault(); e.stopPropagation();
+      toggleSubagents(t);
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      var t = e.target.closest('.subagent-toggle');
+      if (!t) return;
+      e.preventDefault(); e.stopPropagation();
+      toggleSubagents(t);
     });
 
     // External jump buttons (claude.ai deep link, GitHub issue). They sit inside

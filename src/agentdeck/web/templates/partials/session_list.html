@@ -7,7 +7,10 @@
     {% include "partials/session_card.html" %}
     {% set _kids = (children_of | default({})).get(s.key) %}
     {% if _kids %}
-    <div class="subagent-children">
+    {# Collapsed by default (issue #5); the parent card's .subagent-toggle
+       reveals these rows. JS re-applies the client-only open state across list
+       swaps — the server always renders them collapsed. #}
+    <div class="subagent-children collapsed" data-subagents-of="{{ s.key }}">
       {% for sub in _kids %}
         {% include "partials/session_subagent_row.html" %}
       {% endfor %}
