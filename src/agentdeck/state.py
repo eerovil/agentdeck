@@ -42,6 +42,24 @@ class AppState:
         self.usage: dict[str, UsageSnapshot] = {}
         self.host_stats: HostStats | None = None
         self.transcript_offsets: dict[str, tuple[int, int]] = {}  # v0.2: (byte_offset, seq)
+        # child_key -> delegating parent_key, discovered from delegation markers
+        # in each provider's transcripts. Cross-provider (a Claude chat that
+        # delegated a Codex session, etc.) is why this lives in state rather than
+        # on the Session: the child and parent are produced by different scans.
+        self.delegation_parents: dict[str, str] = {}
+        # child_key -> raw parent session_id, recorded authoritatively at
+        # delegation time (the invoking session captured from
+        # CLAUDE_CODE_SESSION_ID, etc.). We store the raw id, not a resolved
+        # key, and resolve it against the currently-visible sessions at
+        # render time: the parent may not be scanned in yet when the child
+        # starts, and lazy resolution self-heals that race. DB-backed and kept
+        # separate from the scan-discovered ``delegation_parents`` so a provider
+        # scan's set_delegation_parents() can never clear it; survives restarts
+        # and cross-provider cases the transcripts cannot express (a Claude chat
+        # that delegated a Codex run).
+        self.recorded_delegation_parents: dict[str, str] = (
+            db.load_delegation_parents() if db else {}
+        )
         self.delegated_session_keys = db.load_delegated_sessions() if db else set()
         self.generated_titles: dict[str, GeneratedTitle] = (
             db.load_generated_titles() if db else {}
@@ -115,15 +133,26 @@ class AppState:
                 self.sessions[session_key] = updated
                 self.bus.publish("sessions")
 
-    def mark_delegated_session(self, session_key: str) -> None:
-        """Persist machine-started work so Deckhand ignores it across rescans/restarts."""
+    def mark_delegated_session(
+        self, session_key: str, parent_session_id: str | None = None
+    ) -> None:
+        """Persist machine-started work so Deckhand ignores it across rescans/restarts.
+
+        ``parent_session_id`` is the raw id of the session that started this
+        delegation (e.g. the invoking Claude chat). We store it as-is and
+        resolve it to a full key lazily in ``session_tree`` so the delegated
+        child nests under its parent, including cross-provider, even if the
+        parent has not been scanned in yet at delegation time.
+        """
         self.delegated_session_keys.add(session_key)
+        if parent_session_id:
+            self.recorded_delegation_parents[session_key] = parent_session_id
         if self.db is not None:
-            self.db.record_delegated_session(session_key)
+            self.db.record_delegated_session(session_key, parent_session_id)
         session = self.sessions.get(session_key)
         if session is not None and not session.is_delegated:
             self.sessions[session_key] = replace(session, is_delegated=True)
-            self.bus.publish("sessions")
+        self.bus.publish("sessions")
 
     def _sort_key(self, s: Session) -> tuple[int, int, float]:
         status_order = _STATUS_ORDER.get(s.status, 9)
@@ -164,6 +193,69 @@ class AppState:
             for s in self.all_sessions()
             if s.status != SessionStatus.IDLE or s.show_when_idle
         ]
+
+    def set_delegation_parents(self, account_key: str, pairs: dict[str, str]) -> None:
+        """Replace the delegation pairs whose PARENT is in ``account_key``.
+
+        Each provider scan reports the child->parent pairs it found in that
+        account's transcripts; scoping the clear to parents in the account keeps
+        cross-provider pairs from other accounts intact.
+        """
+        prefix = f"{account_key}:"
+        self.delegation_parents = {
+            child: parent
+            for child, parent in self.delegation_parents.items()
+            if not parent.startswith(prefix)
+        }
+        self.delegation_parents.update(pairs)
+
+    def _parent_key(
+        self, session: Session, key_by_session_id: dict[str, str]
+    ) -> str | None:
+        """A session's parent: its own subagent link, then a delegation link.
+
+        Recorded (delegation-time) parents take precedence over scan-discovered
+        ones: they are authoritative and cover cross-provider delegation the
+        transcript markers cannot express. The recorded value is a raw
+        session_id, resolved here against ``key_by_session_id`` (built from the
+        currently-visible sessions); an unresolved or self-referential match
+        yields no parent, so the child simply stays top-level.
+        """
+        if session.parent_session_key:
+            return session.parent_session_key
+        recorded = self.recorded_delegation_parents.get(session.key)
+        if recorded is not None:
+            resolved = key_by_session_id.get(recorded)
+            return resolved if resolved != session.key else None
+        return self.delegation_parents.get(session.key)
+
+    def session_tree(self) -> tuple[list[Session], dict[str, list[Session]]]:
+        """Split visible sessions into a one-level tree.
+
+        Returns ``(top_level, children_by_parent_key)``: subagent sessions
+        (``parent_session_key`` set) are grouped under their parent. A subagent
+        whose parent isn't visible is dropped rather than floated as a top-level
+        card — a subagent only makes sense under its parent, and an orphaned one
+        (parent aged out) would otherwise clutter the list with contextless
+        cards. Order within each list follows ``visible_sessions``' sort.
+        """
+        visible = self.visible_sessions()
+        # Resolve recorded (raw-id) delegation parents against what's visible
+        # now; last writer wins on the astronomically-unlikely UUID collision.
+        key_by_session_id = {s.session_id: s.key for s in visible}
+        top_keys = {
+            s.key for s in visible if self._parent_key(s, key_by_session_id) is None
+        }
+        top: list[Session] = []
+        children: dict[str, list[Session]] = {}
+        for s in visible:
+            parent = self._parent_key(s, key_by_session_id)
+            if parent is None:
+                top.append(s)
+            elif parent in top_keys:
+                children.setdefault(parent, []).append(s)
+            # else: orphan subagent (parent not visible) — omit from the tree
+        return top, children
 
     # --- usage --------------------------------------------------------
 

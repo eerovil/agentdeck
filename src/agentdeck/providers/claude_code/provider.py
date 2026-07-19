@@ -11,6 +11,7 @@ runtime service (new chat, send, steer, interrupt).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -83,6 +84,56 @@ def _list_transcripts(config_dir: Path) -> dict[str, Path]:
         if prev is None or path.stat().st_mtime > prev.stat().st_mtime:
             out[sid] = path
     return out
+
+
+def _list_subagents(config_dir: Path) -> dict[str, tuple[Path, str]]:
+    """Map subagent id -> (newest transcript path, parent session uuid).
+
+    Claude Task/Agent-tool subagents live at
+    ``projects/<slug>/<parent-uuid>/subagents/agent-*.jsonl`` (``isSidechain``),
+    which the top-level ``<slug>/<uuid>.jsonl`` glob never reaches. The parent
+    uuid is the directory that contains the ``subagents/`` folder.
+    """
+    out: dict[str, tuple[Path, str]] = {}
+    projects = config_dir / "projects"
+    if not projects.is_dir():
+        return out
+    for path in projects.glob("*/*/subagents/*.jsonl"):
+        sid = path.stem
+        prev = out.get(sid)
+        if prev is None or path.stat().st_mtime > prev[0].stat().st_mtime:
+            out[sid] = (path, path.parent.parent.name)
+    return out
+
+
+def _subagent_task(path: Path) -> str | None:
+    """The subagent's first user prompt (its Task description).
+
+    ``transcript_meta`` intentionally drops ``isSidechain`` user lines, so a
+    subagent transcript yields no ``first_user``; read the first user text here
+    directly so the nested row shows the task instead of the ``agent-<hash>`` id.
+    """
+    try:
+        with path.open() as handle:
+            for line in handle:
+                try:
+                    obj = json.loads(line)
+                except (ValueError, TypeError):
+                    continue
+                if obj.get("type") != "user":
+                    continue
+                content = obj.get("message", {}).get("content")
+                if isinstance(content, str) and content.strip():
+                    return content.strip()
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            text = (block.get("text") or "").strip()
+                            if text:
+                                return text
+    except OSError:
+        return None
+    return None
 
 
 class ClaudeCodeProvider(SessionProvider):
@@ -480,6 +531,47 @@ class ClaudeCodeProvider(SessionProvider):
                     capabilities=frozenset(caps),
                 )
             )
+
+        # Subagent pass: Task/Agent-tool subagents (isSidechain) nest under their
+        # parent session as compact child rows instead of being invisible. Only
+        # nesting under a currently-shown parent already bounds this to recent
+        # work — no extra age gate needed.
+        now = datetime.now(UTC)
+        built_ids = {s.session_id for s in sessions}
+        for sub_sid, (sub_path, parent_uuid) in _list_subagents(root).items():
+            if parent_uuid not in built_ids or sub_sid in built_ids:
+                continue  # only nest under a shown parent; never shadow a real session
+            last_activity = _mtime(sub_path)
+            age = (now - last_activity).total_seconds() if last_activity else 1e9
+            ai_title, _sp, _sf, _tcwd, sub_text, sub_role = self._cached_meta(sub_path)
+            # transcript_meta drops isSidechain user lines, so read the subagent's
+            # own first prompt (the Task description) for a human-readable title.
+            task = _subagent_task(sub_path)
+            thinking = age < THINKING_WINDOW_S
+            sessions.append(
+                Session(
+                    key=f"{account.key}:{sub_sid}",
+                    account_key=account.key,
+                    session_id=sub_sid,
+                    status=SessionStatus.LIVE if thinking else SessionStatus.IDLE,
+                    thinking=thinking,
+                    activity=self._activity(thinking, sub_path, last_activity),
+                    title=ai_title or task or sub_sid,
+                    initial_prompt=task,
+                    last_text=sub_text,
+                    last_role=sub_role,
+                    kind="subagent",
+                    worker_type="you",
+                    # Only an actively-working subagent is attention-worthy; a
+                    # quiet/finished one stays nested but out of Deckhand triage
+                    # (and the working count) so it can't flood the deck.
+                    is_delegated=not thinking,
+                    parent_session_key=f"{account.key}:{parent_uuid}",
+                    last_activity=last_activity,
+                    show_when_idle=True,
+                    capabilities=frozenset({Capability.TRANSCRIPT}),
+                )
+            )
         return sessions
 
     def sweep_liveness(self, account: Account, sessions: list[Session]) -> list[Session]:
@@ -489,6 +581,11 @@ class ClaudeCodeProvider(SessionProvider):
         changed: list[Session] = []
         workers = self._workers.get(account.key)
         for s in sessions:
+            # Subagents have no process-registry ground truth; the sweep would
+            # force them IDLE and flicker their state. Leave them to the full
+            # scan (which derives liveness from transcript mtime).
+            if s.parent_session_key is not None:
+                continue
             entry = entries.get(s.session_id)
             owned = workers is not None and workers.owns(s.session_id)
             live_now = workers.live(s.session_id) if owned else bool(
@@ -595,7 +692,11 @@ class ClaudeCodeProvider(SessionProvider):
         if not projects.is_dir():
             return None
         matches = sorted(
-            projects.glob(f"*/{session.session_id}.jsonl"),
+            [
+                *projects.glob(f"*/{session.session_id}.jsonl"),
+                # subagent (isSidechain) transcripts live one level deeper
+                *projects.glob(f"*/*/subagents/{session.session_id}.jsonl"),
+            ],
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )

@@ -260,12 +260,15 @@ def render_session_list(
     selected_session_key: str | None = None,
     injector: InjectionService | None = None,
 ) -> str:
-    sessions = state.visible_sessions()
+    top, children = state.session_tree()
     return templates.get_template("partials/session_list.html").render(
-        sessions=sessions,
+        sessions=top,
+        children_of=children,
         labels=session_labels(accounts),
         selected_session_key=selected_session_key,
-        queue_summaries=(session_queue_summaries(sessions, injector) if injector else {}),
+        queue_summaries=(
+            session_queue_summaries(state.visible_sessions(), injector) if injector else {}
+        ),
     )
 
 

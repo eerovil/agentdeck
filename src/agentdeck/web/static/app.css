@@ -500,6 +500,18 @@ body.bg-paused *, body.bg-paused *::before, body.bg-paused *::after {
   animation-play-state: paused !important;
 }
 
+/* Subagent tree: compact child rows nested under their parent card. */
+.subagent-children { display: flex; flex-direction: column; gap: 2px; margin: 2px 0 8px 18px;
+  padding-left: 10px; border-left: 2px solid var(--border, #333); }
+.session.subagent-row { display: flex; align-items: center; gap: 6px; padding: 4px 8px;
+  font-size: 12px; min-height: 0; opacity: .9; }
+.session.subagent-row .card-title { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-weight: 500; }
+.session.subagent-row .subagent-branch { color: var(--muted); flex: none; }
+.session.subagent-row .subagent-activity { color: var(--muted); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.session.subagent-row .ago { margin-left: auto; color: var(--muted); flex: none; }
+
 .new-chat { margin-bottom: 10px; border: 1px solid var(--line); border-radius: var(--radius);
   background: var(--panel); }
 .new-chat > summary { padding: 9px 11px; cursor: pointer; color: var(--remote);

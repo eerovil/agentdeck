@@ -43,7 +43,12 @@ class NullDb:
     def load_delegated_sessions(self) -> set[str]:
         return set()
 
-    def record_delegated_session(self, session_key: str) -> None: ...
+    def load_delegation_parents(self) -> dict[str, str]:
+        return {}
+
+    def record_delegated_session(
+        self, session_key: str, parent_session_id: str | None = None
+    ) -> None: ...
     def load_manual_new_chat_cwd(self) -> str | None:
         return None
 
@@ -122,7 +127,8 @@ class Db:
                 );
                 CREATE TABLE IF NOT EXISTS delegated_sessions (
                     session_key TEXT PRIMARY KEY,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    parent_session_id TEXT
                 );
                 CREATE TABLE IF NOT EXISTS manual_new_chat_state (
                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -138,6 +144,14 @@ class Db:
             for column in ("kind", "headline", "detail"):
                 if column not in columns:
                     self._conn.execute(f"ALTER TABLE assistant_handled ADD COLUMN {column} TEXT")
+            delegated_columns = {
+                row[1]
+                for row in self._conn.execute("PRAGMA table_info(delegated_sessions)")
+            }
+            if "parent_session_id" not in delegated_columns:
+                self._conn.execute(
+                    "ALTER TABLE delegated_sessions ADD COLUMN parent_session_id TEXT"
+                )
 
     def record_usage(self, snapshot: UsageSnapshot) -> None:
         try:
@@ -248,14 +262,40 @@ class Db:
             log.debug("load_delegated_sessions failed: %s", exc)
             return set()
 
-    def record_delegated_session(self, session_key: str) -> None:
+    def load_delegation_parents(self) -> dict[str, str]:
+        try:
+            with self._lock:
+                rows = self._conn.execute(
+                    "SELECT session_key, parent_session_id FROM delegated_sessions"
+                    " WHERE parent_session_id IS NOT NULL"
+                ).fetchall()
+            return {str(row[0]): str(row[1]) for row in rows}
+        except sqlite3.Error as exc:
+            log.debug("load_delegation_parents failed: %s", exc)
+            return {}
+
+    def record_delegated_session(
+        self, session_key: str, parent_session_id: str | None = None
+    ) -> None:
         try:
             with self._lock, self._conn:
-                self._conn.execute(
-                    "INSERT OR IGNORE INTO delegated_sessions(session_key, created_at)"
-                    " VALUES (?, ?)",
-                    (session_key, datetime.now(UTC).isoformat()),
-                )
+                if parent_session_id is None:
+                    # Never clobber a previously recorded parent with a bare
+                    # is_delegated re-record.
+                    self._conn.execute(
+                        "INSERT OR IGNORE INTO delegated_sessions(session_key, created_at)"
+                        " VALUES (?, ?)",
+                        (session_key, datetime.now(UTC).isoformat()),
+                    )
+                else:
+                    self._conn.execute(
+                        "INSERT INTO delegated_sessions"
+                        "(session_key, created_at, parent_session_id)"
+                        " VALUES (?, ?, ?)"
+                        " ON CONFLICT(session_key) DO UPDATE SET"
+                        " parent_session_id = excluded.parent_session_id",
+                        (session_key, datetime.now(UTC).isoformat(), parent_session_id),
+                    )
         except sqlite3.Error as exc:
             log.debug("record_delegated_session failed: %s", exc)
 

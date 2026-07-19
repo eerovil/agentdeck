@@ -59,6 +59,7 @@ def test_delegate_cli_sends_stdin_and_prints_final_message(tmp_path, monkeypatch
     monkeypatch.setattr(cli.httpx, "Client", lambda **kwargs: client)
     monkeypatch.setattr(cli.sys, "stdin", io.StringIO("Inspect the change.\n"))
     monkeypatch.setattr(cli.time, "sleep", lambda delay: None)
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
 
     cli._delegate(
         [
@@ -83,3 +84,27 @@ def test_delegate_cli_sends_stdin_and_prints_final_message(tmp_path, monkeypatch
             "model": "gpt-test",
         },
     )
+
+
+def test_delegate_cli_captures_parent_session_from_env(tmp_path, monkeypatch):
+    client = _Client()
+    monkeypatch.setattr(cli.httpx, "Client", lambda **kwargs: client)
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO("Do it.\n"))
+    monkeypatch.setattr(cli.time, "sleep", lambda delay: None)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "parent-uuid")
+
+    cli._delegate(["--cwd", str(tmp_path)])
+
+    assert client.posted[1]["parent_session_id"] == "parent-uuid"
+
+
+def test_delegate_cli_explicit_parent_overrides_env(tmp_path, monkeypatch):
+    client = _Client()
+    monkeypatch.setattr(cli.httpx, "Client", lambda **kwargs: client)
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO("Do it.\n"))
+    monkeypatch.setattr(cli.time, "sleep", lambda delay: None)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "env-uuid")
+
+    cli._delegate(["--cwd", str(tmp_path), "--parent-session", "flag-uuid"])
+
+    assert client.posted[1]["parent_session_id"] == "flag-uuid"

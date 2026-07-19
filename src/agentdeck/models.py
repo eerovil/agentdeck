@@ -93,6 +93,8 @@ class Session:
     activity: str | None = None  # what it's doing now: "Using tools" / "Working"
     subagent_count: int = 0  # currently-running Codex spawned agents owned by this chat
     subagents: tuple[SubagentProgress, ...] = ()  # active + recently-finished agents
+    parent_session_key: str | None = None  # set on a subagent session: the parent it nests under
+    #  (kept out of the top-level list and shown as a compact row under the parent)
     model: str | None = None  # last assistant line's model (v0.2)
     kind: str | None = None  # "interactive" | "sdk-cli" | RC worker …
     worker_type: str | None = None  # "kanban" | "cloud" | "you" — drives list colour

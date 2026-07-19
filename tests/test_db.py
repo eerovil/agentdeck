@@ -98,6 +98,66 @@ def test_delegated_session_marker_survives_reopen_and_rescan(tmp_path):
         reopened.close()
 
 
+def test_delegation_parent_survives_reopen_and_nests(tmp_path):
+    path = tmp_path / "h.db"
+    db = Db(path)
+    state = AppState(db=db)
+    state.mark_delegated_session("codex:test:child", parent_session_id="p")
+    db.close()
+
+    reopened = Db(path)
+    try:
+        # The raw parent session_id is persisted, not a resolved key.
+        assert reopened.load_delegation_parents() == {"codex:test:child": "p"}
+        restored = AppState(db=reopened)
+        assert restored.recorded_delegation_parents == {"codex:test:child": "p"}
+        for s in (
+            Session(
+                key="claude_code:main:p",
+                account_key="claude_code:main",
+                session_id="p",
+                status=SessionStatus.LIVE,
+            ),
+            Session(
+                key="codex:test:child",
+                account_key="codex:test",
+                session_id="child",
+                status=SessionStatus.LIVE,
+            ),
+        ):
+            restored.update_session(s)
+        _, children = restored.session_tree()
+        assert [c.key for c in children["claude_code:main:p"]] == ["codex:test:child"]
+    finally:
+        reopened.close()
+
+
+def test_delegated_sessions_migration_adds_parent_column_to_existing_db(tmp_path):
+    path = tmp_path / "history.db"
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "CREATE TABLE delegated_sessions (session_key TEXT PRIMARY KEY,"
+        " created_at TEXT NOT NULL)"
+    )
+    connection.execute(
+        "INSERT INTO delegated_sessions VALUES (?, ?)",
+        ("codex:test:old", datetime.now(UTC).isoformat()),
+    )
+    connection.commit()
+    connection.close()
+
+    db = Db(path)
+    try:
+        # Old row survives the ALTER, with a NULL (thus unlisted) parent.
+        assert db.load_delegated_sessions() == {"codex:test:old"}
+        assert db.load_delegation_parents() == {}
+        # The new column is usable: a parent can now be recorded and read back.
+        db.record_delegated_session("codex:test:new", "parent-uuid")
+        assert db.load_delegation_parents() == {"codex:test:new": "parent-uuid"}
+    finally:
+        db.close()
+
+
 def test_assistant_handled_round_trip(tmp_path):
     db = Db(tmp_path / "history.db")
     try:

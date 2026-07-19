@@ -80,13 +80,15 @@ async def dashboard(request: Request) -> HTMLResponse:
     if default_cwd and default_cwd not in cwd_options:
         cwd_options.insert(0, default_cwd)
 
+    top_sessions, children_of = state.session_tree()
     resp = templates.TemplateResponse(
         request,
         "dashboard.html",
         {
             "rows": _usage_rows(accounts, state),
             "host": state.host_stats,
-            "sessions": state.visible_sessions(),
+            "sessions": top_sessions,
+            "children_of": children_of,
             "labels": session_labels(accounts),
             "queue_summaries": session_queue_summaries(
                 state.visible_sessions(), request.app.state.injector
@@ -143,6 +145,7 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
     git_context = await assistant.ensure_session_context(
         session, transcript_context=_pr_reference_text(detail.events)
     )
+    _detail_top, _detail_children = state.session_tree()
 
     resp = templates.TemplateResponse(
         request,
@@ -151,7 +154,8 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
             "session": session,
             "detail": detail,
             # Desktop keeps the live session list beside the selected chat.
-            "sessions": state.visible_sessions(),
+            "sessions": _detail_top,
+            "children_of": _detail_children,
             "labels": labels,
             "selected_session_key": session.key,
             "queue_summaries": session_queue_summaries(

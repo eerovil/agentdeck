@@ -1,9 +1,18 @@
-{# one merged, ungrouped list across all accounts.
-   `sessions` = [Session] (pre-sorted), `labels` = {account_key: label}. #}
+{# one merged list across all accounts. `sessions` = top-level [Session]
+   (pre-sorted); `children_of` = {parent_key: [subagent Session]} nested under
+   each parent as compact rows; `labels` = {account_key: label}. #}
 <div class="session-list">
   {% for s in sessions %}
     {% set label = labels.get(s.account_key) %}
     {% include "partials/session_card.html" %}
+    {% set _kids = (children_of | default({})).get(s.key) %}
+    {% if _kids %}
+    <div class="subagent-children">
+      {% for sub in _kids %}
+        {% include "partials/session_subagent_row.html" %}
+      {% endfor %}
+    </div>
+    {% endif %}
   {% else %}
     <div class="empty">no active sessions</div>
   {% endfor %}

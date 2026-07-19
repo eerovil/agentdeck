@@ -1210,6 +1210,162 @@ def test_active_sessions_keep_stable_relative_order(tmp_path):
     ]
 
 
+def test_session_tree_nests_subagents_under_parent():
+    from agentdeck.state import AppState
+
+    state = AppState()
+    parent = Session(
+        key="a:p", account_key="a", session_id="p", status=SessionStatus.LIVE
+    )
+    child = Session(
+        key="a:c",
+        account_key="a",
+        session_id="c",
+        status=SessionStatus.IDLE,
+        parent_session_key="a:p",
+        show_when_idle=True,  # finished subagents stay nested
+    )
+    orphan = Session(
+        key="a:o",
+        account_key="a",
+        session_id="o",
+        status=SessionStatus.LIVE,
+        parent_session_key="a:gone",  # parent not visible
+    )
+    for s in (parent, child, orphan):
+        state.update_session(s)
+
+    top, children = state.session_tree()
+    top_keys = {s.key for s in top}
+    assert "a:p" in top_keys  # parent stays top-level
+    assert "a:c" not in top_keys  # child is nested, not top-level
+    assert "a:o" not in top_keys  # orphan (parent gone) is dropped, not floated top-level
+    assert [c.key for c in children["a:p"]] == ["a:c"]
+    assert "a:o" not in children  # orphan has no visible parent to nest under
+
+
+def test_session_tree_nests_cross_provider_delegation():
+    from agentdeck.state import AppState
+
+    state = AppState()
+    # A Claude chat that delegated a Codex session: child and parent come from
+    # different provider scans, so the link lives in state.delegation_parents.
+    parent = Session(
+        key="claude_code:main:p",
+        account_key="claude_code:main",
+        session_id="p",
+        status=SessionStatus.LIVE,
+    )
+    child = Session(
+        key="codex:codex:c",
+        account_key="codex:codex",
+        session_id="c",
+        status=SessionStatus.LIVE,  # no parent_session_key of its own
+    )
+    for s in (parent, child):
+        state.update_session(s)
+    state.set_delegation_parents("claude_code:main", {"codex:codex:c": "claude_code:main:p"})
+
+    top, children = state.session_tree()
+    assert "codex:codex:c" not in {s.key for s in top}  # nested cross-provider
+    assert [c.key for c in children["claude_code:main:p"]] == ["codex:codex:c"]
+
+
+def test_mark_delegated_session_records_parent_and_nests():
+    from agentdeck.state import AppState
+
+    state = AppState()
+    parent = Session(
+        key="claude_code:main:p",
+        account_key="claude_code:main",
+        session_id="p",
+        status=SessionStatus.LIVE,
+    )
+    child = Session(
+        key="codex:codex:c",
+        account_key="codex:codex",
+        session_id="c",
+        status=SessionStatus.LIVE,
+    )
+    for s in (parent, child):
+        state.update_session(s)
+    # The delegation bridge records the invoking session by its raw id; state
+    # resolves it to the parent's full key at render, without any transcript
+    # marker.
+    state.mark_delegated_session("codex:codex:c", parent_session_id="p")
+
+    top, children = state.session_tree()
+    assert "codex:codex:c" not in {s.key for s in top}
+    assert [c.key for c in children["claude_code:main:p"]] == ["codex:codex:c"]
+    assert state.sessions["codex:codex:c"].is_delegated is True
+
+
+def test_recorded_delegation_parent_self_heals_when_parent_appears():
+    from agentdeck.state import AppState
+
+    state = AppState()
+    child = Session(
+        key="codex:codex:c",
+        account_key="codex:codex",
+        session_id="c",
+        status=SessionStatus.LIVE,
+    )
+    state.update_session(child)
+    # Parent not yet scanned in when the delegation starts: record the raw id
+    # anyway; the child stays top-level for now rather than nesting under a
+    # phantom.
+    state.mark_delegated_session("codex:codex:c", parent_session_id="p")
+    top, _ = state.session_tree()
+    assert "codex:codex:c" in {s.key for s in top}
+
+    # Once the parent is scanned in, lazy resolution nests the child with no
+    # second mark_delegated_session call — the one-shot race self-heals.
+    state.update_session(
+        Session(
+            key="claude_code:main:p",
+            account_key="claude_code:main",
+            session_id="p",
+            status=SessionStatus.LIVE,
+        )
+    )
+    top, children = state.session_tree()
+    assert "codex:codex:c" not in {s.key for s in top}
+    assert [c.key for c in children["claude_code:main:p"]] == ["codex:codex:c"]
+
+
+def test_list_subagents_extracts_parent_uuid_from_path(tmp_path):
+    from agentdeck.providers.claude_code.provider import _list_subagents
+
+    sub = (
+        tmp_path
+        / "projects"
+        / "-var-home-eero-outdoor"
+        / "parent-uuid-1234"
+        / "subagents"
+        / "agent-abc123.jsonl"
+    )
+    sub.parent.mkdir(parents=True)
+    sub.write_text('{"isSidechain": true, "type": "user"}\n')
+
+    out = _list_subagents(tmp_path)
+    assert out == {"agent-abc123": (sub, "parent-uuid-1234")}
+
+
+def test_subagent_task_reads_sidechain_first_prompt(tmp_path):
+    from agentdeck.providers.claude_code.provider import _subagent_task
+
+    path = tmp_path / "agent-x.jsonl"
+    # isSidechain user lines are dropped by transcript_meta; _subagent_task must
+    # still surface the first user prompt (the Task description) for the title.
+    path.write_text(
+        '{"type": "summary", "summary": "ignore"}\n'
+        '{"type": "user", "isSidechain": true, "message": {"content": '
+        '[{"type": "text", "text": "Audit the parser for bugs"}]}}\n'
+        '{"type": "user", "message": {"content": "later prompt"}}\n'
+    )
+    assert _subagent_task(path) == "Audit the parser for bugs"
+
+
 def test_visible_idle_sessions_are_not_penalized_in_sort(tmp_path):
     from datetime import UTC, datetime, timedelta
 

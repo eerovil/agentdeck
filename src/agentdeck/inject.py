@@ -57,12 +57,12 @@ class InjectionService:
         config: InjectConfig,
         *,
         on_change: Callable[[str], None] | None = None,
-        on_delegation_started: Callable[[str], None] | None = None,
+        on_delegation_started: Callable[[str, str | None], None] | None = None,
     ):
         self.config = config
         self._on_change = on_change or (lambda _session_key: None)
         self._on_delegation_started = on_delegation_started or (
-            lambda _session_key: None
+            lambda _session_key, _parent_session_id: None
         )
         self._tasks: dict[str, asyncio.Task] = {}
         self._status: dict[str, InjectionStatus] = {}
@@ -335,6 +335,7 @@ class InjectionService:
         *,
         sandbox: str = "workspace-write",
         model: str | None = None,
+        parent_session_id: str | None = None,
     ) -> tuple[InjectResult, str | None]:
         """Start a machine-oriented delegation and retain a pollable result."""
         if not self.config.enabled:
@@ -362,6 +363,7 @@ class InjectionService:
                 message,
                 sandbox,
                 model,
+                parent_session_id,
             ),
             name=f"delegation:{delegation_id}",
         )
@@ -376,6 +378,7 @@ class InjectionService:
         message: str,
         sandbox: str,
         model: str | None,
+        parent_session_id: str | None = None,
     ) -> None:
         session_key = None
         try:
@@ -399,7 +402,7 @@ class InjectionService:
                 )
                 return
             session_key = f"{account.key}:{started.session_id}"
-            self._on_delegation_started(session_key)
+            self._on_delegation_started(session_key, parent_session_id)
             self._remember_delegation(
                 DelegationStatus(
                     delegation_id,

@@ -18,7 +18,7 @@
 <aside class="session-sidebar" aria-label="All sessions">
   <div class="session-sidebar-head">
     <a href="/">Sessions</a>
-    <span class="count">{{ sessions | length }}</span>
+    <span class="count">{{ (sessions | length) + ((children_of | default({})).values() | map('length') | sum) }}</span>
   </div>
   <div class="session-sidebar-assistant" sse-swap="assistant">
     {% include "partials/assistant_panel.html" %}

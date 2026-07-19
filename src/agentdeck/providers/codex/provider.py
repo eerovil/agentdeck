@@ -295,11 +295,24 @@ class CodexProvider(SessionProvider):
         rollouts = [
             (path, self._cached_meta(path)) for path in _list_rollouts(account.root)
         ]
-        delegated_session_keys = {
-            session_key
-            for path in _all_rollouts(account.root)
-            for session_key in self._cached_delegated_session_keys(path)
-        }
+        # A parent chat that delegated a Codex session via AgentDeck records a
+        # "delegation: running (/sessions/<child-key>)" marker in its own rollout.
+        # Collect both the flat set (for is_delegated) and the child->parent map
+        # so delegated sessions nest under the chat that spawned them.
+        delegated_session_keys: set[str] = set()
+        delegation_parent: dict[str, str] = {}
+        for path in _all_rollouts(account.root):
+            children = self._cached_delegated_session_keys(path)
+            if not children:
+                continue
+            delegated_session_keys.update(children)
+            parent_meta = self._cached_meta(path)
+            if parent_meta.is_subagent or not parent_meta.session_id:
+                continue
+            parent_key = f"{account.key}:{parent_meta.session_id}"
+            for child_key in children:
+                if child_key != parent_key:
+                    delegation_parent.setdefault(child_key, parent_key)
         for path, meta in rollouts:
             if meta.is_spawned_subagent:
                 if meta.agent_id and meta.agent_nickname:
@@ -328,6 +341,47 @@ class CodexProvider(SessionProvider):
                             updated_at=last_activity,
                         )
                     )
+                    # Also surface it as a real child session so it nests under
+                    # the parent in the list tree. A spawned rollout reuses the
+                    # parent's session_id (meta.session_id); its OWN id is
+                    # meta.agent_id (session_meta.id).
+                    child_id = meta.agent_id
+                    if child_id and child_id not in seen:
+                        seen.add(child_id)
+                        # "Active" means it actually wrote recently — the
+                        # task_active flag alone gets stuck True on a subagent
+                        # that died mid-task, showing "Working" for hours and
+                        # flooding the working count + Deckhand stalls.
+                        child_active = meta.task_active and age < SUBAGENT_QUIET_S
+                        sessions.append(
+                            Session(
+                                key=f"{account.key}:{child_id}",
+                                account_key=account.key,
+                                session_id=child_id,
+                                status=(
+                                    SessionStatus.LIVE if child_active else SessionStatus.IDLE
+                                ),
+                                thinking=child_active,
+                                activity="Working" if child_active else None,
+                                title=meta.agent_nickname or meta.title,
+                                last_text=meta.last_text,
+                                last_role=meta.last_role,
+                                cwd=Path(meta.cwd) if meta.cwd else None,
+                                model=meta.model,
+                                kind="subagent",
+                                worker_type="you",
+                                # quiet/finished/stuck subagents stay nested (under
+                                # a visible parent) but out of Deckhand triage +
+                                # the working count; only a recently-active one is
+                                # attention-worthy.
+                                is_delegated=not child_active,
+                                parent_session_key=f"{account.key}:{meta.session_id}",
+                                started_at=meta.started_at,
+                                last_activity=last_activity,
+                                show_when_idle=True,
+                            )
+                        )
+                        current_paths[(account.key, child_id)] = path
             # Internal helpers reuse the parent chat's session_id. Reject both
             # legacy approval-review and structured sub-agent rollouts before
             # ID deduplication or the newest helper can replace the real chat.
@@ -385,6 +439,11 @@ class CodexProvider(SessionProvider):
                         meta.kind == "exec"
                         or f"{account.key}:{session_id}" in delegated_session_keys
                     ),
+                    # An AgentDeck-delegated session nests under the chat that
+                    # delegated it (same treatment as a spawned subagent).
+                    parent_session_key=delegation_parent.get(
+                        f"{account.key}:{session_id}"
+                    ),
                     started_at=meta.started_at,
                     last_activity=last_activity,
                     tokens=meta.tokens,
@@ -414,12 +473,22 @@ class CodexProvider(SessionProvider):
             )
         self._paths = {key: value for key, value in self._paths.items() if key[0] != account.key}
         self._paths.update(current_paths)
+        # Publish this account's delegation links so cross-provider children
+        # (e.g. a Codex chat that delegated a Claude session) nest correctly.
+        state = self._states.get(account.key)
+        if state is not None:
+            state.set_delegation_parents(account.key, delegation_parent)
         return sessions
 
     def sweep_liveness(self, account: Account, sessions: list[Session]) -> list[Session]:
         """Refresh recency-derived status and mtime-cached card metadata."""
         changed = []
         for session in sessions:
+            # Subagent child sessions: _transcript_path rejects is_subagent
+            # rollouts, so the sweep can't refresh them. Leave their state to the
+            # full scan, which builds them from the spawned rollout directly.
+            if session.parent_session_key is not None:
+                continue
             path = self._transcript_path(account, session)
             if path is None:
                 continue

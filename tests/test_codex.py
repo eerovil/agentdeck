@@ -145,6 +145,9 @@ async def test_machine_delegation_status_marks_legacy_child_delegated(tmp_path):
 
     assert found[parent_sid].is_delegated is False
     assert found[child_sid].is_delegated is True
+    # The delegated child nests under the chat that delegated it.
+    assert found[child_sid].parent_session_key == found[parent_sid].key
+    assert found[parent_sid].parent_session_key is None
 
 
 async def test_legacy_delegation_evidence_outside_session_cap_is_used(
@@ -407,7 +410,10 @@ async def test_running_spawned_agents_are_counted_on_parent_session(tmp_path):
     os.utime(expired, (expired_time, expired_time))
 
     provider = CodexProvider()
-    (session,) = await provider.scan_sessions(_account(tmp_path))
+    scanned = await provider.scan_sessions(_account(tmp_path))
+    # The parent stays top-level; spawned subagents are now also child sessions
+    # nested under it (parent_session_key set), while still counted on the parent.
+    (session,) = [s for s in scanned if s.parent_session_key is None]
     assert session.session_id == parent_sid
     assert session.subagent_count == 1
     assert len(session.subagents) == 2
@@ -418,6 +424,12 @@ async def test_running_spawned_agents_are_counted_on_parent_session(tmp_path):
     assert session.subagents[1].status == "finished"
     assert session.subagents[1].result == "Implemented and tested"
     assert provider._subagent_names["019f6085-7db2-7031-8be2-a51f6aa6b9bd"] == "Faraday"
+    # The recent spawned subagents surface as child sessions under the parent.
+    children = [s for s in scanned if s.parent_session_key == session.key]
+    assert {s.session_id for s in children} == {
+        "019f6085-5dbc-7f41-80b1-d32de9d80c14",  # active
+        "019f6085-6cb1-7920-891f-9403d202a6f0",  # completed (recent)
+    }
 
 
 def test_codex_compacts_subagent_notifications_without_clobbering_last_prompt(tmp_path):
@@ -569,7 +581,8 @@ async def test_subagent_roster_stays_scoped_to_latest_completed_parent_turn(tmp_
     )
 
     provider = CodexProvider()
-    (session,) = await provider.scan_sessions(_account(tmp_path))
+    scanned = await provider.scan_sessions(_account(tmp_path))
+    (session,) = [s for s in scanned if s.parent_session_key is None]
 
     assert session.subagent_count == 0
     assert [agent.nickname for agent in session.subagents] == ["CurrentAgent"]

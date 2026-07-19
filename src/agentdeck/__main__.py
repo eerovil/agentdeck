@@ -91,6 +91,13 @@ def _delegate(argv: list[str]) -> None:
     )
     parser.add_argument("--model", help="Codex model override")
     parser.add_argument(
+        "--parent-session",
+        default=os.environ.get("CLAUDE_CODE_SESSION_ID"),
+        help="id of the session initiating this delegation (defaults to"
+        " $CLAUDE_CODE_SESSION_ID); lets AgentDeck nest the delegated chat"
+        " under its parent",
+    )
+    parser.add_argument(
         "--url",
         default=os.environ.get("AGENTDECK_URL", "http://127.0.0.1:8756"),
         help="running AgentDeck base URL",
@@ -112,6 +119,8 @@ def _delegate(argv: list[str]) -> None:
         payload["account_key"] = args.account
     if args.model:
         payload["model"] = args.model
+    if args.parent_session:
+        payload["parent_session_id"] = args.parent_session
 
     try:
         with httpx.Client(timeout=10.0) as client:

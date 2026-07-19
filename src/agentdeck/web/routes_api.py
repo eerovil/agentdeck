@@ -21,6 +21,9 @@ class DelegationRequest(BaseModel):
     account_key: str | None = None
     sandbox: Literal["read-only", "workspace-write"] = "workspace-write"
     model: str | None = None
+    # Raw id of the session initiating this delegation (e.g. the invoking Claude
+    # chat, from CLAUDE_CODE_SESSION_ID). Lets the delegated child nest under it.
+    parent_session_id: str | None = None
 
 
 def _delegation_account(request: Request, account_key: str | None):
@@ -185,6 +188,7 @@ async def start_delegation(request: Request, body: DelegationRequest) -> dict:
         body.message,
         sandbox=body.sandbox,
         model=body.model,
+        parent_session_id=body.parent_session_id,
     )
     if not result.accepted or delegation_id is None:
         raise HTTPException(status_code=422, detail=result.reason)
