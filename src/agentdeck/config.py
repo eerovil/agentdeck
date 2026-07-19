@@ -79,7 +79,7 @@ class AssistantConfig(BaseModel):
     model: str = "gpt-5.6-luna"
     refresh_interval_s: float = 60.0
     timeout_s: float = 120.0
-    max_sessions: int = 30
+    max_sessions: int = 100
     auto_answer: bool = False
     auto_answer_confidence: float = 0.9
 

@@ -305,15 +305,16 @@ body.usage-open .limit-bars { display: flex; }
   border: 1px solid currentColor; background: color-mix(in srgb, currentColor 12%, transparent); }
 /* Deckhand per-session status pill on session rows. States collapse both of
    Deckhand's signals (durable verdict + live attention insight) into one
-   vocabulary: waiting/blocked/review/done. A resting chat with no attention
-   item falls back to "done"; only actively-working chats show no pill. */
+   vocabulary: waiting/blocked/review/done, plus "?" when Deckhand has not
+   classified the chat yet. Actively-working and subagent chats show no pill. */
 .dh-pill { font-size: 10px; font-weight: 700; line-height: 1; padding: 2px 7px; border-radius: 999px;
   text-transform: uppercase; letter-spacing: .04em;
   border: 1px solid currentColor; background: color-mix(in srgb, currentColor 12%, transparent); }
 .dh-waiting { color: var(--warn); }   /* the agent is waiting on you */
 .dh-blocked { color: var(--crit); }   /* the agent is stuck or failed */
 .dh-review  { color: var(--remote); } /* finished, work awaiting your review */
-.dh-done    { color: var(--live); }   /* finished / nothing needs you */
+.dh-done    { color: var(--live); }   /* finished, nothing left for you */
+.dh-unknown { color: var(--muted); }  /* not classified yet */
 .st-open { color: var(--live); }
 .st-merged, .st-done { color: var(--wt-cloud); }
 .st-closed { color: var(--crit); }

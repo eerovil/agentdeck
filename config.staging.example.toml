@@ -40,7 +40,7 @@ account_key = "codex:codex"
 model = "gpt-5.6-luna"
 refresh_interval_s = 60
 timeout_s = 120
-max_sessions = 30
+max_sessions = 100
 auto_answer = false
 auto_answer_confidence = 0.9
 

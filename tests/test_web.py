@@ -432,19 +432,20 @@ async def test_session_card_shows_deckhand_status_pill(tmp_path):
     app = _app_with_state(tmp_path)
     assistant = app.state.assistant
     assistant.config.enabled = True
-    # Four rows, one per resolution branch:
-    #   live    — a live attention insight (shows even while thinking)
-    #   done    — only a durable verdict, resting (verdict pill)
-    #   working — a durable verdict but mid-turn (verdict suppressed, no pill)
-    #   idle    — resting, never classified (falls back to a "done" pill)
+    # One row per resolution branch:
+    #   live      — a live attention insight (shows even while thinking)
+    #   done      — only a durable verdict, resting (verdict pill)
+    #   working   — a durable verdict but mid-turn (verdict suppressed, no pill)
+    #   idle      — resting, never classified ("?")
+    #   asking    — a pending question (waiting, straight off the session)
+    #   subagent  — delegated/background chat (never gets a pill)
     sessions = {
         "live": dict(last_role="agent", thinking=False),
         "done": dict(last_role="agent", thinking=False),
         "working": dict(last_role="agent", thinking=True),
         "idle": dict(last_role="agent", thinking=False),
-        # A pending question -> waiting, computed straight from the session and
-        # immune to a handled/stale insight view (no verdict, no insight here).
         "asking": dict(last_role="agent", thinking=False, question="Which option?"),
+        "subagent": dict(last_role="agent", thinking=False, is_delegated=True),
     }
     for sid, extra in sessions.items():
         app.state.app_state.update_session(
@@ -460,6 +461,8 @@ async def test_session_card_shows_deckhand_status_pill(tmp_path):
     assistant._verdicts = {
         "claude_code:test:done": ("sig", Verdict("done", "All shipped and verified", "")),
         "claude_code:test:working": ("sig", Verdict("review", "Opened a PR", "review it")),
+        # Even with a verdict, a delegated chat must never show a pill.
+        "claude_code:test:subagent": ("sig", Verdict("blocked", "Subagent internal step", "")),
     }
     assistant.view = AssistantView(
         state="ready",
@@ -481,16 +484,18 @@ async def test_session_card_shows_deckhand_status_pill(tmp_path):
     # Durable done verdict on a resting chat, with its summary on hover.
     assert 'class="dh-pill dh-done"' in r.text
     assert 'title="Deckhand: All shipped and verified"' in r.text
-    # Never-classified resting chat -> falls back to a "done" pill (no "?"), with
-    # the fallback tooltip rather than a verdict summary.
-    assert 'title="Deckhand has no attention item for this chat"' in r.text
-    assert "dh-unknown" not in r.text
+    # Never-classified resting chat -> question-mark pill (not a fabricated verdict).
+    assert 'class="dh-pill dh-unknown"' in r.text
+    assert 'title="Deckhand hasn\'t classified this chat yet"' in r.text
     # A pending question always resolves to waiting, regardless of insight state.
     assert 'class="dh-pill dh-waiting"' in r.text
     assert 'title="Deckhand: the agent asked you a question"' in r.text
     # The working chat's stale "review" verdict is suppressed mid-turn: no review
     # pill renders anywhere, and its headline never appears.
     assert "dh-review" not in r.text
+    # A delegated/subagent chat never shows a pill, even with a verdict.
+    assert "Session subagent" in r.text  # the card itself renders
+    assert 'title="Deckhand: Subagent internal step"' not in r.text
     assert 'title="Deckhand: Opened a PR"' not in r.text
 
 
