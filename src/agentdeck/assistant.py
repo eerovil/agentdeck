@@ -595,6 +595,15 @@ class AssistantService:
 
     # --- loop ----------------------------------------------------------
 
+    def _carded_session_resumed(self, eligible: list[Session]) -> bool:
+        """A session currently backing a displayed card has resumed working, so
+        its finished/attention card should be recomputed (dropped) now rather
+        than lingering until the periodic refresh (issue #15). ``thinking`` is
+        excluded from the evidence signature — to avoid reclassification churn —
+        so this transition is otherwise invisible to change detection."""
+        carded = {insight.session_key for insight in self.view.insights}
+        return any(session.key in carded and session.thinking for session in eligible)
+
     async def _loop(self) -> None:
         loop = asyncio.get_running_loop()
         while True:
@@ -604,10 +613,12 @@ class AssistantService:
                 pass
             self._wake.clear()
             due = loop.time() - self._last_run >= self.config.refresh_interval_s
-            visible_keys = {session.key for session in self._eligible_sessions()}
+            eligible = self._eligible_sessions()
+            visible_keys = {session.key for session in eligible}
             newly_visible = bool(visible_keys - self._known_visible_session_keys)
             self._known_visible_session_keys = visible_keys
-            if not self._force and not due and not newly_visible:
+            resumed_working = self._carded_session_resumed(eligible)
+            if not self._force and not due and not newly_visible and not resumed_working:
                 continue
             self._force = False
             manual = self._manual_refresh_pending

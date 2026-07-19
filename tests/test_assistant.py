@@ -155,6 +155,40 @@ async def test_finished_agent_with_pr_review_shows_a_finished_card(tmp_path):
     assert insight.headline == "Opened a PR"
 
 
+def test_carded_session_resuming_work_triggers_a_refresh(tmp_path):
+    # Issue #15: the loop's change detection must notice a carded session that
+    # resumed working (thinking is excluded from the evidence signature, so it's
+    # otherwise invisible) — otherwise the finished card lingers a full interval.
+    assistant = _service(tmp_path, AsyncMock(), state=AppState())
+    assistant.view = AssistantView(
+        state="ready",
+        insights=(AssistantInsight("codex:test:thread-1", "finished", "Opened a PR", "d"),),
+    )
+    resting = _finished(tmp_path)
+    working = _finished(tmp_path, status=SessionStatus.LIVE, thinking=True)
+    assert assistant._carded_session_resumed([resting]) is False
+    assert assistant._carded_session_resumed([working]) is True
+    # a working session with no card of its own → nothing to drop, no refresh
+    assistant.view = AssistantView(state="ready", insights=())
+    assert assistant._carded_session_resumed([working]) is False
+
+
+async def test_finished_card_drops_once_the_session_works_again(tmp_path):
+    # Issue #15 end to end: the review card is shown while resting, then gone
+    # once the same session is actively working.
+    runner = AsyncMock(return_value=_REVIEW)
+    state = AppState()
+    state.update_session(_finished(tmp_path))
+    assistant = _service(tmp_path, runner, state=state)
+
+    await assistant.refresh()
+    assert [i.kind for i in assistant.view.insights] == ["finished"]
+
+    state.update_session(_finished(tmp_path, status=SessionStatus.LIVE, thinking=True))
+    await assistant.refresh()
+    assert assistant.view.insights == ()
+
+
 async def test_merged_pr_produces_no_card_and_skips_the_model(tmp_path):
     runner = AsyncMock(return_value=_REVIEW)
     state = AppState()
