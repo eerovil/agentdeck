@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from ...models import Account
+from . import registry
 
 log = logging.getLogger(__name__)
 
@@ -114,6 +115,7 @@ class ClaudeWorkerHost:
         self._interrupt_waiters: dict[str, asyncio.Future] = {}
         self._key_locks: dict[str, asyncio.Lock] = {}
         self._load_state()
+        self._reconcile_orphans()
 
     def _key_lock(self, key: str) -> asyncio.Lock:
         """Per-key serialization lock.
@@ -183,6 +185,45 @@ class ClaudeWorkerHost:
         tmp = self._state_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, indent=1))
         tmp.replace(self._state_path)
+
+    def _reconcile_orphans(self) -> None:
+        """Kill workers left running by a previously-crashed runtime incarnation.
+
+        After an ungraceful exit (OOM/``kill -9``) the lifespan shutdown never
+        ran, so detached worker process groups may still be alive and registered
+        under ``<root>/sessions/<pid>.json`` even though our in-memory ``_live``
+        map starts empty. Their stdio belonged to the dead runtime, so they can't
+        be re-adopted, and the next ``deliver`` for a key would ``--resume`` a
+        *second* process on the same transcript. Any still-alive process whose
+        session id matches one of our records is therefore killed; the record
+        (session lineage) is kept so the next deliver revives cleanly as the sole
+        owner.
+        """
+        owned = {rec.session_id for rec in self._records.values() if rec.session_id}
+        if not owned:
+            return
+        try:
+            entries = registry.read_registry(self.account.root)
+        except Exception:  # noqa: BLE001 -- reconcile must never break host init
+            log.exception("orphan reconcile: registry read failed (%s)", self.account.key)
+            return
+        for entry in entries:
+            if entry.session_id not in owned or not registry.is_alive(entry):
+                continue
+            # SIGKILL, not SIGTERM-then-wait: these are not our children (we can't
+            # reap them) and must be gone before any revive; the JSONL transcript
+            # tolerates a truncated trailing line on --resume. Workers are spawned
+            # start_new_session=True, so pid is the group leader (pgid == pid).
+            try:
+                os.killpg(entry.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                continue
+            log.warning(
+                "orphan reconcile: killed stale worker pid=%s session=%s (%s)",
+                entry.pid,
+                entry.session_id,
+                self.account.key,
+            )
 
     # --- public API --------------------------------------------------------
 
@@ -693,6 +734,16 @@ class ClaudeWorkerHost:
             if self._live.get(key) is live:
                 del self._live[key]
                 live.turn_active = False
+                # The reader is tearing down while still the registered worker.
+                # On a clean process exit the child is already gone (returncode
+                # set) and its session lineage is kept for a later --resume. But
+                # if the reader itself died with the child still alive (e.g. an
+                # oversized stdout line raising past STDOUT_LINE_LIMIT), the
+                # detached process group would survive as an orphan and the next
+                # deliver would --resume a *second* process on the same
+                # transcript — so reap it here.
+                if process.returncode is None:
+                    await self._terminate(live)
 
     def _handle_event(self, key: str, live: _LiveWorker, event: dict[str, Any]) -> None:
         etype = event.get("type")

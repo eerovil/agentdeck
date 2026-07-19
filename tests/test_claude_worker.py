@@ -472,3 +472,131 @@ async def test_forget_drops_finished_records_only(tmp_path):
     assert host.forget("issue-1") is True
     assert "issue-1" not in host.snapshot()["workers"]
     await host.stop()
+
+
+async def test_reader_crash_reaps_child(tmp_path):
+    # If the stdout reader dies with the child still alive (e.g. an oversized
+    # line), the detached process must be terminated — not left as an orphan that
+    # a later deliver would --resume a second time on the same transcript.
+    class CrashingStdout:
+        def __init__(self):
+            self.queue: asyncio.Queue = asyncio.Queue()
+
+        def emit(self, event: dict) -> None:
+            self.queue.put_nowait(json.dumps(event).encode() + b"\n")
+
+        async def readline(self) -> bytes:
+            item = await self.queue.get()
+            if item == "BOOM":
+                raise ValueError("stdout line exceeded limit")
+            return item
+
+    processes: list[FakeProcess] = []
+
+    async def factory(*args, **fkwargs):
+        proc = FakeProcess()
+        proc.stdout = CrashingStdout()
+        processes.append(proc)
+        asyncio.get_running_loop().call_soon(
+            proc.stdout.emit,
+            {"type": "system", "subtype": "init", "session_id": f"sid-{len(processes)}"},
+        )
+        return proc
+
+    host = ClaudeWorkerHost(
+        Account("claude_code:test", "claude_code", "test", tmp_path / "cfg"),
+        state_dir=tmp_path / "state",
+        process_factory=factory,
+    )
+    result = await host.deliver("issue-1", "go", cwd=str(tmp_path))
+    assert result.accepted
+    await _settle()
+    reader_task = host._live["issue-1"].reader_task
+    proc = processes[0]
+    proc.stdout.queue.put_nowait("BOOM")  # crash the reader
+    await asyncio.gather(reader_task, return_exceptions=True)
+    assert proc.returncode is not None  # reaped, not orphaned
+    assert proc.stdin.closed
+    assert "issue-1" not in host._live
+    # Session lineage kept so the next deliver revives a single owner.
+    assert host._records["issue-1"].session_id == "sid-1"
+
+
+def _entry(pid: int, session_id: str, proc_start: str = "42"):
+    from agentdeck.providers.claude_code.registry import RegistryEntry
+
+    return RegistryEntry(
+        pid=pid,
+        session_id=session_id,
+        cwd=None,
+        started_at=None,
+        proc_start=proc_start,
+        version=None,
+        kind=None,
+        entrypoint=None,
+    )
+
+
+def _seed_state(tmp_path: Path, session_id: str | None) -> Path:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True)
+    (state_dir / "test.json").write_text(
+        json.dumps(
+            {"workers": [{"key": "issue-9", "cwd": str(tmp_path), "session_id": session_id}]}
+        )
+    )
+    return state_dir
+
+
+async def test_reconcile_kills_orphan_at_startup(tmp_path, monkeypatch):
+    from agentdeck.providers.claude_code import worker as worker_mod
+
+    state_dir = _seed_state(tmp_path, "sid-orphan")
+    orphan = [_entry(4242, "sid-orphan")]
+    monkeypatch.setattr(worker_mod.registry, "read_registry", lambda root: orphan)
+    monkeypatch.setattr(worker_mod.registry, "is_alive", lambda e: True)
+    killed: list[tuple[int, int]] = []
+    monkeypatch.setattr(worker_mod.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
+
+    host = ClaudeWorkerHost(
+        Account("claude_code:test", "claude_code", "test", tmp_path / "cfg"),
+        state_dir=state_dir,
+    )
+    assert killed == [(4242, worker_mod.signal.SIGKILL)]
+    # The record survives the reconcile so a later deliver can revive it.
+    assert host._records["issue-9"].session_id == "sid-orphan"
+
+
+async def test_reconcile_ignores_unowned_and_dead(tmp_path, monkeypatch):
+    from agentdeck.providers.claude_code import worker as worker_mod
+
+    state_dir = _seed_state(tmp_path, "sid-orphan")
+    entries = [_entry(1, "sid-other"), _entry(2, "sid-orphan")]  # unowned + owned
+    monkeypatch.setattr(worker_mod.registry, "read_registry", lambda root: entries)
+    monkeypatch.setattr(worker_mod.registry, "is_alive", lambda e: e.pid != 2)  # owned one is dead
+    killed: list[tuple[int, int]] = []
+    monkeypatch.setattr(worker_mod.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
+
+    ClaudeWorkerHost(
+        Account("claude_code:test", "claude_code", "test", tmp_path / "cfg"),
+        state_dir=state_dir,
+    )
+    assert killed == []  # sid-other not ours; sid-orphan pid is dead
+
+
+async def test_reconcile_noop_without_sessions(tmp_path, monkeypatch):
+    from agentdeck.providers.claude_code import worker as worker_mod
+
+    state_dir = _seed_state(tmp_path, None)  # record without a session id
+    called = {"read": False}
+
+    def _read(root):
+        called["read"] = True
+        return []
+
+    monkeypatch.setattr(worker_mod.registry, "read_registry", _read)
+    ClaudeWorkerHost(
+        Account("claude_code:test", "claude_code", "test", tmp_path / "cfg"),
+        state_dir=state_dir,
+    )
+    assert called["read"] is False  # no owned session ids → registry never read
