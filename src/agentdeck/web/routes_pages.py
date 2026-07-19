@@ -131,6 +131,7 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
         activity_label,
         assistant_insights_for_session,
         pending_injection_messages,
+        session_deckhand_status,
         session_labels,
         session_queue_summaries,
     )
@@ -163,6 +164,7 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
             "sessions": _detail_top,
             "children_of": _detail_children,
             "labels": labels,
+            "deckhand_status": session_deckhand_status(assistant),
             "selected_session_key": session.key,
             "queue_summaries": session_queue_summaries(
                 state.visible_sessions(), request.app.state.injector

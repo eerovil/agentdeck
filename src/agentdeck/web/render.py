@@ -122,6 +122,7 @@ def register_filters(templates: Jinja2Templates) -> None:
     templates.env.filters["ktok"] = ktok
     templates.env.filters["ctx_level"] = ctx_level
     templates.env.filters["tool_label"] = tool_label
+    templates.env.filters["deckhand_pill"] = deckhand_pill
 
 
 def tool_label(value: str | None) -> str:
@@ -221,12 +222,9 @@ def session_labels(accounts: list[Account]) -> dict[str, str]:
     return {acc.key: acc.label for acc in accounts}
 
 
-# Deckhand's two per-session signals collapse into one pill vocabulary. The
-# durable LLM verdict (blocked/review/done) is the stable base; the transient
-# attention insight (waiting/stalled/finished) overrides it when Deckhand is
-# actively flagging the chat and carries the states a verdict never does
-# (``waiting`` = pending approval / a question asked of you).
-_VERDICT_PILL = {"blocked": "blocked", "review": "review", "done": "done"}
+# Deckhand's transient attention insight uses its own kind vocabulary; translate
+# it to the pill states. The durable verdict already speaks the pill vocabulary
+# (blocked/review/done — constrained by triage.parse_verdict), so it needs no map.
 _INSIGHT_PILL = {"waiting": "waiting", "stalled": "blocked", "finished": "review"}
 
 
@@ -236,16 +234,14 @@ def session_deckhand_status(assistant) -> dict[str, dict]:
     True when the status comes from the active attention view (so the card shows
     it even mid-turn); False when it comes only from the stored verdict (so a card
     that has since started working can suppress a now-stale status). Sessions with
-    neither are absent — the card decides between "?" (idle, unclassified) and no
-    pill (still working)."""
+    neither are absent. Resolve the final per-row pill through ``deckhand_pill``."""
     if assistant is None:
         return {}
     out: dict[str, dict] = {}
-    # Base layer: durable verdicts persist across runs that emit no cards.
+    # Base layer: durable verdicts persist across runs that emit no cards. Their
+    # status is already a pill state (blocked/review/done).
     for key, verdict in assistant.session_verdicts().items():
-        state = _VERDICT_PILL.get(verdict.status)
-        if state:
-            out[key] = {"state": state, "headline": verdict.summary, "live": False}
+        out[key] = {"state": verdict.status, "headline": verdict.summary, "live": False}
     # Override with the live attention view — current, and the only source of
     # ``waiting`` / structured cards. Its headline is the freshest one to show.
     for insight in assistant.view.insights:
@@ -257,6 +253,41 @@ def session_deckhand_status(assistant) -> dict[str, dict]:
                 "live": True,
             }
     return out
+
+
+def deckhand_pill(session, status_map: dict | None) -> dict | None:
+    """Resolve the single Deckhand status pill for one session row, or None for no
+    pill. This is the whole precedence in one place (the template just renders the
+    result):
+
+    - subagent/background chats never carry a pill;
+    - a pending question is always ``waiting`` — read straight off the session so a
+      handled/stale attention view can't drop it;
+    - otherwise the merged verdict/insight status, but a stored (non-live) verdict
+      is hidden while the chat is working, since it judged an earlier turn;
+    - a resting chat Deckhand has not classified is ``unknown`` ("?");
+    - an actively-working chat with nothing live shows no pill.
+
+    Returns ``{state, label, title}`` where ``state`` is the CSS suffix, ``label``
+    the pill text, and ``title`` its tooltip."""
+    if session.is_delegated:
+        return None
+    if session.question:
+        return {
+            "state": "waiting",
+            "label": "waiting",
+            "title": "Deckhand: the agent asked you a question",
+        }
+    dh = (status_map or {}).get(session.key)
+    if dh and (dh["live"] or not session.thinking):
+        return {"state": dh["state"], "label": dh["state"], "title": "Deckhand: " + dh["headline"]}
+    if not session.thinking:
+        return {
+            "state": "unknown",
+            "label": "?",
+            "title": "Deckhand has not classified this chat yet",
+        }
+    return None
 
 
 def session_queue_summaries(sessions, injector: InjectionService) -> dict[str, dict]:

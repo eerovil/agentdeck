@@ -79,6 +79,10 @@ class AssistantService:
     """Debounce session changes into per-session attention triage."""
 
     HANG_AFTER_S = _HANG_AFTER_S
+    # Cap concurrent LLM classifications: each spawns a codex subprocess, and the
+    # triage window (``max_sessions``) can queue many on a cold cache. Bound the
+    # fan-out so the window size doesn't equal the concurrent load on the account.
+    CLASSIFY_CONCURRENCY = 8
 
     def __init__(
         self,
@@ -414,8 +418,14 @@ class AssistantService:
         if pending:
             self.view = replace(self.view, state="analyzing")
             self.state.bus.publish("assistant")
+            gate = asyncio.Semaphore(self.CLASSIFY_CONCURRENCY)
+
+            async def _classify_bounded(session):
+                async with gate:
+                    return await self._classify(account, session)
+
             results = await asyncio.gather(
-                *(self._classify(account, session) for session, _ in pending)
+                *(_classify_bounded(session) for session, _ in pending)
             )
             for (session, signature), (verdict, ok) in zip(pending, results, strict=True):
                 if ok:

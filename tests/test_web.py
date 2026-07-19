@@ -486,7 +486,7 @@ async def test_session_card_shows_deckhand_status_pill(tmp_path):
     assert 'title="Deckhand: All shipped and verified"' in r.text
     # Never-classified resting chat -> question-mark pill (not a fabricated verdict).
     assert 'class="dh-pill dh-unknown"' in r.text
-    assert 'title="Deckhand hasn\'t classified this chat yet"' in r.text
+    assert 'title="Deckhand has not classified this chat yet"' in r.text
     # A pending question always resolves to waiting, regardless of insight state.
     assert 'class="dh-pill dh-waiting"' in r.text
     assert 'title="Deckhand: the agent asked you a question"' in r.text
@@ -497,6 +497,103 @@ async def test_session_card_shows_deckhand_status_pill(tmp_path):
     assert "Session subagent" in r.text  # the card itself renders
     assert 'title="Deckhand: Subagent internal step"' not in r.text
     assert 'title="Deckhand: Opened a PR"' not in r.text
+
+
+def test_deckhand_pill_resolves_every_branch():
+    from agentdeck.web.render import deckhand_pill
+
+    def sess(key, **kw):
+        return Session(
+            key=key, account_key="claude_code:test", session_id=key,
+            status=SessionStatus.LIVE, **kw,
+        )
+
+    status = {
+        "v": {"state": "done", "headline": "Shipped", "live": False},
+        "i": {"state": "blocked", "headline": "Hung", "live": True},
+        "r": {"state": "review", "headline": "PR open", "live": False},
+    }
+    # Subagent -> never a pill, even with a status entry.
+    assert deckhand_pill(sess("v", is_delegated=True), status) is None
+    # Pending question -> waiting, read straight off the session.
+    p = deckhand_pill(sess("x", question="Which option?"), status)
+    assert (p["state"], p["label"]) == ("waiting", "waiting")
+    # Resting verdict -> that state, with a "Deckhand: <summary>" tooltip.
+    p = deckhand_pill(sess("v"), status)
+    assert p["state"] == "done" and p["title"] == "Deckhand: Shipped"
+    # A live insight shows even while the chat is thinking.
+    assert deckhand_pill(sess("i", thinking=True), status)["state"] == "blocked"
+    # A non-live (stored) verdict is suppressed mid-turn.
+    assert deckhand_pill(sess("r", thinking=True), status) is None
+    # Resting but unclassified -> "?".
+    p = deckhand_pill(sess("none"), status)
+    assert (p["state"], p["label"]) == ("unknown", "?")
+    # Actively working and unclassified -> no pill.
+    assert deckhand_pill(sess("none", thinking=True), status) is None
+
+
+async def test_session_detail_sidebar_shows_deckhand_pills(tmp_path):
+    # Regression: the chat detail page built its context by hand and omitted
+    # deckhand_status, so the sidebar flashed "?" for real verdicts on initial
+    # HTTP load until SSE corrected it. The pill must be right on first render.
+    app = _app_with_state(tmp_path, with_transcript=True)
+    app.state.app_state.update_session(
+        Session(
+            key="claude_code:test:sid1", account_key="claude_code:test",
+            session_id="sid1", status=SessionStatus.LIVE, title="Sid1",
+            last_role="agent", thinking=False,
+        )
+    )
+    app.state.assistant._verdicts = {
+        "claude_code:test:sid1": ("sig", Verdict("done", "All shipped", "")),
+    }
+    async with _client(app) as c:
+        r = await c.get("/sessions/claude_code:test:sid1")
+    assert 'class="dh-pill dh-done"' in r.text
+    assert 'title="Deckhand: All shipped"' in r.text
+
+
+async def test_deckhand_pill_fits_narrow_mobile(tmp_path):
+    app = _app_with_state(tmp_path)
+    app.state.app_state.update_session(
+        Session(
+            key="claude_code:test:m1", account_key="claude_code:test",
+            session_id="m1", status=SessionStatus.LIVE,
+            title="A reasonably long session title that might wrap on a phone",
+            last_role="agent", thinking=False,
+            issue_status="open", issue_status_kind="open",
+            cwd=Path("/home/eero/some/deep/project/dir"),
+            kind="chat", context_tokens=123456,
+        )
+    )
+    app.state.assistant._verdicts = {
+        "claude_code:test:m1": ("sig", Verdict("blocked", "Stuck on something", "")),
+    }
+    async with _client(app) as client:
+        response = await client.get("/")
+    static_dir = Path(__file__).parents[1] / "src/agentdeck/web/static"
+    css = (static_dir / "app.css").read_text()
+    html = response.text.replace("</head>", f"<style>{css}</style></head>")
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        page = await browser.new_page(viewport={"width": 320, "height": 800})
+        await page.set_content(html)
+        size = await page.evaluate(
+            """() => {
+              const pill = document.querySelector('.dh-pill');
+              const card = pill && pill.closest('.session');
+              return {
+                pillVisible: !!pill && pill.getBoundingClientRect().width > 0,
+                bodyOverflow: document.body.scrollWidth - document.body.clientWidth,
+                cardOverflow: card ? card.scrollWidth - card.clientWidth : 0,
+              };
+            }"""
+        )
+        await browser.close()
+    # The pill renders, and neither the page nor its card overflows at 320px.
+    assert size["pillVisible"]
+    assert size["bodyOverflow"] <= 1
+    assert size["cardOverflow"] <= 1
 
 
 async def test_long_card_title_gets_full_width_three_line_layout(tmp_path):
