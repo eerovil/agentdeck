@@ -24,10 +24,10 @@ _MAX_TASK_CHARS = 400
 _BLOCKED_ISSUE_RE = re.compile(r"(?<![\w-])claude:blocked(?![\w-])", re.IGNORECASE)
 
 # Card kinds map to CSS (insight-waiting / insight-stalled are warn-coloured,
-# insight-finished is the calmer "done" green).
+# insight-finished is the calmer review-blue).
 KIND_WAITING = "waiting"  # explicit, structured: the agent is blocked on you
 KIND_STALLED = "stalled"  # inferred from the final message or a stall heuristic
-KIND_FINISHED = "finished"  # lower-priority: work is done, a PR is waiting on review
+KIND_FINISHED = "finished"  # lower-priority: the agent finished and left work for you
 
 # Cards in these kinds are active attention; "finished" sinks below them.
 _PRIORITY = {KIND_WAITING: 0, KIND_STALLED: 0, KIND_FINISHED: 1}
@@ -66,9 +66,11 @@ class AssistantView:
 class Verdict:
     """LLM judgement of one finished agent's final message.
 
-    ``status`` is one of: ``blocked`` (did not finish, step in now), ``review``
-    (finished, work — usually a PR — is awaiting your review), ``done`` (finished,
-    nothing left for you). Only ``done`` produces no card.
+    ``status`` is one of: ``blocked`` (did not finish, step in now) or ``finished``
+    (finished and left its work for you — with or without a PR). Both are attention
+    and both produce a card. The classifier never emits ``done`` or ``merged``:
+    ``done`` is set only by a human dismissing a card, and ``merged`` is derived
+    live from PR status — neither is a classifier output.
     """
 
     status: str
@@ -76,8 +78,8 @@ class Verdict:
     reason: str
 
 
-# Verdict status -> card kind. "done" is absent: it produces no card.
-_STATUS_KIND = {"blocked": KIND_STALLED, "review": KIND_FINISHED}
+# Verdict status -> card kind. Every classifier verdict is attention, so both map.
+_STATUS_KIND = {"blocked": KIND_STALLED, "finished": KIND_FINISHED}
 
 
 def tracking_summary(count: int) -> str:
@@ -204,12 +206,24 @@ def all_pulls_terminal(context: GitContext | None) -> bool:
 
     Such a session's work has shipped — there is nothing left to review, so it
     must not produce a card: not a structured open-PR card (that only fires for
-    open PRs) and not an LLM "review" resurrected from a transcript that still
+    open PRs) and not an LLM "finished" resurrected from a transcript that still
     says "opened PR #123". A merged PR is done.
     """
     if context is None or not context.pull_requests:
         return False
     return all(pull.status in {"merged", "closed"} for pull in context.pull_requests)
+
+
+def has_merged_pr(context: GitContext | None) -> bool:
+    """True when at least one of the session's PRs actually merged.
+
+    Drives the non-attention ``merged`` pill. A PR *closed without merging* does
+    not count — nothing shipped, so the session falls back to its finished/done
+    status instead.
+    """
+    if context is None:
+        return False
+    return any(pull.status == "merged" for pull in context.pull_requests)
 
 
 def needs_llm(session: Session) -> bool:
@@ -230,28 +244,25 @@ def classification_prompt(session: Session) -> str:
     """One tiny prompt: does THIS agent's final message need the operator?"""
     task = _head(session.initial_prompt or session.title, _MAX_TASK_CHARS)
     final_message = _tail(session.last_text, _MAX_MESSAGE_CHARS)
-    return f"""You triage one coding agent for a human operator. Put it in ONE of three states:
+    return f"""You triage one coding agent for a human operator. Put it in ONE of two states:
 
 - "blocked": the agent did NOT finish and needs the operator to step in now. It failed, is
   blocked, hit an error it could not resolve, needs a decision before it can proceed, or is
   directly asking a question it is waiting on an answer to. ("I could not do X"; "which should
   I pick?")
 
-- "review": the agent FINISHED and left work awaiting your review or merge. Most often it
-  opened or updated a pull request. A completion that opens a PR is "review" — INCLUDING when
-  it adds caveats or asks you to sanity-check something. The work is done; it wants your eyes
-  on the result. This still needs you, just less urgently than "blocked".
-
-- "done": the agent finished and there is nothing for the operator — no PR to review, no
-  question, nothing awaiting a human (e.g. it answered a question, or made a small local
-  change with no follow-up).
+- "finished": the agent finished its work and left the result for you — whether or not there
+  is a PR. This covers opening or updating a pull request, answering your question, and making
+  a local change or completing the task with no follow-up. It may add caveats or ask you to
+  sanity-check the result; that is still "finished", not "blocked". The work is done and wants
+  your eyes, but the agent is not stuck.
 
 If you cannot tell whether it finished, use "blocked". Do not use tools. Judge only the text.
 
 Return:
-- status: "blocked" | "review" | "done"
+- status: "blocked" | "finished"
 - summary: one short line stating what the agent did (plain, specific, no preamble)
-- reason: one short line on what the operator should do, or "" when status is "done"
+- reason: one short line on what the operator should do or how to confirm the result
 
 Task the agent was working on:
 {task or "(unknown)"}
@@ -267,7 +278,7 @@ def parse_verdict(raw: dict) -> Verdict:
     reason = raw.get("reason")
     # Missing/invalid status fails open to "blocked": never silently drop a handoff.
     status = raw.get("status")
-    if status not in {"blocked", "review", "done"}:
+    if status not in {"blocked", "finished"}:
         status = "blocked"
     has_summary = isinstance(summary, str) and bool(summary.strip())
     return Verdict(
@@ -278,13 +289,14 @@ def parse_verdict(raw: dict) -> Verdict:
 
 
 def verdict_card(session_key: str, verdict: Verdict) -> AssistantInsight | None:
-    """Render a Verdict as a card, or None when the agent is fully done."""
+    """Render a Verdict as an attention card. Both classifier statuses produce one;
+    None is only a defensive fallback for an unexpected status."""
     kind = _STATUS_KIND.get(verdict.status)
     if kind is None:
         return None
     detail = verdict.reason or (
         "Finished — ready for your review."
-        if verdict.status == "review"
+        if verdict.status == "finished"
         else "The agent's final message suggests it needs you."
     )
     return AssistantInsight(session_key, kind, verdict.summary, detail)

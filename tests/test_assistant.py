@@ -13,8 +13,8 @@ from agentdeck.providers import PROVIDERS
 from agentdeck.state import AppState
 
 _ATTENTION = {"status": "blocked", "summary": "Stopped early", "reason": "Needs a decision"}
-_REVIEW = {"status": "review", "summary": "Opened a PR", "reason": "Review it"}
-_CLEAR = {"status": "done", "summary": "All tests pass", "reason": ""}
+_FINISHED = {"status": "finished", "summary": "Opened a PR", "reason": "Review it"}
+_FINISHED_NO_PR = {"status": "finished", "summary": "All tests pass", "reason": ""}
 
 
 class _StubResolver:
@@ -89,16 +89,20 @@ async def test_finished_agent_flagged_by_the_model_becomes_a_card(tmp_path):
     assert assistant.view.summary == "1 agent needs your attention."
 
 
-async def test_finished_agent_cleared_by_the_model_shows_no_card(tmp_path):
-    runner = AsyncMock(return_value=_CLEAR)
+async def test_finished_agent_without_a_pr_still_shows_a_finished_card(tmp_path):
+    # New model: a finished agent always surfaces as attention (there is no silent
+    # model "done" anymore), even when it opened no PR — the operator clears it.
+    runner = AsyncMock(return_value=_FINISHED_NO_PR)
     state = AppState()
     state.update_session(_finished(tmp_path))
     assistant = _service(tmp_path, runner, state=state)
 
     await assistant.refresh()
 
-    assert assistant.view.insights == ()
-    assert assistant.view.summary == "Nothing needs your attention right now."
+    (insight,) = assistant.view.insights
+    assert insight.kind == "finished"
+    assert insight.headline == "All tests pass"
+    assert assistant.view.summary == "1 agent needs your attention."
 
 
 async def test_delegated_agents_are_not_triaged_or_counted(tmp_path):
@@ -143,7 +147,7 @@ async def test_delegated_agent_is_removed_from_old_handled_state(tmp_path):
 
 
 async def test_finished_agent_with_pr_review_shows_a_finished_card(tmp_path):
-    runner = AsyncMock(return_value=_REVIEW)
+    runner = AsyncMock(return_value=_FINISHED)
     state = AppState()
     state.update_session(_finished(tmp_path))
     assistant = _service(tmp_path, runner, state=state)
@@ -151,7 +155,7 @@ async def test_finished_agent_with_pr_review_shows_a_finished_card(tmp_path):
     await assistant.refresh()
 
     (insight,) = assistant.view.insights
-    assert insight.kind == "finished"  # PR-in-review still surfaces, as a review card
+    assert insight.kind == "finished"  # finished work surfaces as a review card
     assert insight.headline == "Opened a PR"
 
 
@@ -176,7 +180,7 @@ def test_carded_session_resuming_work_triggers_a_refresh(tmp_path):
 async def test_finished_card_drops_once_the_session_works_again(tmp_path):
     # Issue #15 end to end: the review card is shown while resting, then gone
     # once the same session is actively working.
-    runner = AsyncMock(return_value=_REVIEW)
+    runner = AsyncMock(return_value=_FINISHED)
     state = AppState()
     state.update_session(_finished(tmp_path))
     assistant = _service(tmp_path, runner, state=state)
@@ -190,7 +194,7 @@ async def test_finished_card_drops_once_the_session_works_again(tmp_path):
 
 
 async def test_merged_pr_produces_no_card_and_skips_the_model(tmp_path):
-    runner = AsyncMock(return_value=_REVIEW)
+    runner = AsyncMock(return_value=_FINISHED)
     state = AppState()
     session = _finished(tmp_path, last_text="Shipped the guardrail in PR #1628.")
     state.update_session(session)

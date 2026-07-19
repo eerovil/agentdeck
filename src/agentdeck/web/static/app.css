@@ -310,11 +310,12 @@ body.usage-open .limit-bars { display: flex; }
 .dh-pill { font-size: 10px; font-weight: 700; line-height: 1; padding: 2px 7px; border-radius: 999px;
   text-transform: uppercase; letter-spacing: .04em;
   border: 1px solid currentColor; background: color-mix(in srgb, currentColor 12%, transparent); }
-.dh-waiting { color: var(--warn); }   /* the agent is waiting on you */
-.dh-blocked { color: var(--crit); }   /* the agent is stuck or failed */
-.dh-review  { color: var(--remote); } /* finished, work awaiting your review */
-.dh-done    { color: var(--live); }   /* finished, nothing left for you */
-.dh-unknown { color: var(--muted); }  /* not classified yet */
+.dh-waiting  { color: var(--warn); }   /* the agent asked you a question */
+.dh-blocked  { color: var(--crit); }   /* the agent is stuck or failed */
+.dh-finished { color: var(--remote); } /* finished, work awaiting your review */
+.dh-done     { color: var(--live); }   /* dismissed by you — nothing left */
+.dh-merged   { color: #a371f7; }       /* its PR merged and shipped */
+.dh-unknown  { color: var(--muted); }  /* not classified yet */
 /* Brief highlight when a Deckhand insight scrolls its row into view (deckhand_focus.js). */
 @keyframes dh-focus-flash {
   0%   { box-shadow: 0 0 0 2px var(--remote); }

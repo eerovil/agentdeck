@@ -179,9 +179,9 @@ def test_parse_verdict_fails_open_on_missing_status():
 
 def test_parse_verdict_keeps_first_line_of_summary():
     verdict = parse_verdict(
-        {"status": "done", "summary": "Merged the PR\nextra", "reason": "nope"}
+        {"status": "finished", "summary": "Merged the PR\nextra", "reason": "nope"}
     )
-    assert verdict.status == "done"
+    assert verdict.status == "finished"
     assert verdict.summary == "Merged the PR"  # first line only
 
 
@@ -202,12 +202,14 @@ def test_classification_prompt_includes_task_and_final_message():
     assert "status" in prompt
 
 
-def test_classification_prompt_offers_three_states_with_pr_review():
+def test_classification_prompt_offers_two_states():
     prompt = classification_prompt(_session(last_role="agent", last_text="x"))
-    # PR-in-review is its own state (needs you, lower priority), not "done".
+    # The classifier collapses to blocked/finished; done and merged are not model
+    # outputs (done is manual, merged is derived from PR status).
     assert '"blocked"' in prompt
-    assert '"review"' in prompt
-    assert '"done"' in prompt
+    assert '"finished"' in prompt
+    assert '"review"' not in prompt
+    assert '"done"' not in prompt
     assert "pull request" in prompt.lower()
 
 
@@ -239,10 +241,11 @@ def test_verdict_card_maps_status_to_kind():
     assert blocked.headline == "Did the thing"
     assert blocked.detail == "But failed"
 
-    review = verdict_card("k", Verdict("review", "Opened a PR", ""))
-    assert review.kind == "finished"  # PR-in-review still needs you, lower priority
-    assert review.detail  # a default review nudge is filled in
+    finished = verdict_card("k", Verdict("finished", "Opened a PR", ""))
+    assert finished.kind == "finished"  # finished work still wants your eyes
+    assert finished.detail  # a default review nudge is filled in
 
+    # An unexpected status defensively yields no card (classifier only emits the two).
     assert verdict_card("k", Verdict("done", "All good", "")) is None
 
 

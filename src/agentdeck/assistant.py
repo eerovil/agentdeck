@@ -132,7 +132,9 @@ class AssistantService:
     # --- persistence ---------------------------------------------------
 
     def _restore_checkpoint(self, payload: dict[str, Any] | None) -> None:
-        if not payload or payload.get("version") != 5:
+        # v6 retired the "review"/"done" verdict vocabulary (now blocked/finished);
+        # an older checkpoint is simply dropped and reclassified on the next tick.
+        if not payload or payload.get("version") != 6:
             return
         try:
             raw_view = payload["view"]
@@ -169,7 +171,7 @@ class AssistantService:
 
     def _checkpoint_payload(self) -> dict[str, Any]:
         return {
-            "version": 5,
+            "version": 6,
             "view": {
                 "summary": self.view.summary,
                 "insights": [
@@ -603,9 +605,15 @@ class AssistantService:
             return None
         return self._handled_insights.get(session_key)
 
+    def handled_keys(self) -> frozenset[str]:
+        """Sessions currently dismissed by the operator — they render a ``done``
+        pill. Membership is auto-cleared when the session changes (see
+        ``_apply_handled``), so a new turn re-classifies instead of staying done."""
+        return frozenset(self._handled)
+
     def session_verdicts(self) -> dict[str, Verdict]:
-        """Durable per-session LLM verdict (blocked/review/done), independent of
-        the transient attention view. Unlike ``view.insights`` these survive a
+        """Durable per-session classifier verdict (blocked/finished), independent
+        of the transient attention view. Unlike ``view.insights`` these survive a
         run that produces no cards, so a per-session status pill stays stable."""
         return {key: verdict for key, (_sig, verdict) in self._verdicts.items()}
 

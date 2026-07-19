@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 
 from fastapi.templating import Jinja2Templates
 
+from .. import triage
 from ..inject import InjectionService
 from ..models import Account, Capability
 from ..models import activity_label as activity_label  # single impl lives in models
@@ -224,26 +225,46 @@ def session_labels(accounts: list[Account]) -> dict[str, str]:
 
 # Deckhand's transient attention insight uses its own kind vocabulary; translate
 # it to the pill states. The durable verdict already speaks the pill vocabulary
-# (blocked/review/done — constrained by triage.parse_verdict), so it needs no map.
-_INSIGHT_PILL = {"waiting": "waiting", "stalled": "blocked", "finished": "review"}
+# (blocked/finished — constrained by triage.parse_verdict), so it needs no map.
+_INSIGHT_PILL = {"waiting": "waiting", "stalled": "blocked", "finished": "finished"}
 
 
 def session_deckhand_status(assistant) -> dict[str, dict]:
     """Map ``session_key -> {state, headline, live}`` for each session's current
-    Deckhand status. ``state`` is one of waiting/blocked/review/done. ``live`` is
-    True when the status comes from the active attention view (so the card shows
-    it even mid-turn); False when it comes only from the stored verdict (so a card
-    that has since started working can suppress a now-stale status). Sessions with
-    neither are absent. Resolve the final per-row pill through ``deckhand_pill``."""
+    Deckhand status. ``state`` is one of waiting/blocked/finished/done/merged.
+    ``live`` is True when the status comes from the active attention view (so the
+    card shows it even mid-turn); False when it comes from a stored verdict, a
+    manual dismissal, or PR status (so a card that has since started working can
+    suppress a now-stale status). Sessions with none of these are absent. Resolve
+    the final per-row pill through ``deckhand_pill``.
+
+    Layers are applied low precedence → high, last write winning:
+    durable verdict → done (dismissed) → merged (PR shipped) → live attention.
+    So ``merged`` beats ``finished``/``done``, but a fresh ``blocked``/``waiting``
+    beats ``merged`` (real attention is never hidden by "shipped")."""
     if assistant is None:
         return {}
     out: dict[str, dict] = {}
     # Base layer: durable verdicts persist across runs that emit no cards. Their
-    # status is already a pill state (blocked/review/done).
+    # status is already a pill state (blocked/finished).
     for key, verdict in assistant.session_verdicts().items():
         out[key] = {"state": verdict.status, "headline": verdict.summary, "live": False}
-    # Override with the live attention view — current, and the only source of
-    # ``waiting`` / structured cards. Its headline is the freshest one to show.
+    # Non-attention: a manually dismissed card reads ``done`` (sticky until the
+    # session changes and the dismissal auto-clears).
+    for key in assistant.handled_keys():
+        insight = assistant.handled_insight(key)
+        out[key] = {
+            "state": "done",
+            "headline": insight.headline if insight is not None else "Marked done",
+            "live": False,
+        }
+    # Non-attention: a merged PR shipped — overrides finished/done. Derived live
+    # from PR status each render, so it self-heals and never goes stale.
+    for key, context in assistant.contexts.items():
+        if triage.has_merged_pr(context):
+            out[key] = {"state": "merged", "headline": "Its PR was merged.", "live": False}
+    # Live attention view — current, and the only source of ``waiting`` / structured
+    # cards. Applied last so fresh blocked/waiting re-asserts over merged/done.
     for insight in assistant.view.insights:
         state = _INSIGHT_PILL.get(insight.kind)
         if state:
@@ -263,8 +284,10 @@ def deckhand_pill(session, status_map: dict | None) -> dict | None:
     - subagent/background chats never carry a pill;
     - a pending question is always ``waiting`` — read straight off the session so a
       handled/stale attention view can't drop it;
-    - otherwise the merged verdict/insight status, but a stored (non-live) verdict
-      is hidden while the chat is working, since it judged an earlier turn;
+    - otherwise the resolved status from ``session_deckhand_status``
+      (blocked/finished/done/merged), but a non-live status (stored verdict, manual
+      dismissal, or PR state) is hidden while the chat is working, since it judged
+      an earlier turn;
     - a resting chat Deckhand has not classified is ``unknown`` ("?");
     - an actively-working chat with nothing live shows no pill.
 

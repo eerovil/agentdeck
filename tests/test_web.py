@@ -270,7 +270,7 @@ async def test_orchestration_assistant_item_can_be_marked_handled(tmp_path):
 
     assert response.status_code == 200
     assert 'class="assistant-insight-link"' not in response.text
-    assert 'aria-label="Most recently handled Deckhand item"' in response.text
+    assert 'aria-label="Most recently completed Deckhand item"' in response.text
     assert "Choose one owner" in response.text
     assert "Undo" in response.text
     assert "Nothing needs your attention right now." in response.text
@@ -279,7 +279,7 @@ async def test_orchestration_assistant_item_can_be_marked_handled(tmp_path):
     async with _client(app) as client:
         handled_page = await client.get("/sessions/claude_code:test:sid1")
     assert "Two chats overlap." not in handled_page.text
-    assert "Undo handling Choose one owner" in handled_page.text
+    assert "Undo marking Choose one owner done" in handled_page.text
 
     css = (Path(__file__).parents[1] / "src/agentdeck/web/static/app.css").read_text()
     html = response.text.replace("</head>", f"<style>{css}</style></head>")
@@ -301,13 +301,13 @@ async def test_orchestration_assistant_item_can_be_marked_handled(tmp_path):
 
     assert restored.status_code == 200
     assert 'class="assistant-insight-link"' in restored.text
-    assert 'aria-label="Most recently handled Deckhand item"' not in restored.text
+    assert 'aria-label="Most recently completed Deckhand item"' not in restored.text
     assert assistant._handled == {}
 
     async with _client(app) as client:
         restored_page = await client.get("/sessions/claude_code:test:sid1")
     assert "Two chats overlap." in restored_page.text
-    assert "Mark Choose one owner handled" in restored_page.text
+    assert "Mark Choose one owner done" in restored_page.text
 
 
 async def test_manual_deckhand_check_explains_that_unchanged_evidence_skips_luna(tmp_path):
@@ -434,14 +434,18 @@ async def test_session_card_shows_deckhand_status_pill(tmp_path):
     assistant.config.enabled = True
     # One row per resolution branch:
     #   live      — a live attention insight (shows even while thinking)
-    #   done      — only a durable verdict, resting (verdict pill)
+    #   finished  — only a durable finished verdict, resting (verdict pill)
+    #   done      — manually dismissed (handled) resting chat (done pill)
+    #   merged    — its PR merged, derived from PR status (merged pill)
     #   working   — a durable verdict but mid-turn (verdict suppressed, no pill)
     #   idle      — resting, never classified ("?")
     #   asking    — a pending question (waiting, straight off the session)
     #   subagent  — delegated/background chat (never gets a pill)
     sessions = {
         "live": dict(last_role="agent", thinking=False),
+        "finished": dict(last_role="agent", thinking=False),
         "done": dict(last_role="agent", thinking=False),
+        "merged": dict(last_role="agent", thinking=False),
         "working": dict(last_role="agent", thinking=True),
         "idle": dict(last_role="agent", thinking=False),
         "asking": dict(last_role="agent", thinking=False, question="Which option?"),
@@ -459,10 +463,24 @@ async def test_session_card_shows_deckhand_status_pill(tmp_path):
             )
         )
     assistant._verdicts = {
-        "claude_code:test:done": ("sig", Verdict("done", "All shipped and verified", "")),
-        "claude_code:test:working": ("sig", Verdict("review", "Opened a PR", "review it")),
+        "claude_code:test:finished": ("sig", Verdict("finished", "Opened a PR", "review it")),
+        "claude_code:test:working": ("sig", Verdict("finished", "Mid-turn work", "review it")),
         # Even with a verdict, a delegated chat must never show a pill.
         "claude_code:test:subagent": ("sig", Verdict("blocked", "Subagent internal step", "")),
+    }
+    # A manually dismissed chat resolves to a non-attention "done" pill.
+    assistant._handled = {"claude_code:test:done": "sig"}
+    assistant._handled_insights = {
+        "claude_code:test:done": AssistantInsight(
+            "claude_code:test:done", "finished", "All shipped and verified", "d"
+        ),
+    }
+    # A merged PR resolves to a non-attention "merged" pill, derived from PR status.
+    assistant.contexts = {
+        "claude_code:test:merged": GitContext(
+            "acme/app", "feat", False,
+            (PullRequestContext("acme/app", 42, "Ship it", "u", "merged"),),
+        ),
     }
     assistant.view = AssistantView(
         state="ready",
@@ -481,22 +499,28 @@ async def test_session_card_shows_deckhand_status_pill(tmp_path):
     # Live insight -> mapped to a blocked pill, headline on hover.
     assert 'class="dh-pill dh-blocked"' in r.text
     assert 'title="Deckhand: No progress for 12 min"' in r.text
-    # Durable done verdict on a resting chat, with its summary on hover.
+    # Durable finished verdict on a resting chat, with its summary on hover.
+    assert 'class="dh-pill dh-finished"' in r.text
+    assert 'title="Deckhand: Opened a PR"' in r.text
+    # Manually dismissed chat -> non-attention done pill.
     assert 'class="dh-pill dh-done"' in r.text
     assert 'title="Deckhand: All shipped and verified"' in r.text
+    # Merged PR -> non-attention merged pill, derived from live PR status.
+    assert 'class="dh-pill dh-merged"' in r.text
+    assert 'title="Deckhand: Its PR was merged."' in r.text
     # Never-classified resting chat -> question-mark pill (not a fabricated verdict).
     assert 'class="dh-pill dh-unknown"' in r.text
     assert 'title="Deckhand has not classified this chat yet"' in r.text
     # A pending question always resolves to waiting, regardless of insight state.
     assert 'class="dh-pill dh-waiting"' in r.text
     assert 'title="Deckhand: the agent asked you a question"' in r.text
-    # The working chat's stale "review" verdict is suppressed mid-turn: no review
-    # pill renders anywhere, and its headline never appears.
+    # The working chat's stored verdict is suppressed mid-turn: its headline never appears.
+    assert 'title="Deckhand: Mid-turn work"' not in r.text
+    # The retired "review" pill never renders.
     assert "dh-review" not in r.text
     # A delegated/subagent chat never shows a pill, even with a verdict.
     assert "Session subagent" in r.text  # the card itself renders
     assert 'title="Deckhand: Subagent internal step"' not in r.text
-    assert 'title="Deckhand: Opened a PR"' not in r.text
 
 
 def test_deckhand_pill_resolves_every_branch():
@@ -511,16 +535,19 @@ def test_deckhand_pill_resolves_every_branch():
     status = {
         "v": {"state": "done", "headline": "Shipped", "live": False},
         "i": {"state": "blocked", "headline": "Hung", "live": True},
-        "r": {"state": "review", "headline": "PR open", "live": False},
+        "r": {"state": "finished", "headline": "PR open", "live": False},
+        "m": {"state": "merged", "headline": "Its PR was merged.", "live": False},
     }
     # Subagent -> never a pill, even with a status entry.
     assert deckhand_pill(sess("v", is_delegated=True), status) is None
     # Pending question -> waiting, read straight off the session.
     p = deckhand_pill(sess("x", question="Which option?"), status)
     assert (p["state"], p["label"]) == ("waiting", "waiting")
-    # Resting verdict -> that state, with a "Deckhand: <summary>" tooltip.
+    # Resting non-attention done -> that state, with a "Deckhand: <summary>" tooltip.
     p = deckhand_pill(sess("v"), status)
     assert p["state"] == "done" and p["title"] == "Deckhand: Shipped"
+    # A merged pill renders on a resting chat.
+    assert deckhand_pill(sess("m"), status)["state"] == "merged"
     # A live insight shows even while the chat is thinking.
     assert deckhand_pill(sess("i", thinking=True), status)["state"] == "blocked"
     # A non-live (stored) verdict is suppressed mid-turn.
@@ -530,6 +557,48 @@ def test_deckhand_pill_resolves_every_branch():
     assert (p["state"], p["label"]) == ("unknown", "?")
     # Actively working and unclassified -> no pill.
     assert deckhand_pill(sess("none", thinking=True), status) is None
+
+
+def test_session_deckhand_status_layer_precedence():
+    from types import SimpleNamespace
+
+    from agentdeck.web.render import session_deckhand_status
+
+    def make(*, verdicts=None, handled=None, contexts=None, insights=()):
+        handled = handled or {}
+        return SimpleNamespace(
+            session_verdicts=lambda: verdicts or {},
+            handled_keys=lambda: frozenset(handled),
+            handled_insight=lambda k: handled.get(k),
+            contexts=contexts or {},
+            view=SimpleNamespace(insights=insights),
+        )
+
+    merged_ctx = GitContext(
+        "a/b", "f", False, (PullRequestContext("a/b", 1, "t", "u", "merged"),)
+    )
+    finished = {"s": Verdict("finished", "Finished the work", "")}
+    dismissed = {"s": AssistantInsight("s", "finished", "Marked done", "d")}
+
+    # merged (PR shipped) beats a finished verdict.
+    st = session_deckhand_status(make(verdicts=finished, contexts={"s": merged_ctx}))
+    assert st["s"]["state"] == "merged"
+    # done (manual dismissal) beats a finished verdict.
+    st = session_deckhand_status(make(verdicts=finished, handled=dismissed))
+    assert st["s"]["state"] == "done"
+    # merged beats done.
+    st = session_deckhand_status(make(handled=dismissed, contexts={"s": merged_ctx}))
+    assert st["s"]["state"] == "merged"
+    # A fresh blocked/waiting insight overrides merged — real attention is never masked.
+    waiting = (AssistantInsight("s", "waiting", "Asked you a question", "d"),)
+    st = session_deckhand_status(make(contexts={"s": merged_ctx}, insights=waiting))
+    assert st["s"]["state"] == "waiting"
+    # A PR closed WITHOUT merging is not "merged" — it falls back to the finished verdict.
+    closed_ctx = GitContext(
+        "a/b", "f", False, (PullRequestContext("a/b", 2, "t", "u", "closed"),)
+    )
+    st = session_deckhand_status(make(verdicts=finished, contexts={"s": closed_ctx}))
+    assert st["s"]["state"] == "finished"
 
 
 async def test_session_detail_sidebar_shows_deckhand_pills(tmp_path):
@@ -545,11 +614,11 @@ async def test_session_detail_sidebar_shows_deckhand_pills(tmp_path):
         )
     )
     app.state.assistant._verdicts = {
-        "claude_code:test:sid1": ("sig", Verdict("done", "All shipped", "")),
+        "claude_code:test:sid1": ("sig", Verdict("finished", "All shipped", "")),
     }
     async with _client(app) as c:
         r = await c.get("/sessions/claude_code:test:sid1")
-    assert 'class="dh-pill dh-done"' in r.text
+    assert 'class="dh-pill dh-finished"' in r.text
     assert 'title="Deckhand: All shipped"' in r.text
 
 

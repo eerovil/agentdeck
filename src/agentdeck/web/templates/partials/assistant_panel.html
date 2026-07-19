@@ -40,7 +40,7 @@
       </a>
       <form hx-post="/assistant/handle" hx-target="#assistant-panel" hx-swap="outerHTML">
         <input type="hidden" name="session_key" value="{{ insight.session_key }}">
-        <button type="submit" title="Mark handled" aria-label="Mark {{ insight.headline }} handled">✓</button>
+        <button type="submit" title="Mark done" aria-label="Mark {{ insight.headline }} done">✓</button>
       </form>
     </div>
     {% endfor %}
@@ -50,16 +50,16 @@
   {% endif %}
 
   {% if assistant.handled_items %}
-  <div class="assistant-handled" aria-label="Most recently handled Deckhand item">
+  <div class="assistant-handled" aria-label="Most recently completed Deckhand item">
     {% for item in assistant.handled_items %}
     <div class="assistant-handled-item">
-      <span class="assistant-handled-label">Handled</span>
+      <span class="assistant-handled-label">Done</span>
       <a class="assistant-handled-link" href="/sessions/{{ item.session_key }}"
          data-agentdeck-action="open_deckhand_chat"
          title="{{ item.headline }}">{{ item.headline }}</a>
       <form hx-post="/assistant/unhandle" hx-target="#assistant-panel" hx-swap="outerHTML">
         <input type="hidden" name="session_key" value="{{ item.session_key }}">
-        <button type="submit" aria-label="Undo handling {{ item.headline }}">Undo</button>
+        <button type="submit" aria-label="Undo marking {{ item.headline }} done">Undo</button>
       </form>
     </div>
     {% endfor %}
