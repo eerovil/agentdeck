@@ -28,9 +28,14 @@ const ASSETS = [
 ];
 
 self.addEventListener('install', (event) => {
+  // Cache each shell asset independently. cache.addAll() rejects atomically if
+  // any single URL 404s (e.g. a half-finished deploy), which would fail the
+  // whole install and pin the browser to the previous worker + stale shell.
+  // allSettled lets the new worker install with whatever assets are available;
+  // the network-first fetch handler re-fetches any that were missed.
   event.waitUntil(
     caches.open(CACHE)
-      .then((cache) => cache.addAll(ASSETS))
+      .then((cache) => Promise.allSettled(ASSETS.map((url) => cache.add(url))))
       .then(() => self.skipWaiting())
   );
 });
