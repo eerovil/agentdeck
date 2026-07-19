@@ -29,6 +29,7 @@ _NO_CACHE = {"Cache-Control": "no-cache"}
 _STAMP_ASSETS = (
     "app.css",
     "sse.js",
+    "push.js",
     "htmx.min.js",
     "mobile_session_stack.js",
     "manifest.webmanifest",

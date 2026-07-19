@@ -513,6 +513,28 @@ async def test_pwa_routes(tmp_path):
     assert "serviceWorker.register('/sw.js')" in dash.text
     # Live-stream recovery hook remains present without a footer below the composer.
     assert "visibilitychange" in dash.text
+
+
+async def test_push_client_assets_and_bell(tmp_path):
+    # Issue #7 (#12): service worker push handlers, the opt-in bell, and the
+    # client module are wired into the shell.
+    app = _app_with_state(tmp_path)
+    async with _client(app) as c:
+        sw = await c.get("/sw.js")
+        dash = await c.get("/")
+        pushjs = await c.get("/static/push.js")
+    # Service worker handles push + click, and caches the client module.
+    assert "addEventListener('push'" in sw.text
+    assert "addEventListener('notificationclick'" in sw.text
+    assert "/static/push.js" in sw.text
+    # The shell renders the (initially hidden) bell and loads the module.
+    assert 'class="notif-bell"' in dash.text
+    assert "/static/push.js" in dash.text
+    # The client module talks to the backend endpoints.
+    assert pushjs.status_code == 200
+    assert "/push/public-key" in pushjs.text
+    assert "/push/subscribe" in pushjs.text
+    assert "/push/unsubscribe" in pushjs.text
     assert "streamStale" in dash.text
     assert 'class="build"' not in dash.text
     # Dashboard HTML must not be cached, so a deploy's inline JS actually lands.

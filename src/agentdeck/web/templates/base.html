@@ -47,12 +47,18 @@
   <script src="/static/sse.js?v={{ asset_ver }}" defer></script>
   <script src="/static/action_timing.js?v={{ asset_ver }}" defer></script>
   <script src="/static/interaction_feedback.js?v={{ asset_ver }}" defer></script>
+  <script src="/static/push.js?v={{ asset_ver }}" defer></script>
 </head>
 <body class="{% block body_class %}{% endblock %}" hx-ext="sse" {% block body_sse %}sse-connect="/events"{% endblock %}>
   <header class="topbar">
     <div class="topbar-row">
       {% block topbar_nav %}{% endblock %}
       <div class="brand">agentdeck</div>
+      <button class="notif-bell" type="button" data-state="busy" hidden
+              aria-label="Notifications" aria-pressed="false" title="Notifications">
+        <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor"
+          d="M8 1.5a3 3 0 0 0-3 3v2.2c0 .5-.2 1-.55 1.36L3.3 11H12.7l-1.15-2.94A1.94 1.94 0 0 1 11 6.7V4.5a3 3 0 0 0-3-3Zm0 13a1.9 1.9 0 0 0 1.85-1.5h-3.7A1.9 1.9 0 0 0 8 14.5Z"/></svg>
+      </button>
     </div>
     <div id="limit-bars" sse-swap="usage">
       {% block limit_bars %}{% endblock %}

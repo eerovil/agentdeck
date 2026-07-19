@@ -17,6 +17,7 @@ const ASSETS = [
   '/static/app.css',
   '/static/htmx.min.js',
   '/static/sse.js',
+  '/static/push.js',
   '/static/mobile_session_stack.js',
   '/static/favicon.svg',
   '/static/apple-touch-icon.png',
@@ -39,6 +40,41 @@ self.addEventListener('activate', (event) => {
     caches.keys()
       .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
+  );
+});
+
+// Web Push (issue #7). A push arrives as a JSON {title, body, url}; show it as a
+// notification. Clicking focuses an existing app tab (navigating it to the
+// target) or opens a new one.
+self.addEventListener('push', (event) => {
+  let data = {};
+  try { data = event.data ? event.data.json() : {}; } catch (e) { data = {}; }
+  const title = data.title || 'agentdeck';
+  event.waitUntil(
+    self.registration.showNotification(title, {
+      body: data.body || '',
+      // Collapse repeats about the same thing onto one notification.
+      tag: data.url || 'agentdeck',
+      data: { url: data.url || '/' },
+      icon: '/static/icon-192.png',
+      badge: '/static/icon-192.png',
+    })
+  );
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const target = (event.notification.data && event.notification.data.url) || '/';
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+      for (const client of clientList) {
+        if (client.url && new URL(client.url).origin === self.location.origin) {
+          if (client.navigate) client.navigate(target);
+          return client.focus();
+        }
+      }
+      return self.clients.openWindow(target);
+    })
   );
 });
 
