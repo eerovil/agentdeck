@@ -1,0 +1,25 @@
+# STAGING persistent Codex runtime. Isolated from the live runtime by its own
+# control socket: RuntimeDirectory=agentdeck-staging gives it %t/agentdeck-staging
+# (0700) and AGENTDECK_CODEX_SOCKET points both this binder and the staging web
+# client at that socket, so it never collides with the live codex-runtime.sock.
+[Unit]
+Description=agentdeck STAGING persistent Codex runtime
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/agentdeck-staging
+ExecStart=%h/agentdeck-staging/.venv/bin/agentdeck codex-runtime
+Restart=on-failure
+RestartSec=5
+Environment=AGENTDECK_CONFIG=%h/.config/agentdeck/config-staging.toml
+Environment=AGENTDECK_CODEX_SOCKET=%t/agentdeck-staging/codex-runtime.sock
+Environment=CONTAINER_HOST=unix://%t/podman/podman.sock
+# Optional (leading '-'): the unit still starts if the file is absent. Kept for
+# parity with the live drop-in; carries no AGENTDECK_* keys of its own.
+EnvironmentFile=-%h/outdoor/.env
+RuntimeDirectory=agentdeck-staging
+RuntimeDirectoryMode=0700
+KillMode=control-group
+
+[Install]
+WantedBy=default.target

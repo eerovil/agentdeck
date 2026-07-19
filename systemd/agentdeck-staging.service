@@ -1,0 +1,27 @@
+# STAGING / canary dashboard. Runs alongside the live agentdeck.service on a
+# separate port (8757) + DB + Codex socket so new features and DB/schema changes
+# can be tested before promoting to master. Install from the ~/agentdeck-staging
+# worktree (branch `staging`):
+#   ln -s ~/agentdeck-staging/systemd/agentdeck-staging.service ~/.config/systemd/user/
+#   ln -s ~/agentdeck-staging/systemd/agentdeck-staging-codex.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now agentdeck-staging agentdeck-staging-codex
+[Unit]
+Description=agentdeck STAGING dashboard
+After=network-online.target tailscaled.service agentdeck-staging-codex.service
+Wants=agentdeck-staging-codex.service
+
+[Service]
+WorkingDirectory=%h/agentdeck-staging
+ExecStart=%h/agentdeck-staging/.venv/bin/agentdeck
+Restart=on-failure
+RestartSec=5
+Environment=AGENTDECK_CONFIG=%h/.config/agentdeck/config-staging.toml
+Environment=AGENTDECK_CODEX_SOCKET=%t/agentdeck-staging/codex-runtime.sock
+Environment=CONTAINER_HOST=unix://%t/podman/podman.sock
+# Optional (leading '-'): the unit still starts if the file is absent. Kept for
+# parity with the live drop-in; carries no AGENTDECK_* keys of its own.
+EnvironmentFile=-%h/outdoor/.env
+KillMode=control-group
+
+[Install]
+WantedBy=default.target

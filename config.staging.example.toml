@@ -1,0 +1,68 @@
+# Example agentdeck STAGING / canary config. Copied to
+# ~/.config/agentdeck/config-staging.toml by scripts/staging-setup.sh (the live
+# copy is gitignored). Runs alongside the live instance for testing features and
+# DB/schema changes before promoting to master. See docs/staging.md.
+#
+# Differences from config.example.toml (the live template):
+#   - port 8757 (live: 8756)               -> both run at once
+#   - own history DB (agentdeck-staging.db) -> schema changes can't touch live history
+#   - own usage cache dir                   -> a changed cache format can't clobber live
+#   - inject DISABLED                        -> shares live account dirs; stays read-only
+# The Codex control socket is isolated via AGENTDECK_CODEX_SOCKET in the systemd units.
+
+[server]
+bind = "127.0.0.1"        # loopback only; tailscale serve fronts TLS on :8758
+port = 8757
+
+[polling]
+usage_interval_s = 30
+scan_interval_s = 15
+liveness_interval_s = 3
+
+[usage]
+shared_cache_dir = "~/.cache/agentdeck-staging"   # isolated from live
+
+[history]
+enabled = true
+db_path = "~/.local/share/agentdeck/agentdeck-staging.db"
+usage_retention_days = 30
+
+[inject]
+enabled = false            # SAFETY: shared live account dirs; on only to test inject
+
+[assistant]
+enabled = true
+account_key = "codex:codex"
+model = "gpt-5.6-luna"
+refresh_interval_s = 60
+timeout_s = 120
+max_sessions = 30
+auto_answer = false
+auto_answer_confidence = 0.9
+
+# Deck-owned Claude worker runtime (parallel to the Codex runtime), served by
+# the staging codex-runtime process over its isolated socket. state_dir is
+# staging-specific so per-key lineage never collides with a future live runtime.
+[claude_workers]
+enabled = true
+max_workers = 4
+permission_mode = "bypassPermissions"  # allow-all: workers act autonomously under the live account
+model = ""
+usage_ceiling_pct = 90                 # guard the live account's budget; 0 disables the ceiling
+stall_after_s = 3600
+state_dir = "~/.local/share/agentdeck/claude-workers-staging"
+
+[[accounts]]
+provider = "claude_code"
+label = "main"
+config_dir = "~/.claude"
+
+[[accounts]]
+provider = "claude_code"
+label = "alt"
+config_dir = "~/.claude2"
+
+[[accounts]]
+provider = "codex"
+label = "codex"
+config_dir = "~/.codex"
