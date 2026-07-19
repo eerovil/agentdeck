@@ -186,6 +186,13 @@ class ClaudeWorkerHost:
 
     # --- public API --------------------------------------------------------
 
+    def find_key_by_session(self, session_id: str) -> str | None:
+        """Return the worker key whose session lineage matches, if any."""
+        for key, rec in self._records.items():
+            if rec.session_id == session_id:
+                return key
+        return None
+
     def snapshot(self) -> dict[str, Any]:
         now = time.time()
         workers = {}

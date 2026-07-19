@@ -26,6 +26,9 @@ def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "codex-runtime":
         _codex_runtime(sys.argv[2:])
         return
+    if len(sys.argv) > 1 and sys.argv[1] == "restart-runtime":
+        _restart_runtime(sys.argv[2:])
+        return
 
     logging.basicConfig(
         level=logging.INFO,
@@ -75,6 +78,85 @@ def _codex_runtime(argv: list[str]) -> None:
     config = load_config(config_path())
     logging.getLogger(__name__).info("Codex runtime listening on %s", socket)
     uvicorn.run(create_runtime_app(config), uds=str(socket), log_level="info")
+
+
+def _restart_runtime(argv: list[str]) -> None:
+    import subprocess
+
+    from .providers.claude_code.restart import (
+        DEFAULT_CONTINUATION,
+        RestartMarker,
+        detect_runtime_unit,
+        looks_like_runtime_unit,
+        trigger_detached_restart,
+        write_marker,
+    )
+
+    parser = argparse.ArgumentParser(
+        prog="agentdeck restart-runtime",
+        description=(
+            "Restart the persistent runtime and continue this session afterward."
+            " Use this instead of `systemctl restart` from inside an agent turn:"
+            " it detaches the restart so it does not kill the caller, and"
+            " re-drives this session once the fresh runtime is up."
+        ),
+    )
+    parser.add_argument(
+        "--then",
+        dest="prompt",
+        default=DEFAULT_CONTINUATION,
+        help="follow-up instruction delivered to this session after the restart",
+    )
+    parser.add_argument(
+        "--session",
+        default=os.environ.get("CLAUDE_CODE_SESSION_ID"),
+        help="session id to continue (defaults to $CLAUDE_CODE_SESSION_ID)",
+    )
+    parser.add_argument(
+        "--service",
+        default=os.environ.get("AGENTDECK_RUNTIME_UNIT"),
+        help="systemd --user unit to restart (auto-detected from the cgroup if unset)",
+    )
+    args = parser.parse_args(argv)
+
+    session_id = (args.session or "").strip()
+    if not session_id:
+        parser.error(
+            "no session id: run this from inside an agent turn (so"
+            " $CLAUDE_CODE_SESSION_ID is set) or pass --session"
+        )
+
+    explicit_service = args.service is not None
+    service = (args.service or detect_runtime_unit() or "").strip()
+    if not service:
+        parser.error("could not determine the runtime unit; pass --service")
+    if not explicit_service and not looks_like_runtime_unit(service):
+        parser.error(
+            f"refusing to auto-restart {service!r}: it does not look like an"
+            " agentdeck runtime unit; pass --service explicitly if intended"
+        )
+
+    config = load_config(config_path())
+    state_dir = config.claude_workers.state_path
+
+    marker = RestartMarker(
+        session_id=session_id,
+        prompt=args.prompt,
+        service=service,
+        created_at=time.time(),
+    )
+    marker_path = write_marker(state_dir, marker)
+    print(
+        f"Restarting {service}; this session will resume automatically once it is"
+        " back up.",
+        file=sys.stderr,
+    )
+    try:
+        trigger_detached_restart(service)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        # No restart happened, so the marker would never be consumed — drop it.
+        marker_path.unlink(missing_ok=True)
+        parser.exit(1, f"could not trigger restart: {exc}\n")
 
 
 def _delegate(argv: list[str]) -> None:

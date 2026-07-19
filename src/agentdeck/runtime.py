@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from .config import AppConfig
 from .models import Account, InjectResult
+from .providers.claude_code.restart import MARKER_TTL_S, RestartMarker, read_markers
 from .providers.claude_code.usage import shared_cache_dir
 from .providers.claude_code.worker import ClaudeWorkerHost, DeliverResult
 from .providers.codex.appserver import CodexAppServer
@@ -111,6 +112,62 @@ class ClaudeWorkerRuntime:
             )
             self.hosts[label] = host
         return host
+
+    async def resume_after_restart(self) -> None:
+        """Drive any session that requested a post-restart continuation.
+
+        Called on runtime boot: an agent that restarted the runtime via
+        ``agentdeck restart-runtime`` left a durable marker. Deliver its
+        follow-up prompt to that session (``claude --resume``) so it keeps going
+        on the fresh code. Never raises — a bad marker must not block boot.
+        """
+        if not self.settings.enabled:
+            return
+        try:
+            entries = read_markers(self.settings.state_path)
+        except Exception:  # noqa: BLE001 -- boot continuation must never crash the runtime
+            log.exception("failed to read restart-continue markers")
+            return
+        for path, marker in entries:
+            try:
+                if time.time() - marker.created_at > MARKER_TTL_S:
+                    log.info(
+                        "restart-continue marker for session %s is stale; dropping",
+                        marker.session_id,
+                    )
+                    continue
+                await self._deliver_continuation(marker)
+            except Exception:  # noqa: BLE001
+                log.exception(
+                    "failed to deliver restart continuation for session %s",
+                    marker.session_id,
+                )
+            finally:
+                path.unlink(missing_ok=True)
+
+    async def _deliver_continuation(self, marker: RestartMarker) -> None:
+        for label in self.accounts:
+            host = self.host(label)
+            key = host.find_key_by_session(marker.session_id)
+            if key is None:
+                continue
+            result = await host.deliver(
+                key,
+                marker.prompt,
+                delivery_id=f"restart-continue:{marker.session_id}:{int(marker.created_at)}",
+            )
+            log.info(
+                "restart-continue: session %s -> %s/%s (%s)",
+                marker.session_id,
+                label,
+                key,
+                result.action if result.accepted else f"rejected:{result.reason}",
+            )
+            return
+        log.warning(
+            "restart-continue: no worker record for session %s; nothing to resume",
+            marker.session_id,
+        )
 
     async def stop(self) -> None:
         await asyncio.gather(
@@ -254,9 +311,17 @@ def create_runtime_app(config: AppConfig) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         await runtime.start()
+        # Resume any session that restarted the runtime and is waiting to
+        # continue. Backgrounded so a `claude --resume` spawn never delays boot.
+        resume_task = asyncio.create_task(
+            claude_workers.resume_after_restart(),
+            name="claude-resume-after-restart",
+        )
         try:
             yield
         finally:
+            resume_task.cancel()
+            await asyncio.gather(resume_task, return_exceptions=True)
             await runtime.stop()
             await claude_workers.stop()
 
