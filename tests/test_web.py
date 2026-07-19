@@ -21,6 +21,7 @@ from agentdeck.models import (
     UsageSnapshot,
 )
 from agentdeck.providers.claude_code.provider import worker_type
+from agentdeck.triage import Verdict
 from agentdeck.web.routes_pages import _pr_reference_text
 
 
@@ -427,11 +428,22 @@ async def test_card_colour_class_and_direct_claudeai_button(tmp_path):
     assert "Should I push both commits?" in r.text
 
 
-async def test_session_card_shows_deckhand_verdict_pill(tmp_path):
+async def test_session_card_shows_deckhand_status_pill(tmp_path):
     app = _app_with_state(tmp_path)
-    app.state.assistant.config.enabled = True
-    # A triaged session gets a pill; a second, untriaged session gets none.
-    for sid in ("dh1", "dh2"):
+    assistant = app.state.assistant
+    assistant.config.enabled = True
+    # Four rows, one per resolution branch:
+    #   live    — a live attention insight (shows even while thinking)
+    #   done    — only a durable verdict, resting (verdict pill)
+    #   working — a durable verdict but mid-turn (verdict suppressed, no pill)
+    #   idle    — resting, never classified ("?")
+    sessions = {
+        "live": dict(last_role="agent", thinking=False),
+        "done": dict(last_role="agent", thinking=False),
+        "working": dict(last_role="agent", thinking=True),
+        "idle": dict(last_role="agent", thinking=False),
+    }
+    for sid, extra in sessions.items():
         app.state.app_state.update_session(
             Session(
                 key=f"claude_code:test:{sid}",
@@ -439,15 +451,19 @@ async def test_session_card_shows_deckhand_verdict_pill(tmp_path):
                 session_id=sid,
                 status=SessionStatus.LIVE,
                 title=f"Session {sid}",
-                last_role="agent",
+                **extra,
             )
         )
-    app.state.assistant.view = AssistantView(
+    assistant._verdicts = {
+        "claude_code:test:done": ("sig", Verdict("done", "All shipped and verified", "")),
+        "claude_code:test:working": ("sig", Verdict("review", "Opened a PR", "review it")),
+    }
+    assistant.view = AssistantView(
         state="ready",
         summary="One agent needs your attention.",
         insights=(
             AssistantInsight(
-                session_key="claude_code:test:dh1",
+                session_key="claude_code:test:live",
                 kind="stalled",
                 headline="No progress for 12 min",
                 detail="It may be hung.",
@@ -456,11 +472,18 @@ async def test_session_card_shows_deckhand_verdict_pill(tmp_path):
     )
     async with _client(app) as c:
         r = await c.get("/")
-    # The triaged session shows its verdict kind as a pill, with the headline on hover.
-    assert 'class="dh-pill dh-stalled"' in r.text
+    # Live insight -> mapped to a blocked pill, headline on hover.
+    assert 'class="dh-pill dh-blocked"' in r.text
     assert 'title="Deckhand: No progress for 12 min"' in r.text
-    # Exactly one pill: the untriaged (done/absent) session renders none.
-    assert r.text.count("dh-pill") == 1
+    # Durable done verdict on a resting chat.
+    assert 'class="dh-pill dh-done"' in r.text
+    assert 'title="Deckhand: All shipped and verified"' in r.text
+    # Never-classified resting chat -> question mark.
+    assert 'class="dh-pill dh-unknown"' in r.text
+    # The working chat's stale "review" verdict is suppressed mid-turn: no review
+    # pill renders anywhere, and its headline never appears.
+    assert "dh-review" not in r.text
+    assert 'title="Deckhand: Opened a PR"' not in r.text
 
 
 async def test_long_card_title_gets_full_width_three_line_layout(tmp_path):

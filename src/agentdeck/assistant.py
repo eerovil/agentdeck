@@ -593,6 +593,12 @@ class AssistantService:
             return None
         return self._handled_insights.get(session_key)
 
+    def session_verdicts(self) -> dict[str, Verdict]:
+        """Durable per-session LLM verdict (blocked/review/done), independent of
+        the transient attention view. Unlike ``view.insights`` these survive a
+        run that produces no cards, so a per-session status pill stays stable."""
+        return {key: verdict for key, (_sig, verdict) in self._verdicts.items()}
+
     # --- loop ----------------------------------------------------------
 
     def _carded_session_resumed(self, eligible: list[Session]) -> bool:

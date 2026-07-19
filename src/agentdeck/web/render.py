@@ -221,17 +221,42 @@ def session_labels(accounts: list[Account]) -> dict[str, str]:
     return {acc.key: acc.label for acc in accounts}
 
 
+# Deckhand's two per-session signals collapse into one pill vocabulary. The
+# durable LLM verdict (blocked/review/done) is the stable base; the transient
+# attention insight (waiting/stalled/finished) overrides it when Deckhand is
+# actively flagging the chat and carries the states a verdict never does
+# (``waiting`` = pending approval / a question asked of you).
+_VERDICT_PILL = {"blocked": "blocked", "review": "review", "done": "done"}
+_INSIGHT_PILL = {"waiting": "waiting", "stalled": "blocked", "finished": "review"}
+
+
 def session_deckhand_status(assistant) -> dict[str, dict]:
-    """Map ``session_key -> {kind, headline}`` for each session's current Deckhand
-    attention verdict, mirroring the cards shown in the Deckhand panel. Sessions
-    Deckhand judged ``done`` (or has not triaged yet) are simply absent — those
-    rows render no pill."""
+    """Map ``session_key -> {state, headline, live}`` for each session's current
+    Deckhand status. ``state`` is one of waiting/blocked/review/done. ``live`` is
+    True when the status comes from the active attention view (so the card shows
+    it even mid-turn); False when it comes only from the stored verdict (so a card
+    that has since started working can suppress a now-stale status). Sessions with
+    neither are absent — the card decides between "?" (idle, unclassified) and no
+    pill (still working)."""
     if assistant is None:
         return {}
-    return {
-        insight.session_key: {"kind": insight.kind, "headline": insight.headline}
-        for insight in assistant.view.insights
-    }
+    out: dict[str, dict] = {}
+    # Base layer: durable verdicts persist across runs that emit no cards.
+    for key, verdict in assistant.session_verdicts().items():
+        state = _VERDICT_PILL.get(verdict.status)
+        if state:
+            out[key] = {"state": state, "headline": verdict.summary, "live": False}
+    # Override with the live attention view — current, and the only source of
+    # ``waiting`` / structured cards. Its headline is the freshest one to show.
+    for insight in assistant.view.insights:
+        state = _INSIGHT_PILL.get(insight.kind)
+        if state:
+            out[insight.session_key] = {
+                "state": state,
+                "headline": insight.headline,
+                "live": True,
+            }
+    return out
 
 
 def session_queue_summaries(sessions, injector: InjectionService) -> dict[str, dict]:
