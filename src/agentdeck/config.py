@@ -223,6 +223,16 @@ class AccountConfig(BaseModel):
         return Path(self.config_dir).expanduser()
 
 
+class PushConfig(BaseModel):
+    """Web Push (PWA notifications, issue #7). The VAPID keypair is generated
+    once and stored in the DB — never here — so this file stays secret-free.
+    ``subject`` is the VAPID contact claim (a ``mailto:`` or ``https:`` URL that
+    push services can reach you at), which is not a secret."""
+
+    enabled: bool = False
+    subject: str = ""
+
+
 class AppConfig(BaseModel):
     server: ServerConfig = ServerConfig()
     polling: PollingConfig = PollingConfig()
@@ -231,6 +241,7 @@ class AppConfig(BaseModel):
     inject: InjectConfig = InjectConfig()
     assistant: AssistantConfig = AssistantConfig()
     claude_workers: ClaudeWorkersConfig = ClaudeWorkersConfig()
+    push: PushConfig = PushConfig()
     accounts: list[AccountConfig] = []
 
     @model_validator(mode="after")

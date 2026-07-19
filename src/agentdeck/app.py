@@ -19,6 +19,7 @@ from .config import AppConfig
 from .db import make_db
 from .inject import InjectionService
 from .providers.codex.runtime_client import runtime_socket_path
+from .push import PushService
 from .state import AppState
 from .titles import TitleService
 from .web import render as render_mod
@@ -28,6 +29,7 @@ from .web.routes_api import router as api_router
 from .web.routes_files import router as files_router
 from .web.routes_pages import router as pages_router
 from .web.routes_partials import router as partials_router
+from .web.routes_push import router as push_router
 from .web.routes_pwa import cache_stamp
 from .web.routes_pwa import router as pwa_router
 from .web.routes_sse import router as sse_router
@@ -82,6 +84,7 @@ def create_app(config: AppConfig) -> FastAPI:
     )
     assistant = AssistantService(config, state)
     titles = TitleService(config, state)
+    push = PushService(config.push, db)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -92,6 +95,7 @@ def create_app(config: AppConfig) -> FastAPI:
             base_url="http://agentdeck-runtime",
             timeout=httpx.Timeout(30.0, read=None),
         )
+        push.start()
         await collector.start()
         await titles.start()
         await assistant.start()
@@ -114,6 +118,7 @@ def create_app(config: AppConfig) -> FastAPI:
     app.state.injector = injector
     app.state.assistant = assistant
     app.state.titles = titles
+    app.state.push = push
     app.state.db = db
 
     @app.middleware("http")
@@ -137,6 +142,7 @@ def create_app(config: AppConfig) -> FastAPI:
     app.include_router(partials_router)
     app.include_router(sse_router)
     app.include_router(pwa_router)
+    app.include_router(push_router)
     # Deliberately last: the local-file route is a catch-all for absolute paths
     # such as /tmp/report.md:12 and must never shadow AgentDeck's own routes.
     app.include_router(files_router)

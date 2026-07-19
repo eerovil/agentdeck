@@ -71,6 +71,15 @@ class NullDb:
         detail: str | None = None,
     ) -> None: ...
     def delete_assistant_handled(self, session_key: str) -> None: ...
+    def load_vapid_keys(self) -> tuple[str, str] | None:
+        return None
+
+    def save_vapid_keys(self, public_key: str, private_pem: str) -> None: ...
+    def load_push_subscriptions(self) -> list[dict]:
+        return []
+
+    def add_push_subscription(self, endpoint: str, p256dh: str, auth: str) -> None: ...
+    def delete_push_subscription(self, endpoint: str) -> None: ...
     def close(self) -> None: ...
 
 
@@ -134,6 +143,18 @@ class Db:
                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                     cwd TEXT NOT NULL,
                     updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS push_subscriptions (
+                    endpoint TEXT PRIMARY KEY,
+                    p256dh TEXT NOT NULL,
+                    auth TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS push_vapid (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                    public_key TEXT NOT NULL,
+                    private_pem TEXT NOT NULL,
+                    created_at TEXT NOT NULL
                 );
                 """
             )
@@ -399,6 +420,65 @@ class Db:
                 )
         except sqlite3.Error as exc:
             log.debug("delete_assistant_handled failed: %s", exc)
+
+    # --- web push (issue #7) ------------------------------------------
+
+    def load_vapid_keys(self) -> tuple[str, str] | None:
+        try:
+            row = self._conn.execute(
+                "SELECT public_key, private_pem FROM push_vapid WHERE singleton = 1"
+            ).fetchone()
+        except sqlite3.Error as exc:
+            log.debug("load_vapid_keys failed: %s", exc)
+            return None
+        return (row[0], row[1]) if row else None
+
+    def save_vapid_keys(self, public_key: str, private_pem: str) -> None:
+        try:
+            with self._lock, self._conn:
+                self._conn.execute(
+                    "INSERT INTO push_vapid(singleton, public_key, private_pem, created_at)"
+                    " VALUES (1, ?, ?, ?) ON CONFLICT(singleton) DO UPDATE SET"
+                    " public_key=excluded.public_key, private_pem=excluded.private_pem,"
+                    " created_at=excluded.created_at",
+                    (public_key, private_pem, datetime.now(UTC).isoformat()),
+                )
+        except sqlite3.Error as exc:
+            log.debug("save_vapid_keys failed: %s", exc)
+
+    def load_push_subscriptions(self) -> list[dict]:
+        """Subscriptions in the ``subscription_info`` shape pywebpush expects."""
+        try:
+            rows = self._conn.execute(
+                "SELECT endpoint, p256dh, auth FROM push_subscriptions"
+            ).fetchall()
+        except sqlite3.Error as exc:
+            log.debug("load_push_subscriptions failed: %s", exc)
+            return []
+        return [
+            {"endpoint": r[0], "keys": {"p256dh": r[1], "auth": r[2]}} for r in rows
+        ]
+
+    def add_push_subscription(self, endpoint: str, p256dh: str, auth: str) -> None:
+        try:
+            with self._lock, self._conn:
+                self._conn.execute(
+                    "INSERT INTO push_subscriptions(endpoint, p256dh, auth, created_at)"
+                    " VALUES (?, ?, ?, ?) ON CONFLICT(endpoint) DO UPDATE SET"
+                    " p256dh=excluded.p256dh, auth=excluded.auth",
+                    (endpoint, p256dh, auth, datetime.now(UTC).isoformat()),
+                )
+        except sqlite3.Error as exc:
+            log.debug("add_push_subscription failed: %s", exc)
+
+    def delete_push_subscription(self, endpoint: str) -> None:
+        try:
+            with self._lock, self._conn:
+                self._conn.execute(
+                    "DELETE FROM push_subscriptions WHERE endpoint = ?", (endpoint,)
+                )
+        except sqlite3.Error as exc:
+            log.debug("delete_push_subscription failed: %s", exc)
 
     def close(self) -> None:
         with self._lock:

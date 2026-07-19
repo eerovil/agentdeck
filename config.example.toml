@@ -36,6 +36,13 @@ max_message_chars = 16000
 # Analyses are ephemeral and read-only, so they do not appear as sessions.
 # Automatic answers are opt-in and limited to explicit low-risk multiple-choice
 # questions, never approvals or permissions.
+[push]
+enabled = false
+# VAPID contact claim — a mailto: or https: URL push services can reach you at.
+# Required by the Web Push spec; not a secret. The VAPID keypair itself is
+# generated once and stored in the DB (needs [history] enabled), never here.
+subject = ""                       # e.g. "mailto:you@example.com"
+
 [assistant]
 enabled = false
 account_key = ""                # first Codex account, or e.g. "codex:main"
