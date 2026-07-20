@@ -123,8 +123,10 @@ class ClaudeWorkerHost:
         stopping a stalled worker never blocks behind another key's up-to-30s
         spawn. Host-wide admission (``max_workers``) is therefore advisory under
         this scheme; a transient off-by-one at the cap is immaterial on a single
-        host and never destroys a healthy worker (the fresh-replace path checks
-        admission before terminating anything).
+        host and never destroys a mid-turn worker (the fresh-replace path checks
+        admission before terminating anything, and idle-worker eviction only
+        reclaims a slot from a worker with no active turn, skipping any whose key
+        lock a concurrent delivery already holds).
         """
         lock = self._key_locks.get(key)
         if lock is None:
@@ -162,6 +164,62 @@ class ClaudeWorkerHost:
             return False
         pct = self._usage_reader()
         return pct is not None and pct >= self.usage_ceiling_pct
+
+    async def _evict_idle_worker(self, admit_key: str) -> str | None:
+        """Free one admission slot by terminating the least-recently-used *idle*
+        live worker (process alive, no active turn), so a new chat is never
+        blocked by finished-but-resident sessions. Returns the evicted key, or
+        None when every other live worker is mid-turn.
+
+        The victim's durable record (incl. ``session_id``) survives, so its chat
+        revives on the next delivery. Never *waits* on another key's lock: a
+        victim currently being delivered to is skipped rather than risk racing a
+        fresh turn or deadlocking against a concurrent eviction.
+        """
+
+        def _recency(item: tuple[str, _LiveWorker]) -> float:
+            key, live = item
+            rec = self._records.get(key)
+            return max(live.last_event_at, rec.last_delivery_at if rec else 0.0)
+
+        candidates = sorted(
+            (
+                (key, live)
+                for key, live in self._live.items()
+                if key != admit_key
+                and live.process.returncode is None
+                and not live.turn_active
+            ),
+            key=_recency,
+        )
+        for victim_key, victim in candidates:
+            lock = self._key_locks.get(victim_key)
+            if lock is not None and lock.locked():
+                continue  # a concurrent delivery owns it; don't race its turn
+            # No await between the locked() check and acquire(): atomic on the loop.
+            if lock is not None:
+                await lock.acquire()
+            try:
+                current = self._live.get(victim_key)
+                if (
+                    current is not victim
+                    or current.process.returncode is not None
+                    or current.turn_active
+                ):
+                    continue  # raced: state changed under us, try the next one
+                self._live.pop(victim_key, None)
+            finally:
+                if lock is not None:
+                    lock.release()
+            log.info(
+                "evicted idle worker %s:%s to admit %s",
+                self.account.key,
+                victim_key,
+                admit_key,
+            )
+            await self._terminate(victim)
+            return victim_key
+        return None
 
     # --- state persistence -------------------------------------------------
 
@@ -288,7 +346,9 @@ class ClaudeWorkerHost:
                     for worker in self._live.values()
                     if worker is not live and worker.process.returncode is None
                 ]
-                if len(running) >= self.max_workers:
+                if len(running) >= self.max_workers and (
+                    await self._evict_idle_worker(admit_key=key) is None
+                ):
                     return DeliverResult(False, "rejected", reason="at_capacity")
                 if self._over_budget():
                     return DeliverResult(False, "rejected", reason="over_budget")
@@ -301,7 +361,9 @@ class ClaudeWorkerHost:
             # so in-flight work finishes even at the cap or over budget.
             if not admission_checked:
                 running = [w for w in self._live.values() if w.process.returncode is None]
-                if len(running) >= self.max_workers:
+                if len(running) >= self.max_workers and (
+                    await self._evict_idle_worker(admit_key=key) is None
+                ):
                     return DeliverResult(False, "rejected", reason="at_capacity")
                 if self._over_budget():
                     return DeliverResult(False, "rejected", reason="over_budget")

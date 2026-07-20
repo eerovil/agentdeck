@@ -255,6 +255,36 @@ async def test_capacity_rejects_new_spawns_but_not_steering(tmp_path):
     await host.stop()
 
 
+async def test_idle_worker_is_evicted_to_admit_new_chat(tmp_path):
+    host, spawned = _host(tmp_path, max_workers=1)
+    await host.deliver("issue-1", "start", cwd=str(tmp_path))
+    # issue-1's turn finishes: its process stays alive but is now idle, so a
+    # second chat must be admitted by reclaiming that idle slot, not rejected.
+    spawned[0]["process"].stdout.emit({"type": "result", "subtype": "success"})
+    await _settle()
+    assert host.snapshot()["workers"]["issue-1"]["turn_active"] is False
+
+    admitted = await host.deliver("issue-2", "start", cwd=str(tmp_path))
+    assert admitted.accepted and admitted.action == "spawned"
+    assert len(spawned) == 2
+    snap = host.snapshot()
+    assert snap["live_count"] == 1
+    assert snap["workers"]["issue-1"]["live"] is False  # evicted, record kept
+    assert spawned[0]["process"].returncode == 0
+    await host.stop()
+
+
+async def test_capacity_rejects_when_all_workers_mid_turn(tmp_path):
+    host, spawned = _host(tmp_path, max_workers=1)
+    await host.deliver("issue-1", "start", cwd=str(tmp_path))
+    # issue-1 never emits a result, so its turn stays active and there is no
+    # idle slot to reclaim — a new chat is still rejected.
+    rejected = await host.deliver("issue-2", "start", cwd=str(tmp_path))
+    assert not rejected.accepted and rejected.reason == "at_capacity"
+    assert len(spawned) == 1
+    await host.stop()
+
+
 async def test_interrupt_round_trip(tmp_path):
     host, spawned = _host(tmp_path)
     await host.deliver("issue-1", "start", cwd=str(tmp_path))
