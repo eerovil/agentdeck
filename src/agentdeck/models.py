@@ -271,6 +271,7 @@ class TranscriptEvent:  # normalized transcript line (parsed from v0.2)
     tool_display_name: str | None = None  # optional user-facing override
     tool_summary: str | None = None  # short rendering of tool_use input
     question: str | None = None  # AskUserQuestion prompt, when this line asks one
+    answer: str | None = None  # your reply to an AskUserQuestion (from its tool_result)
     model: str | None = None
     usage: dict | None = None  # raw usage block passthrough
     ts: datetime | None = None

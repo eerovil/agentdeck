@@ -87,6 +87,79 @@ class _LiveWorker:
     pending_interaction: dict[str, Any] | None = None
 
 
+def _preview_tool_input(tool_input: object) -> str | None:
+    """A compact one-line preview of a permission-gated tool's key input, so a
+    non-Bash approval (Write/WebFetch/…) isn't answered blind."""
+    if not isinstance(tool_input, dict):
+        return None
+    for key in ("command", "file_path", "path", "url", "pattern", "query", "prompt"):
+        value = tool_input.get(key)
+        if isinstance(value, str) and value:
+            return f"{key}: {value}"[:200]
+    return None
+
+
+def _normalize_interaction(
+    pending: object, session_id: str | None
+) -> dict[str, Any] | None:
+    """Map a raw `can_use_tool` control_request to the provider-neutral
+    PendingInteraction shape the shared widget renders. Lives in the runtime (which
+    owns the CLI control channel) so the web process never parses Claude's wire
+    schema — symmetric to how the Codex app-server normalizes before the socket."""
+    if not isinstance(pending, dict):
+        return None
+    request_id = pending.get("request_id")
+    if not isinstance(request_id, str):
+        return None
+    tool_name = pending.get("tool_name")
+    tool_input = pending.get("input") if isinstance(pending.get("input"), dict) else {}
+    if tool_name == "AskUserQuestion":
+        questions = []
+        for index, q in enumerate(tool_input.get("questions") or []):
+            if not isinstance(q, dict) or not isinstance(q.get("question"), str):
+                continue
+            options = [
+                {"label": o["label"], "description": o.get("description") or ""}
+                for o in (q.get("options") or [])
+                if isinstance(o, dict) and isinstance(o.get("label"), str)
+            ]
+            questions.append(
+                {
+                    "id": str(index),
+                    "header": q.get("header") or "",
+                    "prompt": q["question"],
+                    "options": options,
+                    "allow_other": True,  # Claude always lets you write your own
+                    "multiselect": bool(q.get("multiSelect")),
+                }
+            )
+        return {
+            "id": request_id,
+            "kind": "question",
+            "thread_id": session_id or "",
+            "title": "Claude is asking",
+            "questions": questions,
+        }
+    description = pending.get("description")
+    command = tool_input.get("command") if isinstance(tool_input.get("command"), str) else None
+    message = (
+        description
+        if isinstance(description, str) and description
+        else _preview_tool_input(tool_input)
+    )
+    return {
+        "id": request_id,
+        "kind": "permission",
+        "thread_id": session_id or "",
+        "title": f"Allow {pending.get('display_name') or tool_name or 'this tool'}?",
+        "message": message,
+        "command": command,
+        # No "acceptForSession": our control_response can't durably grant a
+        # session-scoped rule, so we don't offer a button that wouldn't be honored.
+        "decisions": ["accept", "decline", "cancel"],
+    }
+
+
 class ClaudeWorkerHost:
     """Own all deck-managed Claude worker processes for one account."""
 
@@ -101,6 +174,7 @@ class ClaudeWorkerHost:
         usage_ceiling_pct: float = 0.0,
         usage_cache_dir: Path | None = None,
         stall_after_s: float = 0.0,
+        interactive_prompts: bool = True,
         process_factory=None,
         usage_reader=None,
     ) -> None:
@@ -108,6 +182,10 @@ class ClaudeWorkerHost:
         self.max_workers = max_workers
         self.permission_mode = permission_mode
         self.model = model
+        # Whether to spawn with `--permission-prompt-tool stdio` (surfaces
+        # AskUserQuestion + permission gates to the user). Config escape hatch:
+        # set false to revert to the old auto-run spawn without a code change.
+        self.interactive_prompts = interactive_prompts
         self.usage_ceiling_pct = usage_ceiling_pct
         self.stall_after_s = stall_after_s
         self._usage_cache_dir = usage_cache_dir
@@ -263,8 +341,12 @@ class ClaudeWorkerHost:
             live = self._live.get(key)
             alive = live is not None and live.process.returncode is None
             turn_active = bool(alive and live.turn_active)
+            pending = live.pending_interaction if alive else None
             stalled = (
                 turn_active
+                # A worker blocked on a pending interaction is waiting on the user,
+                # not hung — don't badge it as stalled.
+                and pending is None
                 and self.stall_after_s > 0
                 and (now - max(rec.last_delivery_at, live.last_event_at))
                 > self.stall_after_s
@@ -278,7 +360,9 @@ class ClaudeWorkerHost:
                 "last_delivery_at": rec.last_delivery_at,
                 "last_result_at": rec.last_result_at,
                 "last_result_subtype": rec.last_result_subtype,
-                "pending_interaction": live.pending_interaction if alive else None,
+                # Normalized here (in the runtime that owns the CLI control
+                # channel) so the web side never parses raw Claude wire schema.
+                "pending_interaction": _normalize_interaction(pending, rec.session_id),
             }
         return {
             "workers": workers,
@@ -658,15 +742,15 @@ class ClaudeWorkerHost:
             "--output-format",
             "stream-json",
             "--verbose",
+        ]
+        if self.interactive_prompts:
             # Route interactive decisions (AskUserQuestion, and — for non-bypass
             # accounts — permission gates) to us over the control channel as
             # `can_use_tool` control_requests. Also the *only* way AskUserQuestion
             # becomes available to a headless `-p` worker. Autonomy is preserved:
             # under bypassPermissions regular tools still auto-run without a
             # callback; only `requires_user_interaction` tools route here.
-            "--permission-prompt-tool",
-            "stdio",
-        ]
+            cmd += ["--permission-prompt-tool", "stdio"]
         effective_model = model or self.model
         effective_permission_mode = permission_mode or self.permission_mode
         if effective_model:
@@ -860,6 +944,10 @@ class ClaudeWorkerHost:
                     live.initialized.set_result(session_id)
         elif etype == "result":
             live.turn_active = False
+            # The turn is over (finished or interrupted). Any interaction the CLI
+            # was blocked on is abandoned — drop it so the widget clears and a late
+            # answer can't write a control_response for a request that's gone.
+            live.pending_interaction = None
             if rec is not None:
                 rec.last_result_at = time.time()
                 subtype = event.get("subtype")

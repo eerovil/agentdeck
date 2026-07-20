@@ -41,7 +41,9 @@
     {% else %}
     <div class="interaction-actions">
       <button type="submit" name="decision" value="accept">Allow once</button>
+      {% if 'acceptForSession' in interaction.decisions %}
       <button class="secondary" type="submit" name="decision" value="acceptForSession">Allow for session</button>
+      {% endif %}
       <button class="secondary" type="submit" name="decision" value="decline">Decline</button>
       <button class="danger" type="submit" name="decision" value="cancel">Cancel turn</button>
     </div>

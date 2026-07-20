@@ -543,9 +543,11 @@ async def test_askuserquestion_control_request_becomes_pending_and_answers(tmp_p
         }
     )
     await _settle()
+    # snapshot ships the normalized (provider-neutral) interaction, not raw wire
     pending = host.snapshot()["workers"]["issue-1"]["pending_interaction"]
-    assert pending["request_id"] == "req-42"
-    assert pending["tool_name"] == "AskUserQuestion"
+    assert pending["id"] == "req-42"
+    assert pending["kind"] == "question"
+    assert pending["questions"][0]["prompt"] == "Pick a fruit"
 
     result = await host.answer(
         "issue-1", "req-42", answers={"0": ["banana"]}, decision="accept"
@@ -602,4 +604,64 @@ async def test_answer_rejects_unknown_interaction(tmp_path):
     await host.deliver("issue-1", "start", cwd=str(tmp_path))
     result = await host.answer("issue-1", "nope", answers={}, decision="accept")
     assert not result.accepted and result.reason == "interaction_not_pending"
+    await host.stop()
+
+
+async def test_result_event_clears_pending_interaction(tmp_path):
+    # An interrupt/finish (result event) while a question is pending must drop it,
+    # else the widget lingers and a late answer targets an abandoned request.
+    host, spawned = _host(tmp_path)
+    await host.deliver("issue-1", "start", cwd=str(tmp_path))
+    proc = spawned[0]["process"]
+    proc.stdout.emit(
+        {
+            "type": "control_request",
+            "request_id": "req-1",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": "AskUserQuestion",
+                "input": {"questions": [{"question": "q?", "header": "h", "options": [
+                    {"label": "a"}, {"label": "b"}]}]},
+            },
+        }
+    )
+    await _settle()
+    assert host.snapshot()["workers"]["issue-1"]["pending_interaction"] is not None
+    proc.stdout.emit({"type": "result", "subtype": "success"})
+    await _settle()
+    assert host.snapshot()["workers"]["issue-1"]["pending_interaction"] is None
+    # a late answer for the abandoned request is now rejected
+    result = await host.answer("issue-1", "req-1", answers={"0": ["a"]}, decision="accept")
+    assert not result.accepted and result.reason == "interaction_not_pending"
+    await host.stop()
+
+
+async def test_worker_waiting_on_interaction_is_not_stalled(tmp_path):
+    host, spawned = _host(tmp_path, stall_after_s=100.0)
+    await host.deliver("issue-1", "start", cwd=str(tmp_path))
+    proc = spawned[0]["process"]
+    proc.stdout.emit(
+        {
+            "type": "control_request",
+            "request_id": "req-1",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": "AskUserQuestion",
+                "input": {"questions": [{"question": "q?", "header": "h", "options": [
+                    {"label": "a"}, {"label": "b"}]}]},
+            },
+        }
+    )
+    await _settle()
+    # backdate so an ordinary open turn would read as stalled
+    host._records["issue-1"].last_delivery_at -= 200
+    host._live["issue-1"].last_event_at -= 200
+    assert host.snapshot()["workers"]["issue-1"]["stalled"] is False
+    await host.stop()
+
+
+async def test_interactive_prompts_disabled_omits_stdio_flag(tmp_path):
+    host, spawned = _host(tmp_path, interactive_prompts=False)
+    await host.deliver("issue-1", "start", cwd=str(tmp_path))
+    assert "--permission-prompt-tool" not in spawned[0]["args"]
     await host.stop()

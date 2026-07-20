@@ -117,6 +117,7 @@ class ClaudeWorkerOverrides(BaseModel):
     model: str | None = None
     usage_ceiling_pct: float | None = None
     stall_after_s: float | None = None
+    interactive_prompts: bool | None = None
 
     @field_validator("max_workers")
     @classmethod
@@ -153,6 +154,10 @@ class ClaudeWorkersConfig(BaseModel):
     stall_after_s: float = (
         0.0  # flag a live worker stalled after this many silent seconds; 0 disables
     )
+    # Spawn workers with `--permission-prompt-tool stdio` so AskUserQuestion and
+    # (on non-bypass accounts) permission gates surface to the user. Set false to
+    # revert to the old auto-run spawn without a code change / service redeploy.
+    interactive_prompts: bool = True
     state_dir: str = "~/.local/share/agentdeck/claude-workers"
     # Keyed by account label: [claude_workers.accounts.<label>]
     accounts: dict[str, ClaudeWorkerOverrides] = {}

@@ -515,3 +515,49 @@ def test_last_role_reflects_most_recent_message(tmp_path):
     p2 = tmp_path / "a.jsonl"
     _write(p2, [USER, agent])
     assert transcripts.transcript_meta(p2)[5] == "agent"
+
+
+def test_askuserquestion_answer_renders_as_user_reply():
+    from agentdeck.providers.claude_code.transcripts import _askuserquestion_answer
+
+    # the tool_result the CLI writes once you answer via the widget
+    assert (
+        _askuserquestion_answer(
+            'Your questions have been answered: "Pick a fruit"="banana". '
+            "You can now continue with these answers in mind."
+        )
+        == "Pick a fruit: banana"
+    )
+    # multiple questions
+    assert (
+        _askuserquestion_answer('Your questions have been answered: "A"="1", "B"="2".')
+        == "A: 1; B: 2"
+    )
+    # freeform responded / did-not-answer variants
+    assert _askuserquestion_answer("The user responded: use option two") == "use option two"
+    assert _askuserquestion_answer("The user did not answer the questions.") is None
+    assert _askuserquestion_answer("random tool output") is None
+
+
+def test_answer_event_parsed_from_transcript(tmp_path):
+    from agentdeck.providers.claude_code.transcripts import read_events
+
+    line = {
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_1",
+                    "content": 'Your questions have been answered: "Pick a fruit"="banana".',
+                }
+            ],
+        },
+    }
+    path = tmp_path / "t.jsonl"
+    path.write_text(__import__("json").dumps(line) + "\n")
+    events = read_events(path).events
+    assert len(events) == 1
+    ev = events[0]
+    assert ev.role == "user" and ev.answer == "Pick a fruit: banana" and ev.text is None
