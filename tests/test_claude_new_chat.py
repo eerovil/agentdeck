@@ -124,6 +124,8 @@ async def test_client_waits_for_worker_turn_completion():
 class _FakeWorkerClient:
     def __init__(self):
         self.calls = []
+        self.delivery_ids = []
+        self.conflict_reason = None
         self._owned = {"sid-1": "chat-1"}
         self.available = True
         self._live = True
@@ -151,6 +153,7 @@ class _FakeWorkerClient:
         images=None,
         model=None,
         permission_mode=None,
+        delivery_id=None,
     ):
         from agentdeck.models import InjectResult
 
@@ -166,6 +169,9 @@ class _FakeWorkerClient:
                 permission_mode,
             )
         )
+        self.delivery_ids.append(delivery_id)
+        if self.conflict_reason is not None:
+            return InjectResult(False, self.conflict_reason)
         return InjectResult(True, session_id="sid-new")
 
     async def wait_for_turn(self, session_id, *, timeout_s):
@@ -317,3 +323,43 @@ async def test_provider_wait_and_result_complete_claude_delegation(tmp_path):
     assert waited.accepted
     assert ("wait", "sid-1", 12) in fake.calls
     assert result == "Delegation complete."
+
+
+async def test_retried_new_chat_reuses_one_key_and_delivery(tmp_path):
+    # A dashboard retry carries the same client-action id, so both start_session
+    # calls must map to the SAME worker key + delivery id — the deliver layer then
+    # dedups instead of spawning a second worker.
+    from agentdeck.action_context import client_action_context
+
+    provider = ClaudeCodeProvider()
+    fake = _FakeWorkerClient()
+    provider._workers["claude_code:main"] = fake
+    with client_action_context("act-42"):
+        await provider.start_session(_account(), tmp_path, "hi", timeout_s=1)
+        await provider.start_session(_account(), tmp_path, "hi", timeout_s=1)
+    keys = [c[1] for c in fake.calls]
+    assert keys[0] == keys[1] and keys[0].startswith("chat-")
+    assert fake.delivery_ids == ["act-42", "act-42"]
+
+
+async def test_new_chat_without_action_id_uses_a_fresh_key(tmp_path):
+    provider = ClaudeCodeProvider()
+    fake = _FakeWorkerClient()
+    provider._workers["claude_code:main"] = fake
+    await provider.start_session(_account(), tmp_path, "hi", timeout_s=1)
+    await provider.start_session(_account(), tmp_path, "hi", timeout_s=1)
+    keys = [c[1] for c in fake.calls]
+    assert keys[0] != keys[1]  # random per call — no action id to key on
+    assert fake.delivery_ids == [None, None]
+
+
+async def test_new_chat_digest_mismatch_maps_to_client_action_conflict(tmp_path):
+    from agentdeck.action_context import client_action_context
+
+    provider = ClaudeCodeProvider()
+    fake = _FakeWorkerClient()
+    fake.conflict_reason = "delivery_id_conflict"  # same id, different payload
+    provider._workers["claude_code:main"] = fake
+    with client_action_context("act-9"):
+        result = await provider.start_session(_account(), tmp_path, "hi", timeout_s=1)
+    assert not result.accepted and result.reason == "client_action_conflict"

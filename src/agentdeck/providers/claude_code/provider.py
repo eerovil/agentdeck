@@ -11,6 +11,7 @@ runtime service (new chat, send, steer, interrupt).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import uuid
@@ -19,6 +20,7 @@ from pathlib import Path
 
 import httpx
 
+from ...action_context import current_client_action_id
 from ...models import (
     Account,
     Capability,
@@ -265,8 +267,16 @@ class ClaudeCodeProvider(SessionProvider):
         client = self._workers.get(account.key)
         if client is None:
             return InjectResult(False, "Claude workers are not enabled on the runtime service")
-        key = f"chat-{uuid.uuid4().hex[:8]}"
-        return await client.deliver(
+        # A retried new-chat request carries the same client-action id. Derive a
+        # stable worker key + delivery id from it so the retry maps to exactly one
+        # worker (deduped at the deliver layer) instead of spawning a duplicate.
+        # Interactive callers without an action id keep a fresh random key.
+        client_action_id = current_client_action_id()
+        if client_action_id:
+            key = f"chat-{hashlib.sha256(client_action_id.encode()).hexdigest()[:12]}"
+        else:
+            key = f"chat-{uuid.uuid4().hex[:8]}"
+        result = await client.deliver(
             key,
             message,
             cwd=str(cwd),
@@ -274,7 +284,13 @@ class ClaudeCodeProvider(SessionProvider):
             images=[str(path) for path in images or []],
             model=model,
             permission_mode=self._delegation_permission_mode(sandbox),
+            delivery_id=client_action_id,
         )
+        if not result.accepted and result.reason == "delivery_id_conflict":
+            # Same action id, different request payload — a genuine conflict, not
+            # a benign retry; surface it distinctly rather than as a raw reject.
+            return InjectResult(False, "client_action_conflict")
+        return result
 
     async def _deliver_to_session(
         self,
