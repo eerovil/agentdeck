@@ -22,7 +22,12 @@ from ...models import TokenTotals, TranscriptEvent
 log = logging.getLogger(__name__)
 
 _MAX_TOOL_SUMMARY = 160
+# Short caps for list-card previews (last_text) and bookkeeping snippets.
 _MAX_TEXT = 4000
+# The rendered chat transcript shows the *full* agent/user message, not a
+# preview — cap it generously so long responses aren't truncated, while still
+# bounding a pathological multi-MB paste from bloating a transcript payload.
+_MAX_RENDERED_TEXT = 200_000
 
 
 @dataclass
@@ -52,7 +57,7 @@ def _text_from_content(
     so the choice is visible in the chat instead of being hidden with the other
     tool output."""
     if isinstance(content, str):
-        return (content[:_MAX_TEXT] or None, None, None, None, None)
+        return (content[:_MAX_RENDERED_TEXT] or None, None, None, None, None)
     if not isinstance(content, list):
         return (None, None, None, None, None)
     texts: list[str] = []
@@ -83,7 +88,7 @@ def _text_from_content(
         elif btype == "thinking" and isinstance(block.get("thinking"), str):
             texts.append(block["thinking"])
     text = "\n".join(t for t in texts if t).strip()
-    return (text[:_MAX_TEXT] or None, tool_name, tool_summary, question, answer)
+    return (text[:_MAX_RENDERED_TEXT] or None, tool_name, tool_summary, question, answer)
 
 
 # The AskUserQuestion tool_result the CLI writes once you answer (or dismiss)
@@ -214,7 +219,7 @@ def _event_from_line(seq: int, data: dict, subagent: str | None = None) -> Trans
             return TranscriptEvent(
                 seq=seq,
                 role="user",
-                text=content.strip()[:_MAX_TEXT],
+                text=content.strip()[:_MAX_RENDERED_TEXT],
                 queued=True,
                 ts=_parse_ts(data.get("timestamp")),
                 subagent=subagent,

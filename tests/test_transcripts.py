@@ -195,6 +195,32 @@ def test_read_events_parses_roles(tmp_path):
     assert a.model == "claude-opus-4-8"
 
 
+def _assistant_msg(text):
+    return {
+        "type": "assistant",
+        "timestamp": "2026-07-03T08:00:01Z",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": text}]},
+    }
+
+
+def test_long_assistant_output_renders_in_full(tmp_path):
+    # Issue #38: a full agent response must render, not be cut at the old
+    # 4000-char cap (which is now only for short list previews).
+    p = tmp_path / "t.jsonl"
+    long_text = "x" * 50_000
+    _write(p, [_assistant_msg(long_text)])
+    ev = transcripts.read_events(p).events[-1]
+    assert ev.text == long_text  # not truncated
+
+
+def test_rendered_text_is_still_bounded(tmp_path):
+    # ...but a pathological multi-MB message is still capped, to bound payloads.
+    p = tmp_path / "t.jsonl"
+    _write(p, [_assistant_msg("y" * 300_000)])
+    ev = transcripts.read_events(p).events[-1]
+    assert len(ev.text) == transcripts._MAX_RENDERED_TEXT
+
+
 def test_queued_message_rendered_as_user(tmp_path):
     """A message typed while busy (queue-operation/enqueue) that never became a
     real user turn still shows, flagged as queued."""
