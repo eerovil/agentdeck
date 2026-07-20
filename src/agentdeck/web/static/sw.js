@@ -69,23 +69,38 @@ self.addEventListener('push', (event) => {
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const target = (event.notification.data && event.notification.data.url) || '/';
-  event.waitUntil(
-    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
-      for (const client of clientList) {
-        if (client.url && new URL(client.url).origin === self.location.origin) {
-          // Chain navigate -> focus so waitUntil keeps the worker alive until the
-          // existing tab has actually moved to the target (not just focused).
-          if (client.navigate) {
-            return client.navigate(target).catch(() => null).then(() => client.focus());
-          }
-          return client.focus();
-        }
-      }
-      return self.clients.openWindow(target);
-    })
-  );
+  event.waitUntil(openApp());
 });
+
+// Tapping a notification must reliably surface the AgentDeck *front page*,
+// freshly loaded — never a no-op and never a stale, deep-linked chat view
+// (issue #35). We ignore the push payload's url and always route home: the
+// dashboard reflects current state on load, and the SW never caches navigations
+// so a real navigate('/') always pulls fresh server state.
+//
+// Reliability matters more than elegance here, because the client we find may be
+// a frozen, *uncontrolled* window (mobile PWA resumed from background) whose
+// navigate() rejects — the old `navigate().catch().then(focus())` chain then
+// left the app focused on its stale view, or did nothing at all. So: focus the
+// existing window first (this brings the installed PWA forward even when
+// navigate() is unavailable), then move it home via navigate(); if navigate()
+// is missing or rejects, ask the page itself to go home via postMessage; and if
+// there's no app window to reuse, open a fresh one.
+async function openApp() {
+  const home = new URL('/', self.location.origin).href;
+  const clientList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  for (const client of clientList) {
+    if (!client.url || new URL(client.url).origin !== self.location.origin) continue;
+    try { await client.focus(); } catch (e) { /* still try to route it home below */ }
+    if (client.navigate) {
+      try { await client.navigate(home); return; } catch (e) { /* fall through */ }
+    }
+    // navigate() unavailable or rejected: let the page navigate itself home.
+    client.postMessage({ type: 'agentdeck:open-home' });
+    return;
+  }
+  await self.clients.openWindow(home);
+}
 
 self.addEventListener('fetch', (event) => {
   const req = event.request;

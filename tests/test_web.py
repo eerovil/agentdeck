@@ -846,6 +846,117 @@ async def test_push_client_assets_and_bell(tmp_path):
     assert dash.headers["cache-control"] == "no-cache"
 
 
+async def test_notification_click_always_routes_home_and_never_no_ops(tmp_path):
+    # Issue #35: tapping a push notification must reliably surface the AgentDeck
+    # front page, freshly loaded — never a deep-linked/stale chat view, and never
+    # a silent no-op. Drive the *real* service-worker source under a mocked
+    # ServiceWorkerGlobalScope so we test the shipped notificationclick handler,
+    # not a hand-copied excerpt.
+    app = _app_with_state(tmp_path)
+    async with _client(app) as c:
+        sw_source = (await c.get("/sw.js")).text
+        dash = (await c.get("/")).text
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content("<main></main>")
+        results = await page.evaluate(
+            """async (swSource) => {
+                const handlers = {};
+                const mockSelf = {
+                    location: { origin: 'https://deck.example' },
+                    addEventListener: (type, fn) => { handlers[type] = fn; },
+                    skipWaiting: () => {},
+                    registration: {},
+                    clients: {},
+                };
+                const noop = () => Promise.resolve();
+                const mockCaches = { open: noop, keys: () => Promise.resolve([]),
+                                     match: () => Promise.resolve(null), delete: noop };
+                // Execute the shipped worker with self/caches bound to the mocks.
+                new Function('self', 'caches', swSource)(mockSelf, mockCaches);
+
+                async function run(clients, dataUrl) {
+                    const rec = { focused: [], navigated: [], posted: [], opened: [] };
+                    mockSelf.clients = {
+                        matchAll: async () => clients.map((c) => {
+                            const client = {
+                                url: c.url,
+                                focus: async () => {
+                                    if (c.focus === 'reject') throw new Error('focus failed');
+                                    rec.focused.push(c.url);
+                                },
+                                postMessage: (m) => rec.posted.push(m),
+                            };
+                            if (c.navigate !== 'missing') {
+                                client.navigate = async (u) => {
+                                    if (c.navigate === 'reject') throw new Error('cannot navigate');
+                                    rec.navigated.push(u);
+                                    return client;
+                                };
+                            }
+                            return client;
+                        }),
+                        openWindow: async (u) => { rec.opened.push(u); return {}; },
+                    };
+                    const ev = {
+                        notification: { close() {}, data: { url: dataUrl } },
+                        _p: null,
+                        waitUntil(p) { this._p = p; },
+                    };
+                    handlers.notificationclick(ev);
+                    await ev._p;
+                    return rec;
+                }
+
+                const O = 'https://deck.example';
+                return {
+                    existing: await run([{ url: O + '/chat/x', navigate: true }], '/chat/x'),
+                    none: await run([], '/chat/x'),
+                    uncontrolled:
+                        await run([{ url: O + '/chat/x', navigate: 'reject' }], '/chat/x'),
+                    noNavigate:
+                        await run([{ url: O + '/chat/x', navigate: 'missing' }], '/chat/x'),
+                    crossOrigin: await run([
+                        { url: 'https://evil.example/', navigate: true },
+                        { url: O + '/chat/y', navigate: true },
+                    ], '/chat/y'),
+                };
+            }""",
+            sw_source,
+        )
+        await browser.close()
+
+    home = "https://deck.example/"
+    # An existing app window is focused and navigated *home* — the payload's chat
+    # url is ignored, and no duplicate window is opened.
+    assert results["existing"]["navigated"] == [home]
+    assert results["existing"]["focused"] == ["https://deck.example/chat/x"]
+    assert results["existing"]["opened"] == []
+    assert results["existing"]["posted"] == []
+    # No app window to reuse → open a fresh one at the front page.
+    assert results["none"]["opened"] == [home]
+    assert results["none"]["navigated"] == []
+    # navigate() rejects (frozen/uncontrolled client): still focused, and the page
+    # is asked to go home itself — never a no-op, never left on the stale view.
+    assert results["uncontrolled"]["focused"] == ["https://deck.example/chat/x"]
+    assert results["uncontrolled"]["navigated"] == []
+    assert results["uncontrolled"]["posted"] == [{"type": "agentdeck:open-home"}]
+    assert results["uncontrolled"]["opened"] == []
+    # navigate() unsupported: same page-driven fallback.
+    assert results["noNavigate"]["posted"] == [{"type": "agentdeck:open-home"}]
+    assert results["noNavigate"]["opened"] == []
+    # A cross-origin window is skipped; the same-origin app window is routed home.
+    assert results["crossOrigin"]["navigated"] == [home]
+    assert results["crossOrigin"]["opened"] == []
+
+    # The page half of the fallback is wired in: the shell listens for the SW's
+    # go-home message.
+    assert "agentdeck:open-home" in dash
+    assert "navigator.serviceWorker.addEventListener('message'" in dash
+
+
 async def test_markdown_links_reject_unsafe_schemes_and_attribute_breakout(tmp_path):
     app = _app_with_state(tmp_path)
     async with _client(app) as client:

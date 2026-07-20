@@ -41,6 +41,16 @@
         reg.update();
       }).catch(function () {});
     });
+    // Fallback for a notification tap when the worker can't navigate the window
+    // itself (an uncontrolled, frozen PWA client): the SW asks the page to go
+    // home, and we land on a freshly loaded front page rather than a stale view
+    // (issue #35).
+    navigator.serviceWorker.addEventListener('message', function (event) {
+      if (event.data && event.data.type === 'agentdeck:open-home') {
+        if (location.pathname === '/' && !location.search) window.location.reload();
+        else window.location.assign('/');
+      }
+    });
   }
   </script>
   <script src="/static/htmx.min.js?v={{ asset_ver }}" defer></script>
