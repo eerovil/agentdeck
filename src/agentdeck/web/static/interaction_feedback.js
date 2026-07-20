@@ -57,6 +57,18 @@
       note.setAttribute('role', 'status');
       note.textContent = 'Submitting…';
       form.appendChild(note);
+      // Disabling the submit button drops its name/value from the form htmx is
+      // about to serialize, which would lose the chosen decision (accept /
+      // decline / cancel for approvals; accept for questions). Carry the clicked
+      // submitter's value in a hidden field first so htmx still sends it.
+      if (submitter && submitter.name) {
+        var carrier = document.createElement('input');
+        carrier.type = 'hidden';
+        carrier.name = submitter.name;
+        carrier.value = submitter.value;
+        form.appendChild(carrier);
+        form._agentdeckDecisionCarrier = carrier;
+      }
       form.querySelectorAll('button[type="submit"]').forEach(function (button) {
         button.disabled = true;
       });
@@ -87,6 +99,10 @@
       }
     } else if (record.action === 'interaction') {
       if (form._agentdeckSubmittingNote) form._agentdeckSubmittingNote.remove();
+      if (form._agentdeckDecisionCarrier) {
+        form._agentdeckDecisionCarrier.remove();
+        form._agentdeckDecisionCarrier = null;
+      }
       form.querySelectorAll('button[type="submit"]').forEach(function (button) {
         button.disabled = false;
       });

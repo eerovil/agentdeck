@@ -1328,13 +1328,105 @@ async def test_full_question_lifecycle_e2e_with_mock_llm(tmp_path, monkeypatch):
         )
         await browser.close()
 
-    # The selected answer reached the (mock) LLM through the real route. (The
-    # submit button's decision="accept" is dropped by the browser here because
-    # interaction_feedback.js disables submit buttons before htmx serializes —
-    # pre-existing behavior, harmless for questions where the answer is the
-    # selection itself.)
-    assert captured["interaction_id"] == "tok-1"
-    assert captured["answers"] == {"database": ["Postgres"]}
+    # The selected answer AND the submit button's decision reached the (mock) LLM
+    # through the real route. The decision rides a hidden carrier field that
+    # interaction_feedback.js adds before disabling the button, so disabling the
+    # submitter no longer drops `decision` from the serialized form.
+    assert captured == {
+        "interaction_id": "tok-1",
+        "answers": {"database": ["Postgres"]},
+        "decision": "accept",
+    }
+
+
+async def test_approval_decision_survives_button_disable_e2e(tmp_path, monkeypatch):
+    # Regression for the decision-drop: for a permission approval the chosen
+    # decision (accept/decline/cancel) IS the answer. Disabling the submit button
+    # on submit used to strip it from the serialized form. Clicking "Decline"
+    # must still POST decision=decline.
+    app = _web_app(tmp_path)
+    session = app.state.app_state.sessions["codex:test:sid"]
+    session.capabilities = frozenset(
+        {Capability.TRANSCRIPT, Capability.INJECT, Capability.INTERACT}
+    )
+    approval = PendingInteraction(
+        id="perm-1",
+        kind="command_approval",
+        thread_id="sid",
+        turn_id="turn-1",
+        title="Approve command?",
+        message="Run a shell command",
+        command="rm -rf build",
+        decisions=("accept", "acceptForSession", "decline", "cancel"),
+    )
+    from agentdeck.providers import PROVIDERS
+
+    provider = PROVIDERS["codex"]
+    monkeypatch.setattr(provider, "owns_session", lambda account, session: True)
+    monkeypatch.setattr(provider, "pending_interaction", lambda account, session: approval)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/sessions/codex:test:sid")
+
+    static_dir = Path(__file__).parents[1] / "src/agentdeck/web/static"
+    scripts = {
+        name: (static_dir / name.split("/")[-1]).read_text()
+        for name in (
+            "/static/htmx.min.js",
+            "/static/sse.js",
+            "/static/action_timing.js",
+            "/static/interaction_feedback.js",
+        )
+    }
+    posted = {}
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        context = await browser.new_context(service_workers="block")
+        page = await context.new_page()
+        await page.add_init_script(
+            """
+            class FakeEventSource extends EventTarget {
+              constructor(url) {
+                super(); this.url = url; this.readyState = 1;
+                queueMicrotask(() => { if (this.onopen) this.onopen(new Event('open')); });
+              }
+              close() { this.readyState = 2; }
+            }
+            window.EventSource = FakeEventSource;
+            """
+        )
+
+        async def serve(route):
+            request = route.request
+            path = request.url.split("?", 1)[0].removeprefix("http://agentdeck.test")
+            if request.method == "POST" and path.endswith("/interaction"):
+                posted["body"] = request.post_data
+                await route.fulfill(
+                    status=200,
+                    content_type="text/html",
+                    body='<section id="pending-interaction" class="pending-interaction"></section>',
+                )
+            elif path == "/sessions/codex:test:sid":
+                await route.fulfill(status=200, content_type="text/html", body=response.text)
+            elif path in scripts:
+                await route.fulfill(
+                    status=200, content_type="text/javascript", body=scripts[path]
+                )
+            else:
+                await route.fulfill(status=204, body="")
+
+        await page.route("http://agentdeck.test/**", serve)
+        await page.goto("http://agentdeck.test/sessions/codex:test:sid")
+        await page.wait_for_selector("text=Approve command?")
+        await page.locator('#pending-interaction button:has-text("Decline")').click()
+        # The POST response clears the widget, so the prompt text detaches.
+        await page.wait_for_selector("text=Approve command?", state="detached", timeout=10_000)
+        await browser.close()
+
+    assert posted.get("body") is not None, "no interaction POST was captured"
+    assert "interaction_id=perm-1" in posted["body"]
+    assert "decision=decline" in posted["body"]
 
 
 async def test_idle_composer_hides_stop_button(tmp_path):
