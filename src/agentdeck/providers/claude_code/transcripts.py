@@ -44,17 +44,22 @@ def _parse_ts(value: object) -> datetime | None:
 
 def _text_from_content(
     content: object,
-) -> tuple[str | None, str | None, str | None, str | None]:
-    """Return (text, tool_name, tool_summary, question) from a message.content
-    value. ``question`` is the AskUserQuestion prompt when this line asks one."""
+) -> tuple[str | None, str | None, str | None, str | None, str | None]:
+    """Return (text, tool_name, tool_summary, question, answer) from a
+    message.content value. ``question`` is the AskUserQuestion prompt when this
+    line asks one; ``answer`` is your reply, parsed from the AskUserQuestion
+    tool_result (which the CLI writes as "Your questions have been answered: …")
+    so the choice is visible in the chat instead of being hidden with the other
+    tool output."""
     if isinstance(content, str):
-        return (content[:_MAX_TEXT] or None, None, None, None)
+        return (content[:_MAX_TEXT] or None, None, None, None, None)
     if not isinstance(content, list):
-        return (None, None, None, None)
+        return (None, None, None, None, None)
     texts: list[str] = []
     tool_name: str | None = None
     tool_summary: str | None = None
     question: str | None = None
+    answer: str | None = None
     for block in content:
         if not isinstance(block, dict):
             continue
@@ -69,11 +74,47 @@ def _text_from_content(
             else:
                 tool_summary = _summarize_tool_input(block.get("input"))
         elif btype == "tool_result":
-            texts.append(_stringify_tool_result(block.get("content")))
+            result_text = _stringify_tool_result(block.get("content"))
+            parsed = _askuserquestion_answer(result_text)
+            if parsed is not None:
+                answer = parsed  # surfaced as your reply; the raw text stays hidden
+            else:
+                texts.append(result_text)
         elif btype == "thinking" and isinstance(block.get("thinking"), str):
             texts.append(block["thinking"])
     text = "\n".join(t for t in texts if t).strip()
-    return (text[:_MAX_TEXT] or None, tool_name, tool_summary, question)
+    return (text[:_MAX_TEXT] or None, tool_name, tool_summary, question, answer)
+
+
+# The AskUserQuestion tool_result the CLI writes once you answer (or dismiss)
+# through the interactive widget. The answer payload after the prefix is a
+# comma-joined list of ``"question"="answer"`` pairs, or free text for the
+# responded/selected variants. "did not answer" carries no choice, so it is not
+# surfaced. (Phrasings are stable strings emitted by the tool; if they change a
+# future CLI just falls back to hiding the tool_result — no wrong output.)
+_ASKQ_ANSWER_PREFIXES = (
+    "Your questions have been answered: ",
+    "Before going idle the user had selected: ",
+    "The user responded: ",
+)
+_ASKQ_ANSWER_SUFFIX = " You can now continue with these answers in mind."
+_ASKQ_PAIR = re.compile(r'"([^"]*)"="([^"]*)"')
+
+
+def _askuserquestion_answer(text: object) -> str | None:
+    """Your choice, extracted from an AskUserQuestion tool_result, or None."""
+    if not isinstance(text, str):
+        return None
+    stripped = text.strip()
+    for prefix in _ASKQ_ANSWER_PREFIXES:
+        if stripped.startswith(prefix):
+            body = stripped[len(prefix) :].removesuffix(_ASKQ_ANSWER_SUFFIX).strip()
+            body = body[:-1] if body.endswith(".") else body
+            pairs = _ASKQ_PAIR.findall(body)
+            if pairs:
+                return "; ".join(f"{q}: {a}" for q, a in pairs)[:_MAX_TEXT] or None
+            return body[:_MAX_TEXT] or None
+    return None
 
 
 def _ask_question(value: object) -> str | None:
@@ -185,12 +226,14 @@ def _event_from_line(seq: int, data: dict, subagent: str | None = None) -> Trans
         return None  # meta caveat, compaction summary, or slash-command echo
     message = data.get("message")
     content = message.get("content") if isinstance(message, dict) else None
-    text, tool_name, tool_summary, question = _text_from_content(content)
+    text, tool_name, tool_summary, question, answer = _text_from_content(content)
     model = message.get("model") if isinstance(message, dict) else None
     usage = message.get("usage") if isinstance(message, dict) else None
     is_tool_result = tool_name is None and ltype == "user" and _looks_like_tool_result(content)
-    role = "tool" if is_tool_result else ltype
-    if text is None and tool_name is None:
+    # An AskUserQuestion answer arrives on a tool_result line but is your reply —
+    # render it as a user turn, not a (hidden) tool result.
+    role = "user" if answer is not None else ("tool" if is_tool_result else ltype)
+    if text is None and tool_name is None and answer is None:
         return None  # nothing renderable (e.g. an isMeta bookkeeping line)
     return TranscriptEvent(
         seq=seq,
@@ -199,6 +242,7 @@ def _event_from_line(seq: int, data: dict, subagent: str | None = None) -> Trans
         tool_name=tool_name,
         tool_summary=tool_summary,
         question=question,
+        answer=answer,
         model=model if isinstance(model, str) else None,
         usage=usage if isinstance(usage, dict) else None,
         ts=_parse_ts(data.get("timestamp")),

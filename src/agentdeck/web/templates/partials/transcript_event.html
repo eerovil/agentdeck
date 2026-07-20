@@ -33,6 +33,16 @@
   {% if e.tool_summary %}<div class="tool-call-summary" title="{{ e.tool_summary }}">{{ e.tool_summary }}</div>{% endif %}
 </div>
 {% endif %}
+{%- elif e.answer -%}
+<div class="ev user{% if e.subagent %} sub{% endif %}">
+  <div class="ev-head">
+    <span class="ev-role">you</span>
+    <span class="ev-head-meta">
+      {% if e.ts %}<time class="ev-time" datetime="{{ e.ts.isoformat() }}" title="{{ e.ts | chat_time_title }}">{{ e.ts | chat_time }}</time>{% endif %}
+    </span>
+  </div>
+  <div class="ev-text ev-answer" title="your answer to the agent's question"><bdi>{{ e.answer }}</bdi></div>
+</div>
 {%- elif e.role == 'tool' or (not e.text and not e.question and not e.tool_name) -%}
 {%- else -%}
 <div class="ev {{ e.role }}{% if e.subagent %} sub{% endif %}">
