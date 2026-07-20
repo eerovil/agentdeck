@@ -407,3 +407,40 @@ async def test_send_without_action_id_passes_no_delivery_id(tmp_path):
     provider._workers["claude_code:main"] = fake
     await provider.inject(_account(), _live_session(), "reply", timeout_s=1)
     assert fake.delivery_ids == [None]
+
+
+async def test_control_actions_suppressed_when_runtime_unreachable():
+    # The _owned map is a last-known snapshot. While the runtime is unreachable,
+    # inject/steer/interrupt must be withheld (they'd target a worker we can't talk
+    # to); the session stays visible and they come back on reconnect.
+    from agentdeck.models import Capability
+
+    provider = ClaudeCodeProvider()
+    fake = _FakeWorkerClient()
+    provider._workers["claude_code:main"] = fake
+    session = Session(
+        key="claude_code:main:sid-1",
+        account_key="claude_code:main",
+        session_id="sid-1",
+        status=SessionStatus.LIVE,
+        capabilities=frozenset(
+            {
+                Capability.TRANSCRIPT,
+                Capability.INJECT,
+                Capability.STEER,
+                Capability.INTERRUPT,
+            }
+        ),
+    )
+
+    fake.available = False  # runtime unreachable
+    provider.sweep_liveness(_account(), [session])
+    assert Capability.INJECT not in session.capabilities
+    assert Capability.STEER not in session.capabilities
+    assert Capability.INTERRUPT not in session.capabilities
+    assert Capability.TRANSCRIPT in session.capabilities  # still readable
+    assert session.show_when_idle is True  # visible, just uncontrollable
+
+    fake.available = True  # reconnect re-grants control
+    provider.sweep_liveness(_account(), [session])
+    assert Capability.INJECT in session.capabilities

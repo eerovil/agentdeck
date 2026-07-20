@@ -582,16 +582,22 @@ class ClaudeCodeProvider(SessionProvider):
             owned = workers is not None and workers.owns(sid)
             show_when_idle = False
             if owned:
-                caps.add(Capability.INJECT)
                 show_when_idle = True
                 status = SessionStatus.LIVE if workers.live(sid) else SessionStatus.IDLE
                 thinking = workers.turn_active(sid)
-                if workers.turn_active(sid):
-                    caps.update({Capability.STEER, Capability.INTERRUPT})
-                    # Headless workers aren't in the CLI registry, so is_live was
-                    # False and activity stayed None; recompute against the real
-                    # turn state so the UI shows a live activity label mid-turn.
-                    activity = self._activity(True, tpath, last_activity) or activity
+                # Only offer control actions while the runtime is actually
+                # reachable. `_owned` is a last-known snapshot, so inject/steer/
+                # interrupt granted from it while the runtime is unreachable would
+                # target a worker we can no longer talk to; suppress them until the
+                # snapshot is re-ingested on reconnect.
+                if workers.available:
+                    caps.add(Capability.INJECT)
+                    if workers.turn_active(sid):
+                        caps.update({Capability.STEER, Capability.INTERRUPT})
+                        # Headless workers aren't in the CLI registry, so is_live
+                        # was False and activity stayed None; recompute against the
+                        # real turn state so the UI shows a live activity label.
+                        activity = self._activity(True, tpath, last_activity) or activity
 
             wtype = worker_type(kref is not None, deep_link is not None)
 
@@ -725,7 +731,7 @@ class ClaudeCodeProvider(SessionProvider):
                 registry_mod.session_deep_link(entry.pid) if (entry and live_now) else None
             )
             capabilities_now = set(s.capabilities)
-            if owned:
+            if owned and workers.available:
                 capabilities_now.add(Capability.INJECT)
                 if thinking_now:
                     capabilities_now.update({Capability.STEER, Capability.INTERRUPT})
@@ -733,6 +739,12 @@ class ClaudeCodeProvider(SessionProvider):
                     capabilities_now.difference_update(
                         {Capability.STEER, Capability.INTERRUPT}
                     )
+            elif owned:
+                # Runtime unreachable: strip control actions granted from the stale
+                # snapshot until it reconnects (mirrors scan_sessions).
+                capabilities_now.difference_update(
+                    {Capability.INJECT, Capability.STEER, Capability.INTERRUPT}
+                )
             if (
                 status_now != s.status
                 or thinking_now != s.thinking
