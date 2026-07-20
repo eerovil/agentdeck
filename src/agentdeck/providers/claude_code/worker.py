@@ -73,6 +73,9 @@ class WorkerRecord:
     last_delivery_at: float = 0.0
     last_result_at: float = 0.0
     last_result_subtype: str | None = None
+    # The permission mode the worker was first spawned with, reused on every
+    # revive so a follow-up can't silently change a chat's policy.
+    permission_mode: str | None = None
     deliveries: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
@@ -517,6 +520,15 @@ class ClaudeWorkerHost:
 
             resume_id = None if fresh else rec.session_id
             resumed = resume_id is not None
+            # Reuse the spawn-time permission mode on a revive so a follow-up that
+            # brings back a finished worker can't silently change policy (e.g.
+            # escalate a manual "default" chat to bypassPermissions); a fresh spawn
+            # records its mode for future revives.
+            if resumed and rec.permission_mode is not None:
+                spawn_permission_mode = rec.permission_mode
+            else:
+                spawn_permission_mode = permission_mode
+                rec.permission_mode = permission_mode
             self._prepare_delivery(rec, delivery_id, fingerprint, session_id=resume_id)
             try:
                 live = await self._spawn_and_deliver(
@@ -526,7 +538,7 @@ class ClaudeWorkerHost:
                     image_blocks,
                     resume_id=resume_id,
                     model=model,
-                    permission_mode=permission_mode,
+                    permission_mode=spawn_permission_mode,
                 )
             except WorkerError as exc:
                 if resume_id is not None:
@@ -543,7 +555,7 @@ class ClaudeWorkerHost:
                             image_blocks,
                             resume_id=None,
                             model=model,
-                            permission_mode=permission_mode,
+                            permission_mode=spawn_permission_mode,
                         )
                     except WorkerError as fallback_exc:
                         self._forget_delivery(rec, delivery_id)

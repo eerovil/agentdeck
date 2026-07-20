@@ -941,3 +941,30 @@ async def test_uncertain_replay_reports_live_session_id(tmp_path):
     )
     assert replay.action == "uncertain"
     assert replay.session_id == rec.session_id  # live session, not None
+
+
+async def test_revive_reuses_spawn_permission_mode(tmp_path):
+    # A follow-up that revives a finished worker must reuse the mode it was spawned
+    # with — not escalate to the host default. Spawn a restrictive "plan" chat under
+    # a bypassPermissions host default, let it exit, then revive with no explicit
+    # mode and assert the revive still uses "plan".
+    host, spawned = _host(tmp_path, permission_mode="bypassPermissions")
+    await host.deliver(
+        "chat-p", "go", cwd=str(tmp_path), fresh=True, permission_mode="plan"
+    )
+    await _settle()
+    args0 = spawned[0]["args"]
+    assert args0[args0.index("--permission-mode") + 1] == "plan"
+
+    # Worker exits → the next deliver revives it.
+    proc = spawned[0]["process"]
+    proc.returncode = 0
+    proc.stdout.queue.put_nowait(b"")  # end the reader loop → dropped from _live
+    await _settle()
+
+    await host.deliver("chat-p", "again", cwd=str(tmp_path))  # no mode, not fresh
+    await _settle()
+    assert len(spawned) == 2  # revived, not steered
+    args1 = spawned[1]["args"]
+    assert "--resume" in args1  # it is a revive
+    assert args1[args1.index("--permission-mode") + 1] == "plan"  # not bypassPermissions
