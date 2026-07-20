@@ -472,3 +472,104 @@ async def test_forget_drops_finished_records_only(tmp_path):
     assert host.forget("issue-1") is True
     assert "issue-1" not in host.snapshot()["workers"]
     await host.stop()
+
+
+async def test_command_enables_stdio_permission_prompt(tmp_path):
+    host, spawned = _host(tmp_path)
+    await host.deliver("issue-1", "start", cwd=str(tmp_path))
+    args = spawned[0]["args"]
+    assert "--permission-prompt-tool" in args
+    assert args[args.index("--permission-prompt-tool") + 1] == "stdio"
+    await host.stop()
+
+
+async def test_askuserquestion_control_request_becomes_pending_and_answers(tmp_path):
+    host, spawned = _host(tmp_path)
+    await host.deliver("issue-1", "start", cwd=str(tmp_path))
+    proc = spawned[0]["process"]
+    proc.stdout.emit(
+        {
+            "type": "control_request",
+            "request_id": "req-42",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": "AskUserQuestion",
+                "display_name": "AskUserQuestion",
+                "requires_user_interaction": True,
+                "input": {
+                    "questions": [
+                        {
+                            "question": "Pick a fruit",
+                            "header": "Fruit",
+                            "multiSelect": False,
+                            "options": [
+                                {"label": "apple", "description": "a"},
+                                {"label": "banana", "description": "b"},
+                            ],
+                        }
+                    ]
+                },
+            },
+        }
+    )
+    await _settle()
+    pending = host.snapshot()["workers"]["issue-1"]["pending_interaction"]
+    assert pending["request_id"] == "req-42"
+    assert pending["tool_name"] == "AskUserQuestion"
+
+    result = await host.answer(
+        "issue-1", "req-42", answers={"0": ["banana"]}, decision="accept"
+    )
+    assert result.accepted and result.action == "answered"
+    written = proc.stdin.lines[-1]
+    assert written["type"] == "control_response"
+    resp = written["response"]["response"]
+    assert resp["behavior"] == "allow"
+    assert resp["updatedInput"]["answers"] == {"Pick a fruit": "banana"}
+    # cleared after answering
+    assert host.snapshot()["workers"]["issue-1"]["pending_interaction"] is None
+    await host.stop()
+
+
+async def test_permission_gate_allow_and_deny(tmp_path):
+    host, spawned = _host(tmp_path)
+    await host.deliver("issue-1", "start", cwd=str(tmp_path))
+    proc = spawned[0]["process"]
+
+    def emit_gate(rid):
+        proc.stdout.emit(
+            {
+                "type": "control_request",
+                "request_id": rid,
+                "request": {
+                    "subtype": "can_use_tool",
+                    "tool_name": "Bash",
+                    "display_name": "Bash",
+                    "description": "delete a file",
+                    "input": {"command": "rm x"},
+                },
+            }
+        )
+
+    emit_gate("g1")
+    await _settle()
+    await host.answer("issue-1", "g1", answers={}, decision="accept")
+    assert proc.stdin.lines[-1]["response"]["response"] == {
+        "behavior": "allow",
+        "updatedInput": {"command": "rm x"},
+    }
+
+    emit_gate("g2")
+    await _settle()
+    await host.answer("issue-1", "g2", answers={}, decision="cancel")
+    denied = proc.stdin.lines[-1]["response"]["response"]
+    assert denied["behavior"] == "deny" and denied["interrupt"] is True
+    await host.stop()
+
+
+async def test_answer_rejects_unknown_interaction(tmp_path):
+    host, _ = _host(tmp_path)
+    await host.deliver("issue-1", "start", cwd=str(tmp_path))
+    result = await host.answer("issue-1", "nope", answers={}, decision="accept")
+    assert not result.accepted and result.reason == "interaction_not_pending"
+    await host.stop()

@@ -206,3 +206,27 @@ async def test_web_proxy_503_when_runtime_unset():
     with pytest.raises(HTTPException) as exc:
         await _runtime_proxy(Req, "GET", "/claude/accounts/main/workers")
     assert exc.value.status_code == 503
+
+
+async def test_answer_endpoint_routes_to_host():
+    app = _runtime_app()
+    host = MagicMock()
+    host.answer = AsyncMock(return_value=DeliverResult(True, "answered", session_id="s1"))
+    app.state.claude_workers.hosts["main"] = host
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://runtime"
+    ) as client:
+        r = await client.post(
+            "/claude/accounts/main/answer",
+            json={
+                "key": "owner/repo#12",
+                "interaction_id": "req-42",
+                "answers": {"0": ["banana"]},
+                "decision": "accept",
+            },
+        )
+    assert r.json()["accepted"] is True and r.json()["action"] == "answered"
+    host.answer.assert_awaited_once_with(
+        "owner/repo#12", "req-42", answers={"0": ["banana"]}, decision="accept"
+    )

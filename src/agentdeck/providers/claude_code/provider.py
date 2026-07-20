@@ -23,6 +23,9 @@ from ...models import (
     Account,
     Capability,
     InjectResult,
+    InteractionOption,
+    InteractionQuestion,
+    PendingInteraction,
     Session,
     SessionStatus,
     TokenTotals,
@@ -63,6 +66,62 @@ def worker_type(is_kanban: bool, has_deep_link: bool) -> str:
     if has_deep_link:
         return "cloud"
     return "you"
+
+
+def _interaction_from_control_request(
+    raw: dict, session: Session
+) -> PendingInteraction | None:
+    """Map a worker's `can_use_tool` control_request into the provider-neutral
+    PendingInteraction the shared widget renders.
+
+    AskUserQuestion becomes a ``question`` interaction (one InteractionQuestion
+    per asked question, positional ids the worker maps back to question text);
+    any other tool is a ``permission`` gate (allow/deny)."""
+    request_id = raw.get("request_id")
+    if not isinstance(request_id, str):
+        return None
+    tool_name = raw.get("tool_name")
+    tool_input = raw.get("input") if isinstance(raw.get("input"), dict) else {}
+    if tool_name == "AskUserQuestion":
+        questions: list[InteractionQuestion] = []
+        for index, q in enumerate(tool_input.get("questions") or []):
+            if not isinstance(q, dict) or not isinstance(q.get("question"), str):
+                continue
+            options = tuple(
+                InteractionOption(label=o["label"], description=o.get("description") or "")
+                for o in (q.get("options") or [])
+                if isinstance(o, dict) and isinstance(o.get("label"), str)
+            )
+            questions.append(
+                InteractionQuestion(
+                    id=str(index),
+                    header=q.get("header") or "",
+                    prompt=q["question"],
+                    options=options,
+                    allow_other=True,  # Claude always lets the user write their own answer
+                    multiselect=bool(q.get("multiSelect")),
+                )
+            )
+        return PendingInteraction(
+            id=request_id,
+            kind="question",
+            thread_id=session.session_id,
+            turn_id=None,
+            title="Claude is asking",
+            questions=tuple(questions),
+        )
+    description = raw.get("description")
+    command = tool_input.get("command") if isinstance(tool_input.get("command"), str) else None
+    return PendingInteraction(
+        id=request_id,
+        kind="permission",
+        thread_id=session.session_id,
+        turn_id=None,
+        title=f"Allow {raw.get('display_name') or tool_name or 'this tool'}?",
+        message=description if isinstance(description, str) else None,
+        command=command,
+        decisions=("accept", "acceptForSession", "decline", "cancel"),
+    )
 
 
 def _mtime(path: Path) -> datetime | None:
@@ -306,6 +365,36 @@ class ClaudeCodeProvider(SessionProvider):
     def owns_session(self, account: Account, session: Session) -> bool:
         client = self._workers.get(account.key)
         return bool(client and client.owns(session.session_id))
+
+    def pending_interaction(
+        self, account: Account, session: Session
+    ) -> PendingInteraction | None:
+        client = self._workers.get(account.key)
+        if client is None:
+            return None
+        raw = client.pending_interaction(session.session_id)
+        if raw is None:
+            return None
+        return _interaction_from_control_request(raw, session)
+
+    async def answer_interaction(
+        self,
+        account: Account,
+        session: Session,
+        interaction_id: str,
+        *,
+        answers,
+        decision: str | None,
+    ) -> InjectResult:
+        client = self._workers.get(account.key)
+        if client is None:
+            return InjectResult(False, "Claude workers are not enabled on the runtime service")
+        key = client.key_for(session.session_id)
+        if key is None:
+            return InjectResult(False, "this session is not a deck-owned worker")
+        return await client.answer(
+            key, interaction_id, answers=dict(answers), decision=decision
+        )
 
     def _cached_meta(self, path: Path) -> tuple[str | None, ...]:
         try:

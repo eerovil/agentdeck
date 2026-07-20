@@ -80,6 +80,11 @@ class _LiveWorker:
     # request_ids of interrupts awaiting a control_response on this worker, so
     # the reader can fail them fast if the process exits before acking.
     pending_interrupts: set[str] = field(default_factory=set)
+    # The current interactive `can_use_tool` control_request the agent is blocked
+    # on (AskUserQuestion or a permission gate), or None. Its `request_id` is the
+    # interaction id the web layer answers against. Only one is open at a time —
+    # the turn is paused until we write the matching control_response.
+    pending_interaction: dict[str, Any] | None = None
 
 
 class ClaudeWorkerHost:
@@ -215,6 +220,7 @@ class ClaudeWorkerHost:
                 "last_delivery_at": rec.last_delivery_at,
                 "last_result_at": rec.last_result_at,
                 "last_result_subtype": rec.last_result_subtype,
+                "pending_interaction": live.pending_interaction if alive else None,
             }
         return {
             "workers": workers,
@@ -446,6 +452,77 @@ class ClaudeWorkerHost:
         rec = self._records.get(key)
         return DeliverResult(True, "interrupted", session_id=rec.session_id if rec else None)
 
+    async def answer(
+        self,
+        key: str,
+        interaction_id: str,
+        *,
+        answers: dict[str, list[str]],
+        decision: str | None,
+    ) -> DeliverResult:
+        """Resolve the worker's open `can_use_tool` control_request.
+
+        ``answers`` is keyed by the question's positional id ("0", "1", …). For
+        AskUserQuestion an "allow" carries the selected labels back as the
+        ``answers`` map (question text → answer string) inside ``updatedInput``;
+        for a permission gate the decision maps to allow/deny.
+        """
+        live = self._live.get(key)
+        if live is None or live.process.returncode is not None:
+            return DeliverResult(False, "rejected", reason="not_live")
+        pending = live.pending_interaction
+        if pending is None or pending.get("request_id") != interaction_id:
+            return DeliverResult(False, "rejected", reason="interaction_not_pending")
+        response = self._build_tool_decision(pending, answers, decision)
+        try:
+            await self._write(
+                live,
+                {
+                    "type": "control_response",
+                    "response": {
+                        "subtype": "success",
+                        "request_id": interaction_id,
+                        "response": response,
+                    },
+                },
+            )
+        except WorkerError as exc:
+            return DeliverResult(False, "rejected", reason=str(exc))
+        live.pending_interaction = None
+        rec = self._records.get(key)
+        return DeliverResult(True, "answered", session_id=rec.session_id if rec else None)
+
+    @staticmethod
+    def _build_tool_decision(
+        pending: dict[str, Any],
+        answers: dict[str, list[str]],
+        decision: str | None,
+    ) -> dict[str, Any]:
+        tool_name = pending.get("tool_name")
+        tool_input = pending.get("input") if isinstance(pending.get("input"), dict) else {}
+        deny = decision in ("decline", "cancel")
+        if tool_name == "AskUserQuestion":
+            if deny:
+                return {"behavior": "deny", "message": "The user dismissed the questions."}
+            questions = tool_input.get("questions")
+            answer_map: dict[str, str] = {}
+            if isinstance(questions, list):
+                for index, question in enumerate(questions):
+                    values = answers.get(str(index)) or []
+                    if not isinstance(question, dict) or not values:
+                        continue
+                    text = question.get("question")
+                    if isinstance(text, str):
+                        answer_map[text] = ", ".join(values)
+            return {"behavior": "allow", "updatedInput": {**tool_input, "answers": answer_map}}
+        # Permission gate on a regular tool.
+        if deny:
+            deny_body: dict[str, Any] = {"behavior": "deny", "message": "Denied by the user."}
+            if decision == "cancel":
+                deny_body["interrupt"] = True
+            return deny_body
+        return {"behavior": "allow", "updatedInput": tool_input}
+
     async def stop_worker(self, key: str) -> DeliverResult:
         async with self._key_lock(key):
             live = self._live.pop(key, None)
@@ -519,6 +596,14 @@ class ClaudeWorkerHost:
             "--output-format",
             "stream-json",
             "--verbose",
+            # Route interactive decisions (AskUserQuestion, and — for non-bypass
+            # accounts — permission gates) to us over the control channel as
+            # `can_use_tool` control_requests. Also the *only* way AskUserQuestion
+            # becomes available to a headless `-p` worker. Autonomy is preserved:
+            # under bypassPermissions regular tools still auto-run without a
+            # callback; only `requires_user_interaction` tools route here.
+            "--permission-prompt-tool",
+            "stdio",
         ]
         effective_model = model or self.model
         effective_permission_mode = permission_mode or self.permission_mode
@@ -718,6 +803,17 @@ class ClaudeWorkerHost:
                 subtype = event.get("subtype")
                 rec.last_result_subtype = subtype if isinstance(subtype, str) else None
                 self._save_state()
+        elif etype == "control_request":
+            # Inbound interactive decision (from --permission-prompt-tool stdio):
+            # the agent is blocked until we write a matching control_response.
+            request = event.get("request")
+            request_id = event.get("request_id")
+            if (
+                isinstance(request, dict)
+                and request.get("subtype") == "can_use_tool"
+                and isinstance(request_id, str)
+            ):
+                live.pending_interaction = {"request_id": request_id, **request}
         elif etype == "control_response":
             response = event.get("response")
             request_id = response.get("request_id") if isinstance(response, dict) else None

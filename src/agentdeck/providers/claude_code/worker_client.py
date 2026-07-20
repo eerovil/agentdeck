@@ -86,6 +86,7 @@ class ClaudeWorkerClient:
                     continue
                 session_id = worker.get("session_id")
                 if isinstance(session_id, str):
+                    pending = worker.get("pending_interaction")
                     owned[session_id] = {
                         "key": key,
                         "cwd": worker.get("cwd"),
@@ -93,6 +94,7 @@ class ClaudeWorkerClient:
                         "turn_active": bool(worker.get("turn_active")),
                         "stalled": bool(worker.get("stalled")),
                         "last_result_at": worker.get("last_result_at", 0.0),
+                        "pending_interaction": pending if isinstance(pending, dict) else None,
                     }
         changed = owned != self._owned
         self._owned = owned
@@ -149,8 +151,32 @@ class ClaudeWorkerClient:
             },
         )
 
+    def pending_interaction(self, session_id: str) -> dict | None:
+        """The raw `can_use_tool` control_request the owned worker is blocked on."""
+        entry = self._owned.get(session_id)
+        pending = entry.get("pending_interaction") if entry else None
+        return pending if isinstance(pending, dict) else None
+
     async def interrupt(self, key: str) -> InjectResult:
         return await self._post("interrupt", {"key": key})
+
+    async def answer(
+        self,
+        key: str,
+        interaction_id: str,
+        *,
+        answers: dict[str, list[str]],
+        decision: str | None,
+    ) -> InjectResult:
+        return await self._post(
+            "answer",
+            {
+                "key": key,
+                "interaction_id": interaction_id,
+                "answers": answers,
+                "decision": decision,
+            },
+        )
 
     async def wait_for_turn(self, session_id: str, *, timeout_s: float) -> InjectResult:
         """Wait until the owned worker's current turn finishes or exits."""
