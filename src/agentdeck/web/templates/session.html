@@ -86,9 +86,11 @@
 </div>
 
 {% if owned_session %}
+<div id="pending-interaction-slot" sse-swap="interaction" hx-swap="innerHTML">
 {% set interaction = pending_interaction %}
 {% set session_key = session.key %}
 {% include "partials/pending_interaction.html" %}
+</div>
 {% endif %}
 
 {% if session.deep_link %}

@@ -1,7 +1,4 @@
-<section id="pending-interaction" class="pending-interaction"
-         hx-get="/partials/sessions/{{ session_key }}/interaction"
-         hx-vals='{"current": "{{ interaction.id if interaction else "" }}"}'
-         hx-trigger="every 2s" hx-swap="outerHTML">
+<section id="pending-interaction" class="pending-interaction">
 {%- if interaction %}
   <h2>{{ interaction.title }}</h2>
   {% if interaction.message %}<p>{{ interaction.message }}</p>{% endif %}

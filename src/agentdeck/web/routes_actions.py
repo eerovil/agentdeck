@@ -243,22 +243,17 @@ async def interrupt_turn(request: Request, session_key: str) -> HTMLResponse:
 
 
 @router.get("/partials/sessions/{session_key}/interaction", response_class=HTMLResponse)
-async def pending_interaction(
-    request: Request, session_key: str, current: str | None = None
-) -> HTMLResponse:
+async def pending_interaction(request: Request, session_key: str) -> HTMLResponse:
+    # The detail page renders this section server-side and keeps it live over SSE
+    # (the `interaction` event, pushed only when the pending interaction actually
+    # changes — see routes_sse). This endpoint is the on-demand render used by the
+    # answer POST's swap target.
     account, session, provider = resolve_session(request, session_key)
-    interaction = provider.pending_interaction(account, session)
-    # Idempotent poll. While the same interaction stays pending, re-rendering the
-    # form would reset the user's in-progress radios/checkboxes/typed answer — the
-    # "pick an option and it deselects a second later" bug that makes answering
-    # several questions in a row impossible. When the client already shows this
-    # exact interaction, return 204 so htmx does no swap and the live form is left
-    # untouched; the `every 2s` poll keeps running to catch a real change (a new
-    # question arriving, or the current one being answered/cancelled elsewhere).
-    current_id = interaction.id if interaction is not None else ""
-    if current is not None and current == current_id:
-        return HTMLResponse(status_code=204)
-    return _render_interaction(request, session_key, interaction)
+    return _render_interaction(
+        request,
+        session_key,
+        provider.pending_interaction(account, session),
+    )
 
 
 @router.post("/sessions/{session_key}/interaction", response_class=HTMLResponse)

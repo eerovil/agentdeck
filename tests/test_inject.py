@@ -30,7 +30,7 @@ from agentdeck.providers.codex.inject import (
     start_session,
 )
 from agentdeck.providers.codex.transcripts import last_turn_complete
-from agentdeck.web.render import render_composer_controls
+from agentdeck.web.render import render_composer_controls, render_pending_interaction
 
 
 def _line(type_, payload):
@@ -926,32 +926,37 @@ async def test_owned_session_question_shows_stop_beside_send(tmp_path, monkeypat
         assert 'aria-label="Stopping active turn"' in stop.text
 
 
-async def test_interaction_poll_is_idempotent_while_pending(tmp_path, monkeypatch):
-    # Issue #28: the pending-interaction widget polls itself every 2s. While the
-    # same question stays pending, that poll must NOT re-render the form — a swap
-    # resets the radios/checkboxes and typed answer, so picking an option and
-    # waiting a second silently deselects it, and answering several questions in a
-    # row is impossible. The poll swaps only when the interaction actually changes.
-    app = _web_app(tmp_path)
-    session = app.state.app_state.sessions["codex:test:sid"]
-    session.capabilities = frozenset(
-        {Capability.TRANSCRIPT, Capability.INJECT, Capability.INTERACT}
-    )
-    interaction = PendingInteraction(
-        id="opaque-token",
+def _question_interaction(token, header, prompt, opt_a, opt_b):
+    return PendingInteraction(
+        id=token,
         kind="question",
         thread_id="sid",
         turn_id="turn-1",
         title="Codex needs your answer",
         questions=(
             InteractionQuestion(
-                id="database",
-                header="Database",
-                prompt="Which database should we use?",
-                options=(InteractionOption("Postgres", "Relational"),),
+                id=header.lower(),
+                header=header,
+                prompt=prompt,
+                options=(InteractionOption(opt_a, "a"), InteractionOption(opt_b, "b")),
                 allow_other=True,
             ),
         ),
+    )
+
+
+async def test_interaction_widget_is_sse_driven_not_polled(tmp_path, monkeypatch):
+    # Issue #28 regression (server contract): the pending-interaction widget must
+    # NOT self-poll. A 2s poll that re-renders the form wiped the user's selected
+    # radio/checkbox a second after they picked it. Instead it lives in an
+    # `sse-swap="interaction"` slot and is pushed only when the interaction changes.
+    app = _web_app(tmp_path)
+    session = app.state.app_state.sessions["codex:test:sid"]
+    session.capabilities = frozenset(
+        {Capability.TRANSCRIPT, Capability.INJECT, Capability.INTERACT}
+    )
+    interaction = _question_interaction(
+        "tok-1", "Database", "Which database should we use?", "Postgres", "SQLite"
     )
     from agentdeck.providers import PROVIDERS
 
@@ -960,33 +965,133 @@ async def test_interaction_poll_is_idempotent_while_pending(tmp_path, monkeypatc
     monkeypatch.setattr(
         provider, "pending_interaction", lambda account, session: interaction
     )
-    path = "/partials/sessions/codex:test:sid/interaction"
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        # A full render carries the current id and the interval poll to the client.
-        fresh = await client.get(path)
-        assert fresh.status_code == 200
-        assert 'hx-trigger="every 2s"' in fresh.text
-        assert '"current": "opaque-token"' in fresh.text
-        assert "Which database should we use?" in fresh.text
+        page = await client.get("/sessions/codex:test:sid")
+    assert page.status_code == 200
+    assert 'sse-swap="interaction"' in page.text
+    assert "Which database should we use?" in page.text
+    # No self-poll: neither the interval trigger nor a GET back to the poll URL.
+    assert 'hx-trigger="every 2s"' not in page.text
+    assert "/partials/sessions/codex:test:sid/interaction" not in page.text
 
-        # Same interaction still pending -> 204, no swap, live selections untouched.
-        same = await client.get(path, params={"current": "opaque-token"})
-        assert same.status_code == 204
-        assert same.text == ""
 
-        # A stale current id means the pending state changed -> re-render.
-        changed = await client.get(path, params={"current": "stale-token"})
-        assert changed.status_code == 200
-        assert "Which database should we use?" in changed.text
+async def test_interaction_selection_survives_live_updates_e2e(tmp_path, monkeypatch):
+    # Issue #28 (the real browser lifecycle): a user picks a multiple-choice answer;
+    # the constant SSE traffic of a live turn (status/tools/…) must not re-render the
+    # widget and wipe the selection. A genuinely new question (a fresh `interaction`
+    # event) does replace it — so several questions in a row work.
+    app = _web_app(tmp_path)
+    session = app.state.app_state.sessions["codex:test:sid"]
+    session.capabilities = frozenset(
+        {
+            Capability.TRANSCRIPT,
+            Capability.INJECT,
+            Capability.INTERACT,
+            Capability.INTERRUPT,
+        }
+    )
+    q1 = _question_interaction(
+        "tok-1", "Database", "Which database should we use?", "Postgres", "SQLite"
+    )
+    q2 = _question_interaction(
+        "tok-2", "Cache", "Which cache layer should we use?", "Redis", "Memcached"
+    )
+    from agentdeck.providers import PROVIDERS
 
-        # Once answered/cancelled (nothing pending): an already-empty client stays
-        # quiet (204), but a client still showing the old question gets it cleared.
-        monkeypatch.setattr(provider, "pending_interaction", lambda account, session: None)
-        empty = await client.get(path, params={"current": ""})
-        assert empty.status_code == 204
-        cleared = await client.get(path, params={"current": "opaque-token"})
-        assert cleared.status_code == 200
-        assert "Which database should we use?" not in cleared.text
+    provider = PROVIDERS["codex"]
+    monkeypatch.setattr(provider, "owns_session", lambda account, session: True)
+    monkeypatch.setattr(provider, "pending_interaction", lambda account, session: q1)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/sessions/codex:test:sid")
+    q2_fragment = render_pending_interaction(app.state.templates, "codex:test:sid", q2)
+
+    static_dir = Path(__file__).parents[1] / "src/agentdeck/web/static"
+    scripts = {
+        "/static/htmx.min.js": (static_dir / "htmx.min.js").read_text(),
+        "/static/sse.js": (static_dir / "sse.js").read_text(),
+    }
+    requests: list[str] = []
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        context = await browser.new_context(
+            viewport={"width": 1200, "height": 800}, service_workers="block"
+        )
+        page = await context.new_page()
+        await page.add_init_script(
+            """
+            window.__eventSources = [];
+            class FakeEventSource extends EventTarget {
+              static CONNECTING = 0;
+              static OPEN = 1;
+              static CLOSED = 2;
+              constructor(url) {
+                super();
+                this.url = url;
+                this.readyState = FakeEventSource.OPEN;
+                this.listenerNames = [];
+                window.__eventSources.push(this);
+                queueMicrotask(() => { if (this.onopen) this.onopen(new Event('open')); });
+              }
+              addEventListener(name, listener, options) {
+                this.listenerNames.push(name);
+                super.addEventListener(name, listener, options);
+              }
+              close() { this.readyState = FakeEventSource.CLOSED; }
+              emit(name, data) { this.dispatchEvent(new MessageEvent(name, {data: data})); }
+            }
+            window.EventSource = FakeEventSource;
+            """
+        )
+
+        async def serve(route):
+            request = route.request
+            path = request.url.split("?", 1)[0].removeprefix("http://agentdeck.test")
+            requests.append(path)
+            if path == "/sessions/codex:test:sid":
+                await route.fulfill(status=200, content_type="text/html", body=response.text)
+            elif path in scripts:
+                await route.fulfill(
+                    status=200, content_type="text/javascript", body=scripts[path]
+                )
+            else:
+                await route.fulfill(status=204, body="")
+
+        await page.route("http://agentdeck.test/**", serve)
+        await page.goto("http://agentdeck.test/sessions/codex:test:sid")
+        # The widget is wired to the `interaction` SSE topic (proves sse-swap).
+        await page.wait_for_function(
+            "window.__eventSources.length === 1 && "
+            "window.__eventSources[0].listenerNames.includes('interaction')"
+        )
+
+        radio = page.locator('input[name="answer__database"][value="Postgres"]')
+        await radio.check()
+        assert await radio.is_checked()
+
+        async def emit(name, data=""):
+            await page.evaluate(
+                "([n, d]) => window.__eventSources[0].emit(n, d)", [name, data]
+            )
+
+        # The steady drip of a live turn must leave the selection alone.
+        await emit("tools", '<div id="tool-activity">Working…</div>')
+        await emit("status", '<div id="session-status">live</div>')
+        await page.wait_for_timeout(2500)  # well past the old 2s poll interval
+        await emit("tools", '<div id="tool-activity">Still working…</div>')
+        assert await radio.is_checked(), "live SSE updates wiped the selected answer"
+        # And the widget was never polled (the old clobbering GET is gone).
+        assert "/partials/sessions/codex:test:sid/interaction" not in requests
+
+        # A real next question arrives over SSE → the widget swaps to it.
+        await emit("interaction", q2_fragment)
+        await page.wait_for_selector("text=Which cache layer should we use?")
+        slot = await page.locator("#pending-interaction-slot").inner_html()
+        assert "Which cache layer should we use?" in slot
+        assert "Which database should we use?" not in slot
+        assert page.url  # keep the page reference alive until here
+        await browser.close()
 
 
 async def test_idle_composer_hides_stop_button(tmp_path):

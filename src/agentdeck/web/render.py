@@ -412,3 +412,11 @@ def render_tool_activity(
     return templates.get_template("partials/tool_activity.html").render(
         label=label, elapsed_s=max(0, int(elapsed_s))
     )
+
+
+def render_pending_interaction(
+    templates: Jinja2Templates, session_key: str, interaction
+) -> str:
+    return templates.get_template("partials/pending_interaction.html").render(
+        session_key=session_key, interaction=interaction
+    )

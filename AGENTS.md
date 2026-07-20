@@ -31,9 +31,14 @@ For chat/composer work, treat this as the baseline contract:
 Any element under a background poll, auto-refresh, or SSE swap must never re-render over in-progress
 user input. For **every** new interactive UX element (form, multiple-choice/permission widget,
 picker, inline editor), confirm before shipping that a refresh firing mid-interaction cannot wipe a
-selected radio/checkbox, unsent typed text, or focus. Keep the refresh idempotent while the
-underlying state is unchanged — skip the swap or return `204 No Content` — and swap only on a real
-state change. Add a regression that polls while an answer is half-entered and asserts it survives.
+selected radio/checkbox, unsent typed text, or focus. Drive such an element off a real change signal
+(an `sse-swap` topic pushed only when the underlying state actually changes) rather than a blind
+timer, and re-render it only on a genuine change. In particular, do **not** give an interactive
+element a self-polling `hx-trigger="every Ns"` with `hx-swap="outerHTML"`: the poll re-renders and
+wipes input every tick, and an `outerHTML` self-replace does not cleanly hand the poll off to the
+new node, so it keeps firing with stale request params. Add a browser regression that selects an
+answer, lets the live update lifecycle run, and asserts the selection survives — and that a real
+next-question still swaps the widget.
 
 When several symptoms share an invariant, fix and test the invariant once instead of shipping a
 sequence of narrow patches.

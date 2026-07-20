@@ -31,6 +31,7 @@ from .render import (
     render_assistant_session,
     render_composer_controls,
     render_limit_bars,
+    render_pending_interaction,
     render_session_list,
     render_session_status,
     render_subagent_activity,
@@ -192,6 +193,14 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
                 templates, request.app.state.assistant, session_key
             ),
         )
+        # The pending-interaction widget is server-rendered on page load and kept
+        # live here — pushed ONLY when the interaction actually changes (a new
+        # question, or the current one answered/cancelled). Never re-pushing an
+        # unchanged interaction is what lets the user select radios/checkboxes and
+        # type an answer without a refresh wiping it mid-interaction. Seed from the
+        # already-rendered state so we don't clobber it on connect/reconnect.
+        _pending = provider.pending_interaction(account, session)
+        last_interaction_id = _pending.id if _pending is not None else None
         last_usage_sig = _usage_sig(accounts, state)
         last_usage_push = loop.time()
         while True:
@@ -236,6 +245,14 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
             if label != last_label:
                 last_label = label
                 yield format_sse("tools", render_tool_activity(templates, label, age))
+            interaction = provider.pending_interaction(account, session)
+            interaction_id = interaction.id if interaction is not None else None
+            if interaction_id != last_interaction_id:
+                last_interaction_id = interaction_id
+                yield format_sse(
+                    "interaction",
+                    render_pending_interaction(templates, session_key, interaction),
+                )
             sig = _usage_sig(accounts, state)
             # push on a new snapshot, or on the fixed cadence so "updated" keeps ticking
             if sig != last_usage_sig or (loop.time() - last_usage_push) >= USAGE_REFRESH_S:
