@@ -3027,3 +3027,52 @@ async def test_question_waiting_dismissable_from_detail_and_reverts_on_new_messa
         reverted = await client.get("/")
     assert "dh-pill dh-waiting" in reverted.text
     assert "dh-pill dh-done" not in reverted.text
+
+
+async def test_waiting_insight_dismissal_uses_message_key_and_survives_refresh(tmp_path):
+    # When a chat has a pending question AND Deckhand raised a waiting card,
+    # marking it done must key on the MESSAGE signature (not the evidence one),
+    # so it survives evidence churn and a refresh that re-creates the card —
+    # instead of reverting on the next 60s tick.
+    app = _app_with_state(tmp_path)
+    assistant = app.state.assistant
+    assistant.config.enabled = True
+    assistant.push = None  # no fire-and-forget push tasks from refresh() in this test
+    state = app.state.app_state
+    key = "claude_code:test:sid1"
+    state.update_session(
+        replace(state.sessions[key], question="Ship it?",
+                last_text="Ready to ship?", last_role="agent")
+    )
+    assistant.view = AssistantView(
+        state="ready", summary="1",
+        insights=(AssistantInsight(key, "waiting", "It asked whether to ship.", ""),),
+    )
+    assistant._signatures[key] = assistant._evidence_signature(state.sessions[key], None, None)
+
+    async with _client(app) as client:
+        resp = await client.post("/assistant/handle", data={"session_key": key})
+    assert resp.status_code == 200
+    # Routed to the message-signature store, not the evidence-signature one.
+    assert key in assistant._waiting_done and key not in assistant._handled
+    assert assistant.is_handled(key)
+
+    # Evidence churn alone does not revert it.
+    assistant._signatures[key] = "changed-evidence-signature"
+    assert assistant.is_handled(key)
+
+    # A refresh re-creates the waiting card, but it must be suppressed (not
+    # resurfaced) and the pill stays DONE.
+    await assistant.refresh()
+    assert all(i.session_key != key for i in assistant.view.insights)
+    assert assistant.is_handled(key)
+    async with _client(app) as client:
+        page = await client.get("/")
+    assert "dh-pill dh-done" in page.text
+    assert "dh-pill dh-waiting" not in page.text
+
+    # A NEW message reverts to WAITING.
+    state.update_session(
+        replace(state.sessions[key], question="A different question?", last_text="One more?")
+    )
+    assert not assistant.is_handled(key)

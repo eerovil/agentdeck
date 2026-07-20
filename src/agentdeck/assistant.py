@@ -512,6 +512,11 @@ class AssistantService:
         """Hide a card while its session stays acknowledged; auto-restore on change."""
         visible: list[AssistantInsight] = []
         for card in cards:
+            # A question-waiting dismissal hides the re-created waiting card too,
+            # so the next refresh can't resurface it (stale entries were already
+            # pruned above, so anything left here is still valid).
+            if card.session_key in self._waiting_done:
+                continue
             handled_sig = self._handled.get(card.session_key)
             current = signatures.get(card.session_key)
             if handled_sig is not None and handled_sig == current:
@@ -600,33 +605,13 @@ class AssistantService:
     # --- handled / undo ------------------------------------------------
 
     def handle(self, session_key: str) -> bool:
-        insight = next(
-            (i for i in self.view.insights if i.session_key == session_key), None
-        )
-        if insight is not None:
-            signature = self._signatures.get(session_key)
-            if signature is None:
-                return False
-            self._handled[session_key] = signature
-            self._handled_insights[session_key] = insight
-            if self.state.db:
-                self.state.db.record_assistant_handled(
-                    session_key, signature, insight.kind, insight.headline, insight.detail
-                )
-            insights = tuple(
-                i for i in self.view.insights if i.session_key != session_key
-            )
-            self.view = replace(
-                self.view, summary=tracking_summary(len(insights)), insights=insights
-            )
-            self._save_checkpoint()
-            self.state.bus.publish("assistant")
-            return True
-        # No Deckhand card, but the chat may simply be waiting on your answer (a
-        # trailing question). That never becomes an insight, so this is the only
-        # place it can be marked done. Key the dismissal on the message signature
-        # so it survives evidence churn and reverts precisely on a NEW message.
         session = self.state.sessions.get(session_key)
+        # A chat waiting on your answer (a pending question) reverts on a NEW
+        # message, so key its dismissal on the message signature — robust to the
+        # evidence-signature churn (git/PR context re-resolution, poll noise) that
+        # would otherwise revert it every refresh. This holds whether or not
+        # Deckhand also raised a waiting card; drop that card so the panel clears
+        # (and _apply_handled keeps the next refresh from resurfacing it).
         if session is not None and session.question:
             msig = self._message_signature(session)
             self._waiting_done[session_key] = msig
@@ -634,9 +619,36 @@ class AssistantService:
                 self.state.db.record_assistant_handled(
                     session_key, msig, _WAITING_DONE_KIND, "Marked done", session.question
                 )
+            insights = tuple(
+                i for i in self.view.insights if i.session_key != session_key
+            )
+            if len(insights) != len(self.view.insights):
+                self.view = replace(
+                    self.view, summary=tracking_summary(len(insights)), insights=insights
+                )
             self.state.bus.publish("assistant")
             return True
-        return False
+        # A non-question Deckhand card (blocked/finished): dismiss on the evidence
+        # signature, auto-restored when the session's evidence changes.
+        insight = next(
+            (i for i in self.view.insights if i.session_key == session_key), None
+        )
+        signature = self._signatures.get(session_key)
+        if insight is None or signature is None:
+            return False
+        self._handled[session_key] = signature
+        self._handled_insights[session_key] = insight
+        if self.state.db:
+            self.state.db.record_assistant_handled(
+                session_key, signature, insight.kind, insight.headline, insight.detail
+            )
+        insights = tuple(i for i in self.view.insights if i.session_key != session_key)
+        self.view = replace(
+            self.view, summary=tracking_summary(len(insights)), insights=insights
+        )
+        self._save_checkpoint()
+        self.state.bus.publish("assistant")
+        return True
 
     def unhandle(self, session_key: str) -> bool:
         waiting_done = self._waiting_done.pop(session_key, None) is not None
