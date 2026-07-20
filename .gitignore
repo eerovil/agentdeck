@@ -1,6 +1,11 @@
 # real Claude data must never enter the tree (this repo lives on a host with
-# real transcripts; these patterns catch strays copied in by accident)
-.claude/
+# real transcripts; these patterns catch strays copied in by accident).
+# The committed codebase-memory guides are the sole exception.
+.claude/*
+!.claude/codebase/
+.claude/codebase/*
+!.claude/codebase/*.md
+.claude/codebase/*/
 projects/
 sessions/
 history.jsonl
