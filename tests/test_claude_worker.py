@@ -968,3 +968,35 @@ async def test_revive_reuses_spawn_permission_mode(tmp_path):
     args1 = spawned[1]["args"]
     assert "--resume" in args1  # it is a revive
     assert args1[args1.index("--permission-mode") + 1] == "plan"  # not bypassPermissions
+
+
+async def test_write_then_init_timeout_is_uncertain_not_resent(tmp_path, monkeypatch):
+    # If the message is written but the child then fails to initialize by TIMEOUT
+    # (still possibly alive/mid-turn), we must NOT re-send it (that could run the
+    # task twice). It returns uncertain, spawns exactly once, and a same-id retry
+    # replays uncertain without a second spawn.
+    from agentdeck.providers.claude_code import worker as worker_mod
+
+    monkeypatch.setattr(worker_mod, "INIT_TIMEOUT_S", 0.1)
+    processes: list[FakeProcess] = []
+
+    async def factory(*args, **kwargs):
+        proc = FakeProcess()  # alive, never emits init, never exits → init times out
+        processes.append(proc)
+        return proc
+
+    host = ClaudeWorkerHost(
+        Account("claude_code:test", "claude_code", "test", tmp_path / "cfg"),
+        state_dir=tmp_path / "state",
+        process_factory=factory,
+    )
+    result = await host.deliver("chat-w", "go", cwd=str(tmp_path), fresh=True, delivery_id="w1")
+    assert result.action == "uncertain"
+    assert len(processes) == 1  # exactly one spawn — not re-sent to a fresh worker
+    assert processes[0].stdin.lines  # the message was written once
+    assert "w1" in host._records["chat-w"].deliveries  # receipt kept, not forgotten
+
+    replay = await host.deliver("chat-w", "go", cwd=str(tmp_path), fresh=True, delivery_id="w1")
+    assert replay.action == "uncertain"
+    assert len(processes) == 1  # same-id retry still does not re-send
+    await host.stop()

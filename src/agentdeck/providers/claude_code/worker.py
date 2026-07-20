@@ -52,7 +52,15 @@ DELIVERY_RECEIPT_CAP = 4096
 
 
 class WorkerError(RuntimeError):
-    """A Claude worker process could not complete a request."""
+    """A Claude worker process could not complete a request.
+
+    ``write_started`` marks a failure that happened *after* the user message was
+    already written to the child — the payload may have been delivered, so the
+    caller must not re-send it (that would run the task twice)."""
+
+    def __init__(self, *args: object, write_started: bool = False) -> None:
+        super().__init__(*args)
+        self.write_started = write_started
 
 
 @dataclass
@@ -541,8 +549,15 @@ class ClaudeWorkerHost:
                     permission_mode=spawn_permission_mode,
                 )
             except WorkerError as exc:
+                if exc.write_started:
+                    # The message already reached a worker; re-sending it (or fresh
+                    # -spawning and sending again) would run the task twice. Keep the
+                    # prepared receipt so a same-id retry replays as uncertain, and
+                    # never re-send — progress requires a new delivery id.
+                    return DeliverResult(True, "uncertain", session_id=rec.session_id)
                 if resume_id is not None:
-                    # Revive fallback: session gone/incompatible → fresh spawn.
+                    # Revive failed *before* the write → nothing was sent, so a fresh
+                    # spawn is safe.
                     log.warning("revive of %s failed (%s); spawning fresh", key, exc)
                     rec.session_id = None
                     resumed = False
@@ -558,6 +573,10 @@ class ClaudeWorkerHost:
                             permission_mode=spawn_permission_mode,
                         )
                     except WorkerError as fallback_exc:
+                        if fallback_exc.write_started:
+                            return DeliverResult(
+                                True, "uncertain", session_id=rec.session_id
+                            )
                         self._forget_delivery(rec, delivery_id)
                         return DeliverResult(False, "rejected", reason=str(fallback_exc))
                 else:
@@ -941,8 +960,10 @@ class ClaudeWorkerHost:
             model=model,
             permission_mode=permission_mode,
         )
+        wrote = False
         try:
             await self._write_user_message(live, message, image_blocks)
+            wrote = True  # payload is now in the child's stdin — never re-send it
             live.turn_active = True
             await asyncio.wait_for(asyncio.shield(live.initialized), timeout=INIT_TIMEOUT_S)
             return live
@@ -952,9 +973,18 @@ class ClaudeWorkerHost:
             await self._terminate(live)
             if live.initialized.done() and not live.initialized.cancelled():
                 live.initialized.exception()  # consume shutdown error after timeout
+            # Only an init *timeout* leaves the child possibly alive and mid-turn
+            # after our write — then re-sending could run the task twice, so fence
+            # it. If the process *died* (WorkerError/OSError, e.g. a gone --resume
+            # session that exits without processing), the write never took effect,
+            # so recovery may safely re-send under a fresh spawn.
+            started = wrote and isinstance(exc, TimeoutError)
             if isinstance(exc, WorkerError):
+                exc.write_started = exc.write_started or started
                 raise
-            raise WorkerError(f"claude worker failed to initialize: {exc}") from exc
+            raise WorkerError(
+                f"claude worker failed to initialize: {exc}", write_started=started
+            ) from exc
 
     async def _terminate(self, live: _LiveWorker) -> None:
         process = live.process
