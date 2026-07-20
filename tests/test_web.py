@@ -2912,3 +2912,51 @@ async def test_dead_subagents_drop_from_the_session_card(tmp_path):
         r2 = await client.get("/")
     assert "1 sub-agent" not in r2.text  # no count pill at all
     assert "Live subagent" not in r2.text  # and its row is gone too
+
+
+async def test_waiting_pill_converts_to_done_when_dismissed_no_card_control(tmp_path):
+    # What the card must do: a WAITING pill converts to DONE when the item is
+    # dismissed from the EXISTING done control (triage panel / detail page, i.e.
+    # POST /assistant/handle) — with NO extra button or click-action on the card
+    # itself. The card just reflects state; the pill flip is automatic.
+    app = _app_with_state(tmp_path)
+    assistant = app.state.assistant
+    assistant.config.enabled = True
+    key = "claude_code:test:sid1"
+    session = app.state.app_state.sessions[key]
+    # A pending question makes the card show the WAITING pill.
+    app.state.app_state.update_session(replace(session, question="Ship it?"))
+    assistant.view = AssistantView(
+        state="ready",
+        summary="One item needs attention.",
+        insights=(
+            AssistantInsight(
+                session_key=key,
+                kind="waiting",
+                headline="It asked whether to ship.",
+                detail="Waiting on your answer.",
+            ),
+        ),
+    )
+    updated = app.state.app_state.sessions[key]
+    assistant._signatures[key] = assistant._evidence_signature(updated, None, None)
+
+    async with _client(app) as client:
+        waiting = await client.get("/")
+    # The card shows WAITING and carries NO card-level done control.
+    assert "dh-pill dh-waiting" in waiting.text
+    assert "done-btn" not in waiting.text
+    assert "dh-actionable" not in waiting.text
+    assert f'data-done-key="{key}"' not in waiting.text
+
+    # Dismiss it exactly as the existing done control does.
+    async with _client(app) as client:
+        resp = await client.post("/assistant/handle", data={"session_key": key})
+    assert resp.status_code == 200
+
+    # The same card's pill has converted WAITING -> DONE — no reload action needed.
+    async with _client(app) as client:
+        done = await client.get("/")
+    assert "dh-pill dh-done" in done.text
+    assert "dh-pill dh-waiting" not in done.text
+    assert "done-btn" not in done.text  # still no card control
