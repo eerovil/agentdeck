@@ -1,9 +1,12 @@
 import asyncio
+import contextlib
 import json
 import os
+import socket
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import uvicorn
 from httpx import ASGITransport, AsyncClient
 from playwright.async_api import async_playwright
 
@@ -1092,6 +1095,246 @@ async def test_interaction_selection_survives_live_updates_e2e(tmp_path, monkeyp
         assert "Which database should we use?" not in slot
         assert page.url  # keep the page reference alive until here
         await browser.close()
+
+
+async def test_new_question_scrolls_into_view_e2e(tmp_path, monkeypatch):
+    # Issue follow-up: when a question (or approval) arrives, the reader must be
+    # scrolled to it — even if they had scrolled up into history. The cleared
+    # state must NOT scroll. Driven off the same `interaction` SSE topic.
+    app = _web_app(tmp_path)
+    session = app.state.app_state.sessions["codex:test:sid"]
+    session.capabilities = frozenset(
+        {Capability.TRANSCRIPT, Capability.INJECT, Capability.INTERACT}
+    )
+    q1 = _question_interaction(
+        "tok-1", "Database", "Which database should we use?", "Postgres", "SQLite"
+    )
+    q2 = _question_interaction(
+        "tok-2", "Cache", "Which cache layer should we use?", "Redis", "Memcached"
+    )
+    from agentdeck.providers import PROVIDERS
+
+    provider = PROVIDERS["codex"]
+    monkeypatch.setattr(provider, "owns_session", lambda account, session: True)
+    # No prompt at load, so the slot starts empty and only SSE drives it.
+    monkeypatch.setattr(provider, "pending_interaction", lambda account, session: None)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/sessions/codex:test:sid")
+    templates = app.state.templates
+    q1_fragment = render_pending_interaction(templates, "codex:test:sid", q1)
+    q2_fragment = render_pending_interaction(templates, "codex:test:sid", q2)
+    cleared_fragment = render_pending_interaction(templates, "codex:test:sid", None)
+
+    static_dir = Path(__file__).parents[1] / "src/agentdeck/web/static"
+    scripts = {
+        "/static/htmx.min.js": (static_dir / "htmx.min.js").read_text(),
+        "/static/sse.js": (static_dir / "sse.js").read_text(),
+        "/static/session_bottom_follow.js": (
+            static_dir / "session_bottom_follow.js"
+        ).read_text(),
+    }
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        context = await browser.new_context(
+            viewport={"width": 1200, "height": 800}, service_workers="block"
+        )
+        page = await context.new_page()
+        await page.add_init_script(
+            """
+            window.__eventSources = [];
+            window.__scrolls = [];
+            Element.prototype.scrollIntoView = function (opts) {
+              window.__scrolls.push({id: this.id, behavior: opts && opts.behavior});
+            };
+            class FakeEventSource extends EventTarget {
+              static CONNECTING = 0;
+              static OPEN = 1;
+              static CLOSED = 2;
+              constructor(url) {
+                super();
+                this.url = url;
+                this.readyState = FakeEventSource.OPEN;
+                this.listenerNames = [];
+                window.__eventSources.push(this);
+                queueMicrotask(() => { if (this.onopen) this.onopen(new Event('open')); });
+              }
+              addEventListener(name, listener, options) {
+                this.listenerNames.push(name);
+                super.addEventListener(name, listener, options);
+              }
+              close() { this.readyState = FakeEventSource.CLOSED; }
+              emit(name, data) { this.dispatchEvent(new MessageEvent(name, {data: data})); }
+            }
+            window.EventSource = FakeEventSource;
+            """
+        )
+
+        async def serve(route):
+            request = route.request
+            path = request.url.split("?", 1)[0].removeprefix("http://agentdeck.test")
+            if path == "/sessions/codex:test:sid":
+                await route.fulfill(status=200, content_type="text/html", body=response.text)
+            elif path in scripts:
+                await route.fulfill(
+                    status=200, content_type="text/javascript", body=scripts[path]
+                )
+            else:
+                await route.fulfill(status=204, body="")
+
+        await page.route("http://agentdeck.test/**", serve)
+        await page.goto("http://agentdeck.test/sessions/codex:test:sid")
+        await page.wait_for_function(
+            "window.__eventSources.length === 1 && "
+            "window.__eventSources[0].listenerNames.includes('interaction')"
+        )
+
+        async def emit(data):
+            await page.evaluate(
+                "d => window.__eventSources[0].emit('interaction', d)", data
+            )
+
+        # A real question scrolls the widget into view, smoothly.
+        await emit(q1_fragment)
+        await page.wait_for_function(
+            "window.__scrolls.some(s => s.id === 'pending-interaction' "
+            "&& s.behavior === 'smooth')"
+        )
+        after_q1 = await page.evaluate("window.__scrolls.length")
+
+        # Clearing the prompt (answered/cancelled) must NOT scroll.
+        await emit(cleared_fragment)
+        await page.wait_for_timeout(200)
+        assert await page.evaluate("window.__scrolls.length") == after_q1
+
+        # The next question scrolls again — several in a row each get revealed.
+        await emit(q2_fragment)
+        await page.wait_for_function(f"window.__scrolls.length > {after_q1}")
+        await browser.close()
+
+
+def _async_return(value):
+    async def _fn(*args, **kwargs):
+        return value
+
+    return _fn
+
+
+@contextlib.asynccontextmanager
+async def _live_server(app):
+    """Run the real ASGI app on an ephemeral loopback port so a browser can drive
+    it end to end (real routes, real SSE stream, real static JS). lifespan is off:
+    app state is built in create_app, and we don't want real provider startup."""
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    config = uvicorn.Config(
+        app, host="127.0.0.1", port=port, log_level="warning", lifespan="off"
+    )
+    server = uvicorn.Server(config)
+    task = asyncio.create_task(server.serve(sockets=[sock]))
+    try:
+        for _ in range(200):
+            if server.started:
+                break
+            await asyncio.sleep(0.02)
+        assert server.started, "uvicorn did not start"
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        server.should_exit = True
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(task, timeout=5)
+
+
+async def test_full_question_lifecycle_e2e_with_mock_llm(tmp_path, monkeypatch):
+    # Full stack, real browser: a (mocked) LLM asks a multiple-choice question,
+    # it streams to the page over the REAL SSE channel, scrolls into view, the
+    # user's selection survives the live turn, and submitting delivers the answer
+    # back through the real route. Only the provider (the "LLM") is faked.
+    app = _web_app(tmp_path)
+    session = app.state.app_state.sessions["codex:test:sid"]
+    session.capabilities = frozenset(
+        {Capability.TRANSCRIPT, Capability.INJECT, Capability.INTERACT}
+    )
+    question = _question_interaction(
+        "tok-1", "Database", "Which database should we use?", "Postgres", "SQLite"
+    )
+    # The "LLM" backend: a flippable pending interaction + an answer sink.
+    box = {"pending": None}
+    captured = {}
+
+    async def answer_interaction(account, session, interaction_id, *, answers, decision):
+        captured.update(interaction_id=interaction_id, answers=answers, decision=decision)
+        box["pending"] = None  # answered → cleared, like the real runtime
+        return InjectResult(True)
+
+    from agentdeck.providers import PROVIDERS
+
+    provider = PROVIDERS["codex"]
+    monkeypatch.setattr(provider, "owns_session", lambda account, session: True)
+    monkeypatch.setattr(
+        provider, "pending_interaction", lambda account, session: box["pending"]
+    )
+    monkeypatch.setattr(provider, "answer_interaction", answer_interaction)
+    # Keep the SSE tail loop cheap and quiet — no real transcript backend.
+    monkeypatch.setattr(provider, "transcript_cursor", _async_return((0, 0)))
+    monkeypatch.setattr(provider, "tail_transcript", _async_return(([], 0, 0)))
+    monkeypatch.setattr(provider, "last_event", _async_return(None))
+
+    async with _live_server(app) as base_url, async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        context = await browser.new_context(
+            viewport={"width": 1024, "height": 720}, service_workers="block"
+        )
+        page = await context.new_page()
+        await page.add_init_script(
+            """
+            window.__scrolls = [];
+            const orig = Element.prototype.scrollIntoView;
+            Element.prototype.scrollIntoView = function (opts) {
+              window.__scrolls.push({id: this.id, behavior: opts && opts.behavior});
+              return orig.apply(this, arguments);
+            };
+            """
+        )
+        await page.goto(f"{base_url}/sessions/codex:test:sid")
+        # Real SSE connects and the slot is present but empty/hidden (no question).
+        await page.wait_for_selector("#pending-interaction-slot", state="attached")
+
+        # The mocked LLM asks its question; the real SSE stream pushes it (≤~2s).
+        box["pending"] = question
+        await page.wait_for_selector("text=Which database should we use?", timeout=10_000)
+
+        # It scrolled into view (smoothly) and is actually visible.
+        assert await page.evaluate(
+            "window.__scrolls.some(s => s.id === 'pending-interaction' "
+            "&& s.behavior === 'smooth')"
+        )
+        from playwright.async_api import expect
+
+        await expect(page.locator("#pending-interaction")).to_be_in_viewport()
+
+        # Pick an answer, let the live turn keep streaming, and confirm it survives.
+        radio = page.locator('input[name="answer__database"][value="Postgres"]')
+        await radio.check()
+        await page.wait_for_timeout(2500)
+        assert await radio.is_checked(), "selection did not survive the live SSE turn"
+
+        # Submit → the answer must reach the (mock) LLM through the real route.
+        await page.locator('#pending-interaction button[type="submit"]').click()
+        await page.wait_for_selector(
+            "text=Which database should we use?", state="detached", timeout=10_000
+        )
+        await browser.close()
+
+    # The selected answer reached the (mock) LLM through the real route. (The
+    # submit button's decision="accept" is dropped by the browser here because
+    # interaction_feedback.js disables submit buttons before htmx serializes —
+    # pre-existing behavior, harmless for questions where the answer is the
+    # selection itself.)
+    assert captured["interaction_id"] == "tok-1"
+    assert captured["answers"] == {"database": ["Postgres"]}
 
 
 async def test_idle_composer_hides_stop_button(tmp_path):

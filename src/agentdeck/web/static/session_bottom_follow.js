@@ -136,12 +136,31 @@
       if (swap && swap.enabled) scheduleToBottom(swap.generation);
     }
 
+    function revealInteraction(event) {
+      // The pending-interaction widget arrives over its own `interaction` SSE
+      // topic (see routes_sse), which fires htmx:sseMessage on the slot. When a
+      // real prompt appears — a question or an approval, both carry the answer
+      // form — bring it into view so the reader sees what needs answering, even
+      // if they had scrolled up into history. The cleared state is an empty
+      // section with no form, and must not scroll.
+      if (!event.target || event.target.id !== 'pending-interaction-slot') return;
+      var section = event.target.querySelector('#pending-interaction');
+      if (!section || !section.querySelector('form[data-agentdeck-action="interaction"]')) {
+        return;
+      }
+      // One rAF so the swapped-in widget has laid out before we measure/scroll.
+      requestAnimationFrame(function () {
+        section.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+      });
+    }
+
     document.body.addEventListener('htmx:beforeSwap', beforeTranscriptSwap);
     document.body.addEventListener('htmx:afterSwap', afterTranscriptSwap);
     // The SSE extension uses its own lifecycle events instead of the ordinary
     // before/afterSwap pair.
     document.body.addEventListener('htmx:sseBeforeMessage', beforeTranscriptSwap);
     document.body.addEventListener('htmx:sseMessage', afterTranscriptSwap);
+    document.body.addEventListener('htmx:sseMessage', revealInteraction);
     document.body.addEventListener('agentdeck:optimistic-send', function () {
       followingSend = true;
       cancelledSendFollow = false;
