@@ -56,13 +56,24 @@ self.addEventListener('push', (event) => {
   try { data = event.data ? event.data.json() : {}; } catch (e) { data = {}; }
   const title = data.title || 'agentdeck';
   event.waitUntil(
-    self.registration.showNotification(title, {
-      body: data.body || '',
-      // Collapse repeats about the same thing onto one notification.
-      tag: data.url || 'agentdeck',
-      data: { url: data.url || '/' },
-      icon: '/static/icon-192.png',
-      badge: '/static/icon-192.png',
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+      // If this device already has the app open in the foreground, the user is
+      // watching the activity live — don't stack a redundant notification
+      // (issue #36). This is per-device: each device's worker only sees its own
+      // windows, so a phone in your pocket still buzzes while the desktop tab you
+      // are looking at stays quiet. A *visible* client is the sanctioned
+      // exception to userVisibleOnly, so the browser won't fall back to its own
+      // generic "site updated in the background" notification here.
+      const foreground = clientList.some((client) => client.visibilityState === 'visible');
+      if (foreground) return undefined;
+      return self.registration.showNotification(title, {
+        body: data.body || '',
+        // Collapse repeats about the same thing onto one notification.
+        tag: data.url || 'agentdeck',
+        data: { url: data.url || '/' },
+        icon: '/static/icon-192.png',
+        badge: '/static/icon-192.png',
+      });
     })
   );
 });

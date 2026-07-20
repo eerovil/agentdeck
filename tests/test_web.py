@@ -957,6 +957,71 @@ async def test_notification_click_always_routes_home_and_never_no_ops(tmp_path):
     assert "navigator.serviceWorker.addEventListener('message'" in dash
 
 
+async def test_push_suppressed_only_when_a_window_is_foreground(tmp_path):
+    # Issue #36: a push must not stack a notification when this device already has
+    # the app open and visible, but must still notify when it's closed or
+    # backgrounded. Drive the shipped push handler under a mocked worker scope.
+    app = _app_with_state(tmp_path)
+    async with _client(app) as c:
+        sw_source = (await c.get("/sw.js")).text
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content("<main></main>")
+        results = await page.evaluate(
+            """async (swSource) => {
+                const handlers = {};
+                const shown = [];
+                const mockSelf = {
+                    location: { origin: 'https://deck.example' },
+                    addEventListener: (type, fn) => { handlers[type] = fn; },
+                    skipWaiting: () => {},
+                    registration: {
+                        showNotification: (title, opts) => { shown.push({ title, opts }); },
+                    },
+                    clients: {},
+                };
+                const noop = () => Promise.resolve();
+                const mockCaches = { open: noop, keys: () => Promise.resolve([]),
+                                     match: () => Promise.resolve(null), delete: noop };
+                new Function('self', 'caches', swSource)(mockSelf, mockCaches);
+
+                async function run(visibilities) {
+                    shown.length = 0;
+                    mockSelf.clients = {
+                        matchAll: async () =>
+                            visibilities.map((v) => ({ visibilityState: v })),
+                    };
+                    const ev = {
+                        data: { json: () => ({ title: 'T', body: 'B', url: '/chat/x' }) },
+                        _p: null,
+                        waitUntil(p) { this._p = p; },
+                    };
+                    handlers.push(ev);
+                    await ev._p;
+                    return shown.map((s) => ({ title: s.title, tag: s.opts.tag }));
+                }
+
+                return {
+                    foreground: await run(['visible']),
+                    backgrounded: await run(['hidden']),
+                    mixed: await run(['hidden', 'visible']),
+                    none: await run([]),
+                };
+            }""",
+            sw_source,
+        )
+        await browser.close()
+
+    # A visible window on this device suppresses the notification...
+    assert results["foreground"] == []
+    assert results["mixed"] == []
+    # ...but a hidden/backgrounded app, or no window at all, still notifies.
+    assert results["backgrounded"] == [{"title": "T", "tag": "/chat/x"}]
+    assert results["none"] == [{"title": "T", "tag": "/chat/x"}]
+
+
 async def test_markdown_links_reject_unsafe_schemes_and_attribute_breakout(tmp_path):
     app = _app_with_state(tmp_path)
     async with _client(app) as client:
