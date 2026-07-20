@@ -791,3 +791,95 @@ async def test_reconcile_noop_without_sessions(tmp_path, monkeypatch):
         state_dir=state_dir,
     )
     assert called["read"] is False  # no owned session ids → registry never read
+
+
+# --- replay spine: at-most-once delivery + durable, time-bounded receipts -----
+
+
+async def test_receipt_is_persisted_before_the_child_write(tmp_path):
+    # The receipt for a delivery id must be durable *before* the message is
+    # written, so a crash in the write→confirm window replays as already-handled
+    # instead of re-delivering. Snapshot the receipt at the moment of the write.
+    holder: dict = {}
+    seen_at_write: list[dict | None] = []
+
+    class SnoopStdin(FakeStdin):
+        def write(self, data: bytes) -> None:
+            rec = holder["host"]._records.get("issue-1")
+            seen_at_write.append(dict(rec.deliveries.get("d1", {})) if rec else None)
+            super().write(data)
+
+    async def factory(*args, **fkwargs):
+        proc = FakeProcess()
+        proc.stdin = SnoopStdin()
+        asyncio.get_running_loop().call_soon(
+            proc.stdout.emit,
+            {"type": "system", "subtype": "init", "session_id": "sid-x"},
+        )
+        return proc
+
+    host = ClaudeWorkerHost(
+        Account("claude_code:test", "claude_code", "test", tmp_path / "cfg"),
+        state_dir=tmp_path / "state",
+        process_factory=factory,
+    )
+    holder["host"] = host
+    result = await host.deliver("issue-1", "go", cwd=str(tmp_path), delivery_id="d1")
+    assert result.accepted
+    # A receipt already existed at write time, in the *prepared* state (no action).
+    assert seen_at_write and seen_at_write[0].get("fingerprint")
+    assert "action" not in seen_at_write[0]
+    # After success it is finalized with the real action.
+    assert host._records["issue-1"].deliveries["d1"]["action"] == "spawned"
+
+
+async def test_prepared_receipt_replays_uncertain_without_rewriting(tmp_path):
+    host, spawned = _host(tmp_path)
+    first = await host.deliver("issue-1", "go", cwd=str(tmp_path), delivery_id="d1")
+    assert first.accepted
+    proc = spawned[0]["process"]
+    writes_before = len(proc.stdin.lines)
+    # Simulate a crash that persisted the prepared receipt but never finalized it.
+    host._records["issue-1"].deliveries["d1"].pop("action")
+    # Replaying the same delivery id must not write a second time.
+    replay = await host.deliver("issue-1", "go", cwd=str(tmp_path), delivery_id="d1")
+    assert replay.accepted and replay.action == "uncertain"
+    assert len(proc.stdin.lines) == writes_before
+
+
+async def test_delivery_receipts_are_time_bounded_not_fifo_64(tmp_path):
+    host, spawned = _host(tmp_path)
+    first = await host.deliver("issue-1", "m0", cwd=str(tmp_path), delivery_id="d0")
+    assert first.action == "spawned"
+    proc = spawned[0]["process"]
+    proc.stdout.emit({"type": "system", "subtype": "init", "session_id": "sid"})
+    await _settle()
+    # 69 further deliveries — well past the old 64-entry FIFO that would have
+    # evicted d0's receipt.
+    for i in range(1, 70):
+        r = await host.deliver("issue-1", f"m{i}", cwd=str(tmp_path), delivery_id=f"d{i}")
+        assert r.accepted
+    writes = len(proc.stdin.lines)
+    assert "d0" in host._records["issue-1"].deliveries  # still remembered
+    # Replaying the very first id dedups (cached), rather than re-delivering.
+    replay = await host.deliver("issue-1", "m0", cwd=str(tmp_path), delivery_id="d0")
+    assert replay.accepted and replay.action == "spawned"
+    assert len(proc.stdin.lines) == writes
+
+
+async def test_clean_write_failure_keeps_delivery_retryable(tmp_path):
+    host, spawned = _host(tmp_path)
+    first = await host.deliver("issue-1", "go", cwd=str(tmp_path), delivery_id="d1")
+    assert first.accepted
+    proc = spawned[0]["process"]
+    proc.stdout.emit({"type": "system", "subtype": "init", "session_id": "sid"})
+    await _settle()
+
+    def boom(data: bytes) -> None:
+        raise BrokenPipeError("pipe")
+
+    proc.stdin.write = boom  # the steer write fails cleanly — nothing sent
+    second = await host.deliver("issue-1", "steer", cwd=str(tmp_path), delivery_id="d2")
+    assert not second.accepted
+    # A cleanly-failed write leaves no receipt, so the id can be retried.
+    assert "d2" not in host._records["issue-1"].deliveries

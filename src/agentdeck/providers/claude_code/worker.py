@@ -44,6 +44,12 @@ INIT_TIMEOUT_S = 30.0
 # trusted — a stalled collector must not permanently block (or greenlight) work.
 USAGE_MAX_AGE_S = 1800.0
 
+# Delivery receipts are retained by age (not a fixed FIFO count) so a delivery ID
+# retried after many intervening deliveries still finds its record and dedups,
+# instead of silently re-executing. The high count cap is only a runaway backstop.
+DELIVERY_RECEIPT_TTL_S = 24 * 3600.0
+DELIVERY_RECEIPT_CAP = 4096
+
 
 class WorkerError(RuntimeError):
     """A Claude worker process could not complete a request."""
@@ -455,9 +461,13 @@ class ClaudeWorkerHost:
             live = self._live.get(key)
 
             if live is not None and live.process.returncode is None and not fresh:
+                self._prepare_delivery(
+                    rec, delivery_id, fingerprint, session_id=rec.session_id
+                )
                 try:
                     await self._write_user_message(live, message, image_blocks)
                 except WorkerError as exc:
+                    self._forget_delivery(rec, delivery_id)
                     return DeliverResult(False, "rejected", reason=str(exc))
                 rec.last_delivery_at = time.time()
                 action = "steered" if live.turn_active else "queued"
@@ -507,6 +517,7 @@ class ClaudeWorkerHost:
 
             resume_id = None if fresh else rec.session_id
             resumed = resume_id is not None
+            self._prepare_delivery(rec, delivery_id, fingerprint, session_id=resume_id)
             try:
                 live = await self._spawn_and_deliver(
                     key,
@@ -535,8 +546,10 @@ class ClaudeWorkerHost:
                             permission_mode=permission_mode,
                         )
                     except WorkerError as fallback_exc:
+                        self._forget_delivery(rec, delivery_id)
                         return DeliverResult(False, "rejected", reason=str(fallback_exc))
                 else:
+                    self._forget_delivery(rec, delivery_id)
                     return DeliverResult(False, "rejected", reason=str(exc))
 
             rec.last_delivery_at = time.time()
@@ -583,11 +596,59 @@ class ClaudeWorkerHost:
             return None
         if receipt.get("fingerprint") != fingerprint:
             return DeliverResult(False, "rejected", reason="delivery_id_conflict")
-        return DeliverResult(
-            True,
-            str(receipt.get("action") or "queued"),
-            session_id=receipt.get("session_id"),
-        )
+        # A finalized receipt (carries an "action") replays its original result.
+        # A prepared-only receipt means a prior attempt persisted the receipt and
+        # then wrote — or was killed around the write — without confirming
+        # completion; at-most-once forbids writing again, so surface it as
+        # uncertain rather than re-delivering the same payload.
+        action = receipt.get("action")
+        if action:
+            return DeliverResult(True, str(action), session_id=receipt.get("session_id"))
+        return DeliverResult(True, "uncertain", session_id=receipt.get("session_id"))
+
+    @staticmethod
+    def _prune_deliveries(rec: WorkerRecord) -> None:
+        """Drop receipts by age (with a high count backstop) — monotonic, not a
+        small FIFO, so a delivery ID retried after many intervening deliveries
+        still finds its record and dedups instead of silently re-executing."""
+        now = time.time()
+        for did in [
+            d
+            for d, r in rec.deliveries.items()
+            if now - float(r.get("at", 0.0)) > DELIVERY_RECEIPT_TTL_S
+        ]:
+            rec.deliveries.pop(did, None)
+        if len(rec.deliveries) > DELIVERY_RECEIPT_CAP:
+            for did in sorted(
+                rec.deliveries, key=lambda d: float(rec.deliveries[d].get("at", 0.0))
+            )[: len(rec.deliveries) - DELIVERY_RECEIPT_CAP]:
+                rec.deliveries.pop(did, None)
+
+    def _prepare_delivery(
+        self,
+        rec: WorkerRecord,
+        delivery_id: str | None,
+        fingerprint: str,
+        *,
+        session_id: str | None,
+    ) -> None:
+        """Persist a durable receipt *before* the child write, so a crash in the
+        write→confirm window replays as uncertain instead of re-delivering."""
+        if not delivery_id:
+            return
+        rec.deliveries[delivery_id] = {
+            "fingerprint": fingerprint,
+            "session_id": session_id,
+            "at": time.time(),
+        }
+        self._prune_deliveries(rec)
+        self._save_state()
+
+    def _forget_delivery(self, rec: WorkerRecord, delivery_id: str | None) -> None:
+        """Drop a prepared receipt whose write cleanly failed (nothing sent), so
+        the dispatcher may retry the same delivery ID."""
+        if delivery_id and rec.deliveries.pop(delivery_id, None) is not None:
+            self._save_state()
 
     @staticmethod
     def _remember_delivery(
@@ -602,9 +663,9 @@ class ClaudeWorkerHost:
             "fingerprint": fingerprint,
             "action": result.action,
             "session_id": result.session_id,
+            "at": time.time(),
         }
-        while len(rec.deliveries) > 64:
-            rec.deliveries.pop(next(iter(rec.deliveries)))
+        ClaudeWorkerHost._prune_deliveries(rec)
 
     async def interrupt(self, key: str) -> DeliverResult:
         live = self._live.get(key)
