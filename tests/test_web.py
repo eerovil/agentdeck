@@ -310,6 +310,70 @@ async def test_orchestration_assistant_item_can_be_marked_handled(tmp_path):
     assert "Mark Choose one owner done" in restored_page.text
 
 
+async def test_transcript_bottom_deckhand_done_button_toggles_with_insight(tmp_path):
+    # Feature: a Deckhand done/undo control at the bottom of the transcript,
+    # reusing /assistant/handle + /assistant/unhandle, shown only when there is a
+    # live insight to dismiss (or a standing dismissal to undo), and toggling in
+    # lockstep with the sidebar card via its own SSE topic.
+    app = _app_with_state(tmp_path)
+    assistant = app.state.assistant
+    assistant.config.enabled = True
+    key = "claude_code:test:sid1"
+
+    # No insight yet → the bottom bar renders as an empty (hidden) container, no
+    # button, and it is wired to a real change signal, not a blind poll.
+    assistant.view = AssistantView(state="ready", summary="", insights=())
+    async with _client(app) as client:
+        empty = await client.get(f"/sessions/{key}")
+    assert 'id="deckhand-done-bar"' in empty.text
+    assert 'sse-swap="assistant-session-done"' in empty.text
+    assert "Deckhand done" not in empty.text
+    assert 'hx-trigger="every' not in empty.text  # no self-polling on the control
+
+    # A live insight → the bottom bar offers "Deckhand done" wired to the existing
+    # handle endpoint for this session.
+    assistant.view = AssistantView(
+        state="ready",
+        summary="One item needs attention.",
+        insights=(
+            AssistantInsight(
+                session_key=key,
+                kind="coordination",
+                headline="Choose one owner",
+                detail="Two chats overlap.",
+            ),
+        ),
+    )
+    session = app.state.app_state.sessions[key]
+    assistant._signatures[key] = assistant._evidence_signature(session, None, None)
+
+    async with _client(app) as client:
+        live = await client.get(f"/sessions/{key}")
+    bar = live.text.split('id="deckhand-done-bar"', 1)[1].split("</div>", 1)[0]
+    assert 'hx-post="/assistant/handle"' in bar
+    assert f'name="session_key" value="{key}"' in bar
+    assert "✓ Deckhand done" in bar
+    assert "Undo Deckhand done" not in bar
+
+    # Mark it done → the SSE-driven control flips to Undo (unhandle), matching the
+    # sidebar card, and the page's own bottom bar renders the same on reload.
+    async with _client(app) as client:
+        await client.post("/assistant/handle", data={"session_key": key})
+        done_page = await client.get(f"/sessions/{key}")
+    done_bar = done_page.text.split('id="deckhand-done-bar"', 1)[1].split("</div>", 1)[0]
+    assert 'hx-post="/assistant/unhandle"' in done_bar
+    assert "↩ Undo Deckhand done" in done_bar
+    assert "✓ Deckhand done" not in done_bar
+
+    # Undo restores the dismissable state.
+    async with _client(app) as client:
+        await client.post("/assistant/unhandle", data={"session_key": key})
+        back_page = await client.get(f"/sessions/{key}")
+    back_bar = back_page.text.split('id="deckhand-done-bar"', 1)[1].split("</div>", 1)[0]
+    assert 'hx-post="/assistant/handle"' in back_bar
+    assert "✓ Deckhand done" in back_bar
+
+
 async def test_manual_deckhand_check_explains_that_unchanged_evidence_skips_luna(tmp_path):
     app = _app_with_state(tmp_path)
     assistant = app.state.assistant

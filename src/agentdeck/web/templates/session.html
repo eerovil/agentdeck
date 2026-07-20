@@ -85,6 +85,14 @@
   <div id="tool-activity" sse-swap="tools">{% set label = activity_label %}{% set elapsed_s = activity_elapsed %}{% include "partials/tool_activity.html" %}</div>
 </div>
 
+{# Deckhand done/undo at the bottom of the transcript. Driven by its own SSE
+   topic (pushed only when the assistant state actually changes) so it toggles in
+   lockstep with the sidebar card and never re-renders over anything. #}
+<div id="deckhand-done-bar" class="deckhand-done-bar" sse-swap="assistant-session-done" hx-swap="innerHTML">
+  {% set session_key = session.key %}
+  {% include "partials/session_done_button.html" %}
+</div>
+
 {% if owned_session %}
 <div id="pending-interaction-slot" sse-swap="interaction" hx-swap="innerHTML">
 {% set interaction = pending_interaction %}

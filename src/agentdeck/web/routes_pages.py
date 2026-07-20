@@ -194,6 +194,7 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
             "assistant_insights": assistant_insights_for_session(
                 assistant, session.key
             ),
+            "assistant_handled": assistant.handled_insight(session.key),
             "git_context": git_context,
             # topbar usage bars, rendered server-side so they paint immediately
             # (the per-session SSE stream then keeps them live over one socket).

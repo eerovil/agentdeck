@@ -1,0 +1,17 @@
+{# Deckhand "done" control at the bottom of the transcript (near the composer),
+   so a live attention card can be dismissed without scrolling back up to the
+   sidebar. It reuses the existing per-session handle/unhandle actions and rides
+   the `assistant-session-done` SSE topic, so it toggles Done <-> Undo in lockstep
+   with the sidebar card. Renders nothing unless this session has a live insight
+   to dismiss or a standing dismissal to undo. #}
+{% if assistant_insights %}
+<form class="deckhand-done" hx-post="/assistant/handle" hx-swap="none" hx-disabled-elt="find button">
+  <input type="hidden" name="session_key" value="{{ session_key }}">
+  <button type="submit" aria-label="Mark this chat's Deckhand attention done">✓ Deckhand done</button>
+</form>
+{% elif assistant_handled %}
+<form class="deckhand-done is-done" hx-post="/assistant/unhandle" hx-swap="none" hx-disabled-elt="find button">
+  <input type="hidden" name="session_key" value="{{ session_key }}">
+  <button type="submit" aria-label="Undo Deckhand done">↩ Undo Deckhand done</button>
+</form>
+{% endif %}

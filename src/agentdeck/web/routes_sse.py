@@ -32,6 +32,7 @@ from .render import (
     render_composer_controls,
     render_limit_bars,
     render_pending_interaction,
+    render_session_done,
     render_session_list,
     render_session_status,
     render_subagent_activity,
@@ -193,6 +194,10 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
                 templates, request.app.state.assistant, session_key
             ),
         )
+        yield format_sse(
+            "assistant-session-done",
+            render_session_done(templates, request.app.state.assistant, session_key),
+        )
         # The pending-interaction widget is server-rendered on page load and kept
         # live here — pushed ONLY when the interaction actually changes (a new
         # question, or the current one answered/cancelled). Never re-pushing an
@@ -282,6 +287,12 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
                 yield format_sse(
                     "assistant-session",
                     render_assistant_session(
+                        templates, request.app.state.assistant, session_key
+                    ),
+                )
+                yield format_sse(
+                    "assistant-session-done",
+                    render_session_done(
                         templates, request.app.state.assistant, session_key
                     ),
                 )
