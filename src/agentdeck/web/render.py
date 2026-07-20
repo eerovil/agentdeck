@@ -222,9 +222,11 @@ def render_assistant_session(templates: Jinja2Templates, assistant, session_key:
 def render_session_done(templates: Jinja2Templates, assistant, session_key: str) -> str:
     """The bottom-of-transcript Deckhand done/undo control. Shares the same state
     as ``render_assistant_session`` so both surfaces toggle together over SSE."""
+    session = assistant.state.sessions.get(session_key)
     return templates.get_template("partials/session_done_button.html").render(
         assistant_insights=assistant_insights_for_session(assistant, session_key),
-        assistant_handled=assistant.handled_insight(session_key),
+        session_handled=assistant.is_handled(session_key),
+        session_waiting=session is not None and bool(session.question),
         session_key=session_key,
     )
 

@@ -2,16 +2,18 @@
    so a live attention card can be dismissed without scrolling back up to the
    sidebar. It reuses the existing per-session handle/unhandle actions and rides
    the `assistant-session-done` SSE topic, so it toggles Done <-> Undo in lockstep
-   with the sidebar card. Renders nothing unless this session has a live insight
-   to dismiss or a standing dismissal to undo. #}
-{% if assistant_insights %}
-<form class="deckhand-done" hx-post="/assistant/handle" hx-swap="none" hx-disabled-elt="find button">
-  <input type="hidden" name="session_key" value="{{ session_key }}">
-  <button type="submit" aria-label="Mark this chat's Deckhand attention done">✓ Deckhand done</button>
-</form>
-{% elif assistant_handled %}
+   with the sidebar card's pill. It renders when this session is dismissable — a
+   live Deckhand insight OR a plain pending question (waiting on your answer) —
+   and flips to Undo once dismissed. A new message auto-reverts the dismissal, so
+   the control comes back on its own. Nothing renders when there's nothing to do. #}
+{% if session_handled %}
 <form class="deckhand-done is-done" hx-post="/assistant/unhandle" hx-swap="none" hx-disabled-elt="find button">
   <input type="hidden" name="session_key" value="{{ session_key }}">
   <button type="submit" aria-label="Undo Deckhand done">↩ Undo Deckhand done</button>
+</form>
+{% elif assistant_insights or session_waiting %}
+<form class="deckhand-done" hx-post="/assistant/handle" hx-swap="none" hx-disabled-elt="find button">
+  <input type="hidden" name="session_key" value="{{ session_key }}">
+  <button type="submit" aria-label="Mark this chat done">✓ Deckhand done</button>
 </form>
 {% endif %}

@@ -2960,3 +2960,70 @@ async def test_waiting_pill_converts_to_done_when_dismissed_no_card_control(tmp_
     assert "dh-pill dh-done" in done.text
     assert "dh-pill dh-waiting" not in done.text
     assert "done-btn" not in done.text  # still no card control
+
+
+async def test_question_waiting_dismissable_from_detail_and_reverts_on_new_message(tmp_path):
+    # A chat merely WAITING on your answer (a trailing question, no Deckhand
+    # insight) can be marked done from the detail-page done-bar. The card pill
+    # flips WAITING -> DONE with no card control, and a NEW message auto-reverts
+    # it back to WAITING.
+    app = _app_with_state(tmp_path)
+    assistant = app.state.assistant
+    assistant.config.enabled = True
+    state = app.state.app_state
+    key = "claude_code:test:sid1"
+    # A pending question, but NO Deckhand insight in the view (attention empty).
+    state.update_session(
+        replace(state.sessions[key], question="Take them on next, or stop here?",
+                last_text="Want me to take them on next?", last_role="agent")
+    )
+    assert assistant.view.insights == ()
+
+    # Detail done-bar offers "Deckhand done" even without an insight.
+    async with _client(app) as client:
+        detail = await client.get(f"/sessions/{key}")
+    bar = detail.text.split('id="deckhand-done-bar"', 1)[1].split("</div>", 1)[0]
+    assert 'hx-post="/assistant/handle"' in bar
+    assert "Deckhand done" in bar
+
+    # Card shows WAITING and carries no card-level control.
+    async with _client(app) as client:
+        before = await client.get("/")
+    assert "dh-pill dh-waiting" in before.text
+    assert "done-btn" not in before.text and "dh-actionable" not in before.text
+
+    # Mark done via the existing route.
+    async with _client(app) as client:
+        resp = await client.post("/assistant/handle", data={"session_key": key})
+    assert resp.status_code == 200
+    assert assistant.is_handled(key)
+
+    # Card pill converted to DONE; detail bar now offers Undo.
+    async with _client(app) as client:
+        done_page = await client.get("/")
+    assert "dh-pill dh-done" in done_page.text
+    assert "dh-pill dh-waiting" not in done_page.text
+    async with _client(app) as client:
+        detail2 = await client.get(f"/sessions/{key}")
+    bar2 = detail2.text.split('id="deckhand-done-bar"', 1)[1].split("</div>", 1)[0]
+    assert 'hx-post="/assistant/unhandle"' in bar2
+
+    # Evidence churn WITHOUT a new message (git/PR context re-resolved, poll
+    # noise) must NOT revert the dismissal — this is the bug the message
+    # signature fixes; the old evidence-signature key reverted on every refresh.
+    assistant._signatures[key] = "totally-different-evidence-signature"
+    assert assistant.is_handled(key)
+    async with _client(app) as client:
+        still_done = await client.get("/")
+    assert "dh-pill dh-done" in still_done.text
+
+    # A NEW message (question / last text changes) auto-reverts to WAITING.
+    state.update_session(
+        replace(state.sessions[key], question="A different question now?",
+                last_text="Actually, one more thing?", last_role="agent")
+    )
+    assert not assistant.is_handled(key)
+    async with _client(app) as client:
+        reverted = await client.get("/")
+    assert "dh-pill dh-waiting" in reverted.text
+    assert "dh-pill dh-done" not in reverted.text
