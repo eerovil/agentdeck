@@ -164,6 +164,7 @@ class InteractionQuestion:
     options: tuple[InteractionOption, ...] = ()
     allow_other: bool = False
     secret: bool = False
+    multiselect: bool = False  # render checkboxes (many answers) rather than radios
 
 
 @dataclass(frozen=True)

@@ -78,6 +78,13 @@ class WorkerKeyRequest(ActionRequest):
     key: str
 
 
+class WorkerAnswerRequest(ActionRequest):
+    key: str
+    interaction_id: str
+    answers: dict[str, list[str]] = Field(default_factory=dict)
+    decision: str | None = None
+
+
 class ClaudeWorkerRuntime:
     """Own deck-managed Claude worker hosts, one per claude_code account."""
 
@@ -365,6 +372,17 @@ def create_runtime_app(config: AppConfig) -> FastAPI:
     @app.post("/claude/accounts/{label}/interrupt")
     async def claude_interrupt(label: str, body: WorkerKeyRequest) -> dict[str, Any]:
         return _deliver_result(await claude_workers.host(label).interrupt(body.key))
+
+    @app.post("/claude/accounts/{label}/answer")
+    async def claude_answer(label: str, body: WorkerAnswerRequest) -> dict[str, Any]:
+        return _deliver_result(
+            await claude_workers.host(label).answer(
+                body.key,
+                body.interaction_id,
+                answers=body.answers,
+                decision=body.decision,
+            )
+        )
 
     @app.post("/claude/accounts/{label}/stop")
     async def claude_stop(label: str, body: WorkerKeyRequest) -> dict[str, Any]:

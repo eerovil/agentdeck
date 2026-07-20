@@ -18,8 +18,8 @@
       <legend><span>{{ question.header }}</span>{{ question.prompt }}</legend>
       {% for option in question.options %}
       <label class="interaction-option">
-        <input type="radio" name="answer__{{ question.id }}"
-               value="{{ option.value or option.label }}"{% if not question.allow_other %} required{% endif %}>
+        <input type="{{ 'checkbox' if question.multiselect else 'radio' }}" name="answer__{{ question.id }}"
+               value="{{ option.value or option.label }}"{% if not question.allow_other and not question.multiselect %} required{% endif %}>
         <span><strong>{{ option.label }}</strong>{% if option.description %}<small>{{ option.description }}</small>{% endif %}</span>
       </label>
       {% endfor %}
