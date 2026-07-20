@@ -926,6 +926,69 @@ async def test_owned_session_question_shows_stop_beside_send(tmp_path, monkeypat
         assert 'aria-label="Stopping active turn"' in stop.text
 
 
+async def test_interaction_poll_is_idempotent_while_pending(tmp_path, monkeypatch):
+    # Issue #28: the pending-interaction widget polls itself every 2s. While the
+    # same question stays pending, that poll must NOT re-render the form — a swap
+    # resets the radios/checkboxes and typed answer, so picking an option and
+    # waiting a second silently deselects it, and answering several questions in a
+    # row is impossible. The poll swaps only when the interaction actually changes.
+    app = _web_app(tmp_path)
+    session = app.state.app_state.sessions["codex:test:sid"]
+    session.capabilities = frozenset(
+        {Capability.TRANSCRIPT, Capability.INJECT, Capability.INTERACT}
+    )
+    interaction = PendingInteraction(
+        id="opaque-token",
+        kind="question",
+        thread_id="sid",
+        turn_id="turn-1",
+        title="Codex needs your answer",
+        questions=(
+            InteractionQuestion(
+                id="database",
+                header="Database",
+                prompt="Which database should we use?",
+                options=(InteractionOption("Postgres", "Relational"),),
+                allow_other=True,
+            ),
+        ),
+    )
+    from agentdeck.providers import PROVIDERS
+
+    provider = PROVIDERS["codex"]
+    monkeypatch.setattr(provider, "owns_session", lambda account, session: True)
+    monkeypatch.setattr(
+        provider, "pending_interaction", lambda account, session: interaction
+    )
+    path = "/partials/sessions/codex:test:sid/interaction"
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # A full render carries the current id and the interval poll to the client.
+        fresh = await client.get(path)
+        assert fresh.status_code == 200
+        assert 'hx-trigger="every 2s"' in fresh.text
+        assert '"current": "opaque-token"' in fresh.text
+        assert "Which database should we use?" in fresh.text
+
+        # Same interaction still pending -> 204, no swap, live selections untouched.
+        same = await client.get(path, params={"current": "opaque-token"})
+        assert same.status_code == 204
+        assert same.text == ""
+
+        # A stale current id means the pending state changed -> re-render.
+        changed = await client.get(path, params={"current": "stale-token"})
+        assert changed.status_code == 200
+        assert "Which database should we use?" in changed.text
+
+        # Once answered/cancelled (nothing pending): an already-empty client stays
+        # quiet (204), but a client still showing the old question gets it cleared.
+        monkeypatch.setattr(provider, "pending_interaction", lambda account, session: None)
+        empty = await client.get(path, params={"current": ""})
+        assert empty.status_code == 204
+        cleared = await client.get(path, params={"current": "opaque-token"})
+        assert cleared.status_code == 200
+        assert "Which database should we use?" not in cleared.text
+
+
 async def test_idle_composer_hides_stop_button(tmp_path):
     app = _web_app(tmp_path)
     session = app.state.app_state.sessions["codex:test:sid"]
