@@ -25,6 +25,15 @@ This extension adds support for Server Sent Events to htmx.  See /www/extensions
       if (htmx.createEventSource == undefined) {
         htmx.createEventSource = createEventSource
       }
+
+      // Public re-entry so app code can revive a stream it deliberately
+      // .close()d (e.g. after backgrounding a mobile PWA). A manual close fires
+      // no onerror, so htmx's own reconnect never runs; calling this with a
+      // non-zero retryCount routes through onopen's child re-registration, which
+      // rebinds every sse-swap listener to the fresh EventSource.
+      if (htmx.reconnectSSE == undefined) {
+        htmx.reconnectSSE = function(elt) { ensureEventSourceOnElement(elt, 1) }
+      }
     },
 
     getSelectors: function() {

@@ -43,7 +43,12 @@ from .render import (
 router = APIRouter(dependencies=[Depends(require_access)])
 
 HEARTBEAT_S = 15.0
+# Tail cadence for the per-session stream. An open/active turn is tailed snappily;
+# an idle session (no turn in progress) backs off to cut wakeups, disk reads, and —
+# on a live PWA socket — battery, at the cost of up to TAIL_IDLE_INTERVAL_S latency
+# before a fresh turn or incoming question shows on the watched page.
 TAIL_INTERVAL_S = 1.5
+TAIL_IDLE_INTERVAL_S = 4.0
 # Detail-page "thinking" turns off this long after the last transcript write.
 THINKING_OFF_S = 3.0
 # Re-render the usage bars at least this often so the "updated Nm ago" time
@@ -296,7 +301,11 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
                         templates, request.app.state.assistant, session_key
                     ),
                 )
-            await asyncio.sleep(TAIL_INTERVAL_S)
+            # Snappy while a turn is open/active; back off when idle to save
+            # battery (see TAIL_IDLE_INTERVAL_S). `busy` tracks the open turn and
+            # `live` the LIVE status, so a starting turn is caught within one idle
+            # tick, then this tightens automatically.
+            await asyncio.sleep(TAIL_INTERVAL_S if (live or busy) else TAIL_IDLE_INTERVAL_S)
 
 
 @router.get("/events/sessions/{session_key}")

@@ -152,21 +152,40 @@
       if (document.visibilityState === 'visible' && streamStale()) location.reload();
     }
 
-    window.addEventListener('pagehide', function () {
+    var bgClosed = false;
+    function closeStreams() {
       sources.forEach(function (s) { try { s.close(); } catch (_) {} });
       sources.clear();
-    });
+    }
+    window.addEventListener('pagehide', closeStreams);
     window.addEventListener('pageshow', function (e) { if (e.persisted) location.reload(); });
-    // Installed as a PWA, mobile freezes the app in the background and tears the
-    // SSE socket down without reliably firing pagehide/onerror. On return, give
-    // any in-flight reconnect a moment, then reload if the stream is stale.
-    // Pause continuous CSS animations (spinners, marquee) while backgrounded so
-    // a frozen/hidden PWA doesn't keep the compositor busy draining battery.
+    // Battery: backgrounding an installed PWA fires visibilitychange(hidden) but
+    // NOT reliably pagehide, and Android keeps the app + its SSE socket alive for
+    // minutes. Left open, the server keeps tailing the transcript and pushing
+    // fragments (~1.5s cadence) to a hidden client, holding the radio awake — the
+    // main background drain. So close the stream when hidden and re-open it when
+    // shown. We reconnect via htmx.reconnectSSE (NOT location.reload) so unsent
+    // composer text, scroll, and the in-JS feed survive; the re-primed stream only
+    // re-pushes display fragments, never the textarea or a pending interaction.
+    // Also pause continuous CSS animations so a hidden PWA stops driving the
+    // compositor.
     function applyBgPause() { document.body.classList.toggle('bg-paused', document.hidden); }
     applyBgPause();
     document.addEventListener('visibilitychange', function () {
       applyBgPause();
-      if (document.visibilityState === 'visible') setTimeout(recover, 2000);
+      if (document.hidden) {
+        closeStreams();
+        bgClosed = true;
+        return;
+      }
+      if (bgClosed) {
+        bgClosed = false;
+        // Grace window so the freshly-opened stream isn't judged stale before its
+        // first message; htmx:sseOpen refreshes lastMsgAt for real on connect.
+        lastMsgAt = Date.now();
+        try { htmx.reconnectSSE(document.body); } catch (_) { location.reload(); }
+      }
+      setTimeout(recover, 2000);
     });
     // And a watchdog while visible, to catch a socket that silently died mid-use
     // (a zombie OPEN EventSource never fires onerror, so htmx won't reconnect).
