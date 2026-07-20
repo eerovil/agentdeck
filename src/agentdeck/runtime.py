@@ -116,6 +116,7 @@ class ClaudeWorkerRuntime:
                 usage_ceiling_pct=effective.usage_ceiling_pct,
                 usage_cache_dir=self._usage_cache_dir,
                 stall_after_s=effective.stall_after_s,
+                interactive_prompts=effective.interactive_prompts,
             )
             self.hosts[label] = host
         return host

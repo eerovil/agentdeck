@@ -68,59 +68,40 @@ def worker_type(is_kanban: bool, has_deep_link: bool) -> str:
     return "you"
 
 
-def _interaction_from_control_request(
-    raw: dict, session: Session
-) -> PendingInteraction | None:
-    """Map a worker's `can_use_tool` control_request into the provider-neutral
-    PendingInteraction the shared widget renders.
-
-    AskUserQuestion becomes a ``question`` interaction (one InteractionQuestion
-    per asked question, positional ids the worker maps back to question text);
-    any other tool is a ``permission`` gate (allow/deny)."""
-    request_id = raw.get("request_id")
-    if not isinstance(request_id, str):
+def _pending_from_dict(data: object) -> PendingInteraction | None:
+    """Rebuild a PendingInteraction from the neutral dict the runtime publishes in
+    the worker snapshot (the runtime does the Claude wire-schema mapping — see
+    worker._normalize_interaction). A pure deserializer, symmetric to Codex's."""
+    if not isinstance(data, dict) or not isinstance(data.get("id"), str):
         return None
-    tool_name = raw.get("tool_name")
-    tool_input = raw.get("input") if isinstance(raw.get("input"), dict) else {}
-    if tool_name == "AskUserQuestion":
-        questions: list[InteractionQuestion] = []
-        for index, q in enumerate(tool_input.get("questions") or []):
-            if not isinstance(q, dict) or not isinstance(q.get("question"), str):
-                continue
-            options = tuple(
-                InteractionOption(label=o["label"], description=o.get("description") or "")
-                for o in (q.get("options") or [])
-                if isinstance(o, dict) and isinstance(o.get("label"), str)
-            )
-            questions.append(
-                InteractionQuestion(
-                    id=str(index),
-                    header=q.get("header") or "",
-                    prompt=q["question"],
-                    options=options,
-                    allow_other=True,  # Claude always lets the user write their own answer
-                    multiselect=bool(q.get("multiSelect")),
+    questions = tuple(
+        InteractionQuestion(
+            id=str(q.get("id")),
+            header=q.get("header") or "",
+            prompt=q.get("prompt") or "",
+            options=tuple(
+                InteractionOption(
+                    label=o.get("label") or "", description=o.get("description") or ""
                 )
-            )
-        return PendingInteraction(
-            id=request_id,
-            kind="question",
-            thread_id=session.session_id,
-            turn_id=None,
-            title="Claude is asking",
-            questions=tuple(questions),
+                for o in (q.get("options") or [])
+                if isinstance(o, dict)
+            ),
+            allow_other=bool(q.get("allow_other")),
+            multiselect=bool(q.get("multiselect")),
         )
-    description = raw.get("description")
-    command = tool_input.get("command") if isinstance(tool_input.get("command"), str) else None
+        for q in (data.get("questions") or [])
+        if isinstance(q, dict)
+    )
     return PendingInteraction(
-        id=request_id,
-        kind="permission",
-        thread_id=session.session_id,
+        id=data["id"],
+        kind=data.get("kind") or "question",
+        thread_id=data.get("thread_id") or "",
         turn_id=None,
-        title=f"Allow {raw.get('display_name') or tool_name or 'this tool'}?",
-        message=description if isinstance(description, str) else None,
-        command=command,
-        decisions=("accept", "acceptForSession", "decline", "cancel"),
+        title=data.get("title") or "",
+        message=data.get("message") if isinstance(data.get("message"), str) else None,
+        questions=questions,
+        command=data.get("command") if isinstance(data.get("command"), str) else None,
+        decisions=tuple(str(d) for d in (data.get("decisions") or [])),
     )
 
 
@@ -375,7 +356,7 @@ class ClaudeCodeProvider(SessionProvider):
         raw = client.pending_interaction(session.session_id)
         if raw is None:
             return None
-        return _interaction_from_control_request(raw, session)
+        return _pending_from_dict(raw)
 
     async def answer_interaction(
         self,

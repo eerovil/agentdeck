@@ -41,6 +41,7 @@
       {% if e.ts %}<time class="ev-time" datetime="{{ e.ts.isoformat() }}" title="{{ e.ts | chat_time_title }}">{{ e.ts | chat_time }}</time>{% endif %}
     </span>
   </div>
+  {% if e.text %}<div class="ev-text">{{ e.text }}</div>{% endif %}
   <div class="ev-text ev-answer" title="your answer to the agent's question"><bdi>{{ e.answer }}</bdi></div>
 </div>
 {%- elif e.role == 'tool' or (not e.text and not e.question and not e.tool_name) -%}
