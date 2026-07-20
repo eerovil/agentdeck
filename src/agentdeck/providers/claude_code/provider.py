@@ -305,9 +305,19 @@ class ClaudeCodeProvider(SessionProvider):
         key = client.key_for(session.session_id)
         if key is None:
             return InjectResult(False, "this session is not a deck-owned worker")
-        return await client.deliver(
-            key, message, images=[str(path) for path in images or []]
+        # A retried dashboard send carries the same client-action id (the injector
+        # wraps this call in client_action_context). Pass it as the delivery id so
+        # a retry dedups at the deliver layer instead of writing the message twice.
+        client_action_id = current_client_action_id()
+        result = await client.deliver(
+            key,
+            message,
+            images=[str(path) for path in images or []],
+            delivery_id=client_action_id,
         )
+        if not result.accepted and result.reason == "delivery_id_conflict":
+            return InjectResult(False, "client_action_conflict")
+        return result
 
     async def inject(
         self,

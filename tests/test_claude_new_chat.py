@@ -363,3 +363,47 @@ async def test_new_chat_digest_mismatch_maps_to_client_action_conflict(tmp_path)
     with client_action_context("act-9"):
         result = await provider.start_session(_account(), tmp_path, "hi", timeout_s=1)
     assert not result.accepted and result.reason == "client_action_conflict"
+
+
+def _live_session():
+    return Session(
+        key="claude_code:main:sid-1",
+        account_key="claude_code:main",
+        session_id="sid-1",
+        status=SessionStatus.LIVE,
+    )
+
+
+async def test_retried_send_forwards_stable_delivery_id(tmp_path):
+    # A retried dashboard send (same client-action id) must reach the deliver layer
+    # with the same delivery id so it dedups instead of writing the message twice.
+    from agentdeck.action_context import client_action_context
+
+    provider = ClaudeCodeProvider()
+    fake = _FakeWorkerClient()
+    provider._workers["claude_code:main"] = fake
+    with client_action_context("send-7"):
+        await provider.inject(_account(), _live_session(), "reply", timeout_s=1)
+        await provider.inject(_account(), _live_session(), "reply", timeout_s=1)
+    assert fake.delivery_ids == ["send-7", "send-7"]
+
+
+async def test_send_digest_mismatch_maps_to_client_action_conflict(tmp_path):
+    from agentdeck.action_context import client_action_context
+
+    provider = ClaudeCodeProvider()
+    fake = _FakeWorkerClient()
+    fake.conflict_reason = "delivery_id_conflict"  # same id, different payload
+    provider._workers["claude_code:main"] = fake
+    with client_action_context("send-8"):
+        result = await provider.inject(_account(), _live_session(), "reply", timeout_s=1)
+    assert not result.accepted and result.reason == "client_action_conflict"
+
+
+async def test_send_without_action_id_passes_no_delivery_id(tmp_path):
+    # Interactive callers with no action id keep the old behavior (no dedup).
+    provider = ClaudeCodeProvider()
+    fake = _FakeWorkerClient()
+    provider._workers["claude_code:main"] = fake
+    await provider.inject(_account(), _live_session(), "reply", timeout_s=1)
+    assert fake.delivery_ids == [None]
