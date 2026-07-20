@@ -28,6 +28,13 @@ For chat/composer work, treat this as the baseline contract:
 - Prefer one scroll/layout controller and observation of real DOM or viewport changes over stacked
   timeouts and one-off event handlers.
 
+Any element under a background poll, auto-refresh, or SSE swap must never re-render over in-progress
+user input. For **every** new interactive UX element (form, multiple-choice/permission widget,
+picker, inline editor), confirm before shipping that a refresh firing mid-interaction cannot wipe a
+selected radio/checkbox, unsent typed text, or focus. Keep the refresh idempotent while the
+underlying state is unchanged — skip the swap or return `204 No Content` — and swap only on a real
+state change. Add a regression that polls while an answer is half-entered and asserts it survives.
+
 When several symptoms share an invariant, fix and test the invariant once instead of shipping a
 sequence of narrow patches.
 
