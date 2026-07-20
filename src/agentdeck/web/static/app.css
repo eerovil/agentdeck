@@ -327,16 +327,6 @@ body.usage-open .limit-bars { display: flex; }
 .dh-done     { color: var(--live); }   /* dismissed by you — nothing left */
 .dh-merged   { color: #a371f7; }       /* its PR merged and shipped */
 .dh-unknown  { color: var(--muted); }  /* not classified yet */
-/* Manual mark-done / undo control next to the pill (reuses /assistant/handle).
-   Sits inside the card <a>; a delegated handler stops it navigating. */
-.done-btn { flex: none; cursor: pointer; user-select: none; white-space: nowrap;
-  font-size: 10px; font-weight: 700; line-height: 1; padding: 2px 7px; border-radius: 999px;
-  text-transform: uppercase; letter-spacing: .04em; color: var(--live);
-  border: 1px solid currentColor; background: color-mix(in srgb, currentColor 12%, transparent); }
-.done-btn.is-undo { color: var(--muted); }
-.done-btn:hover { background: color-mix(in srgb, currentColor 22%, transparent); }
-.done-btn:active { color: var(--fg); }
-.done-btn[aria-disabled="true"] { opacity: .5; pointer-events: none; }
 /* Brief highlight when a Deckhand insight scrolls its row into view (deckhand_focus.js). */
 @keyframes dh-focus-flash {
   0%   { box-shadow: 0 0 0 2px var(--remote); }

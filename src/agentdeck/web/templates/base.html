@@ -401,42 +401,6 @@
       var url = btn.getAttribute('data-href');
       if (url) window.open(url, '_blank', 'noopener');
     });
-
-    // Manual mark-done / undo on a card's Deckhand pill. Reuses the same
-    // /assistant/handle + /assistant/unhandle routes as the triage panel, so it
-    // toggles the pill Waiting <-> Done in lockstep. The button lives inside the
-    // card <a>, so stop it navigating. We don't touch the DOM here: the routes
-    // publish "assistant", which re-renders the session list over SSE and flips
-    // the pill. A 404 (evidence already changed, no live insight) is harmless —
-    // the next list render reconciles the pill either way.
-    function markDone(btn) {
-      var doneKey = btn.getAttribute('data-done-key');
-      var key = doneKey || btn.getAttribute('data-undo-key');
-      if (!key || btn.getAttribute('aria-disabled') === 'true') return;
-      var url = doneKey ? '/assistant/handle' : '/assistant/unhandle';
-      var body = new URLSearchParams(); body.set('session_key', key);
-      btn.setAttribute('aria-disabled', 'true');
-      fetch(url, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: body.toString(),
-      }).catch(function () {}).finally(function () {
-        btn.removeAttribute('aria-disabled');
-      });
-    }
-    document.addEventListener('click', function (e) {
-      var btn = e.target.closest('.done-btn');
-      if (!btn) return;
-      e.preventDefault(); e.stopPropagation();
-      markDone(btn);
-    });
-    document.addEventListener('keydown', function (e) {
-      if (e.key !== 'Enter' && e.key !== ' ') return;
-      var btn = e.target.closest('.done-btn');
-      if (!btn) return;
-      e.preventDefault(); e.stopPropagation();
-      markDone(btn);
-    });
   })();
 
   // Usage header expand/collapse — delegated (the fragment is swapped every
