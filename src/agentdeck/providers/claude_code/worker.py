@@ -574,7 +574,11 @@ class ClaudeWorkerHost:
                 "message": message,
                 "cwd": cwd,
                 "fresh": fresh,
-                "images": images,
+                # Uploaded images land at a fresh random path on every request
+                # (uploads.py: mkdtemp + token_hex), so the *paths* differ across a
+                # legitimate retry of the same logical delivery and would falsely
+                # trip delivery_id_conflict. Fingerprint the stable count instead.
+                "images": len(images),
                 "model": model,
                 "permission_mode": permission_mode,
             },
@@ -604,7 +608,13 @@ class ClaudeWorkerHost:
         action = receipt.get("action")
         if action:
             return DeliverResult(True, str(action), session_id=receipt.get("session_id"))
-        return DeliverResult(True, "uncertain", session_id=receipt.get("session_id"))
+        # The receipt's session_id was frozen before the write (None for a fresh
+        # spawn), but rec.session_id is populated durably as soon as the CLI emits
+        # system/init — prefer it so an uncertain replay still points at the live,
+        # resumable session instead of reporting "done" with nothing to open.
+        return DeliverResult(
+            True, "uncertain", session_id=rec.session_id or receipt.get("session_id")
+        )
 
     @staticmethod
     def _prune_deliveries(rec: WorkerRecord) -> None:

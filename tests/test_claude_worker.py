@@ -883,3 +883,61 @@ async def test_clean_write_failure_keeps_delivery_retryable(tmp_path):
     assert not second.accepted
     # A cleanly-failed write leaves no receipt, so the id can be retried.
     assert "d2" not in host._records["issue-1"].deliveries
+
+
+async def test_fresh_delivery_replay_dedups_to_one_spawn(tmp_path):
+    # New-chat (issue #37) delivers with fresh=True + a delivery id. A retry with
+    # the same id must dedup at the real host — one spawn, cached result — NOT
+    # terminate-and-respawn a second worker via the fresh path. (End-to-end proof
+    # that the fresh=True + repeated delivery_id combination collapses to one.)
+    host, spawned = _host(tmp_path)
+    first = await host.deliver(
+        "chat-x", "hi", cwd=str(tmp_path), fresh=True, delivery_id="act-1"
+    )
+    assert first.accepted and first.action == "spawned"
+    await _settle()
+    replay = await host.deliver(
+        "chat-x", "hi", cwd=str(tmp_path), fresh=True, delivery_id="act-1"
+    )
+    assert replay.accepted and replay.action == "spawned"  # cached original result
+    assert len(spawned) == 1  # not respawned despite fresh=True
+
+
+async def test_reuploaded_image_paths_do_not_break_dedup(tmp_path):
+    # A retried image new-chat re-uploads identical bytes to a NEW random path;
+    # the delivery fingerprint must ignore the path so the retry dedups instead of
+    # falsely tripping delivery_id_conflict.
+    host, spawned = _host(tmp_path)
+    (tmp_path / "a.png").write_bytes(b"img")
+    (tmp_path / "b.png").write_bytes(b"img")
+    first = await host.deliver(
+        "chat-y", "look", cwd=str(tmp_path), fresh=True,
+        images=[str(tmp_path / "a.png")], delivery_id="act-2",
+    )
+    assert first.accepted and first.action == "spawned"
+    await _settle()
+    replay = await host.deliver(
+        "chat-y", "look", cwd=str(tmp_path), fresh=True,
+        images=[str(tmp_path / "b.png")], delivery_id="act-2",  # same bytes, new path
+    )
+    assert replay.accepted and replay.action == "spawned"  # deduped, not conflict
+    assert len(spawned) == 1
+
+
+async def test_uncertain_replay_reports_live_session_id(tmp_path):
+    # A fresh spawn's receipt is frozen at prepare time with session_id=None. If it
+    # is left prepared-but-unconfirmed (crash before finalize), the uncertain replay
+    # must report the now-live rec.session_id, not the stale None.
+    host, _ = _host(tmp_path)
+    await host.deliver("chat-z", "go", cwd=str(tmp_path), fresh=True, delivery_id="act-3")
+    await _settle()
+    rec = host._records["chat-z"]
+    assert rec.session_id  # populated from the worker's system/init
+    receipt = rec.deliveries["act-3"]
+    receipt.pop("action", None)   # simulate prepared-but-unconfirmed
+    receipt["session_id"] = None  # frozen before the session existed
+    replay = await host.deliver(
+        "chat-z", "go", cwd=str(tmp_path), fresh=True, delivery_id="act-3"
+    )
+    assert replay.action == "uncertain"
+    assert replay.session_id == rec.session_id  # live session, not None
