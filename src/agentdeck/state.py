@@ -257,6 +257,15 @@ class AppState:
             if parent is None:
                 top.append(s)
             elif parent in top_keys:
+                # A finished Task/Agent subagent (its own transcript went quiet,
+                # so ``thinking`` aged out) is dead weight: it keeps padding the
+                # parent's sub-agent count and nested rows with work that is over.
+                # Nest it only while it is still alive. This is scoped to true
+                # subagents (``parent_session_key`` set); a delegated worker child
+                # (cross-provider link, no ``parent_session_key``) still nests when
+                # idle, since an idle worker is not "dead".
+                if s.parent_session_key is not None and not s.thinking:
+                    continue
                 children.setdefault(parent, []).append(s)
             # else: orphan subagent (parent not visible) — omit from the tree
         return top, children

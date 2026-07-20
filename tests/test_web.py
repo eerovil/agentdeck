@@ -1788,26 +1788,37 @@ def test_session_tree_nests_subagents_under_parent():
         key="a:c",
         account_key="a",
         session_id="c",
-        status=SessionStatus.IDLE,
+        status=SessionStatus.LIVE,
+        thinking=True,  # a live subagent nests under its parent
         parent_session_key="a:p",
-        show_when_idle=True,  # finished subagents stay nested
+    )
+    dead = Session(
+        key="a:d",
+        account_key="a",
+        session_id="d",
+        status=SessionStatus.IDLE,
+        thinking=False,  # a finished subagent is dead weight — dropped, not nested
+        parent_session_key="a:p",
+        show_when_idle=True,
     )
     orphan = Session(
         key="a:o",
         account_key="a",
         session_id="o",
         status=SessionStatus.LIVE,
+        thinking=True,
         parent_session_key="a:gone",  # parent not visible
     )
-    for s in (parent, child, orphan):
+    for s in (parent, child, dead, orphan):
         state.update_session(s)
 
     top, children = state.session_tree()
     top_keys = {s.key for s in top}
     assert "a:p" in top_keys  # parent stays top-level
     assert "a:c" not in top_keys  # child is nested, not top-level
+    assert "a:d" not in top_keys  # dead subagent is dropped, not floated top-level
     assert "a:o" not in top_keys  # orphan (parent gone) is dropped, not floated top-level
-    assert [c.key for c in children["a:p"]] == ["a:c"]
+    assert [c.key for c in children["a:p"]] == ["a:c"]  # only the live subagent nests
     assert "a:o" not in children  # orphan has no visible parent to nest under
 
 
@@ -2295,10 +2306,10 @@ async def test_nested_subagents_collapse_by_default_with_toggle(tmp_path):
             key="claude_code:test:childB",
             account_key="claude_code:test",
             session_id="childB",
-            status=SessionStatus.IDLE,
+            status=SessionStatus.LIVE,
             title="Audit the boundary",
             parent_session_key="claude_code:test:sid1",
-            show_when_idle=True,  # finished/idle children stay nested
+            thinking=True,  # a second live child → both nest under the toggle
         )
     )
 
@@ -2859,3 +2870,120 @@ async def test_session_sse_primes_desktop_list(tmp_path):
     assert "The database choice is blocking this chat." in assistant_session
     assert "Hello World Session" in sessions
     assert 'aria-current="page"' in sessions
+
+
+async def test_dead_subagents_drop_from_the_session_card(tmp_path):
+    # A finished Task/Agent subagent (its transcript went quiet, so `thinking`
+    # aged out) is dead weight: it must stop padding the parent's sub-agent count
+    # and nested rows. Only live subagents nest; when none are live, no pill.
+    app = _app_with_state(tmp_path)
+    state = app.state.app_state
+    parent_key = "claude_code:test:sid1"
+
+    def _subagent(sid, *, thinking, title):
+        return Session(
+            key=f"claude_code:test:{sid}",
+            account_key="claude_code:test",
+            session_id=sid,
+            status=SessionStatus.LIVE if thinking else SessionStatus.IDLE,
+            thinking=thinking,
+            kind="subagent",
+            title=title,
+            is_delegated=not thinking,
+            parent_session_key=parent_key,
+            show_when_idle=True,
+            capabilities=frozenset({Capability.TRANSCRIPT}),
+        )
+
+    state.update_session(_subagent("sub-live", thinking=True, title="Live subagent"))
+    state.update_session(_subagent("sub-done", thinking=False, title="Finished subagent"))
+
+    async with _client(app) as client:
+        r = await client.get("/")
+    # Only the live subagent counts, and the finished one is gone entirely.
+    assert "1 sub-agent" in r.text
+    assert "2 sub-agent" not in r.text  # never the stale count that includes the dead one
+    assert "Live subagent" in r.text
+    assert "Finished subagent" not in r.text
+
+    # When the last live subagent finishes, the pill disappears completely.
+    state.update_session(_subagent("sub-live", thinking=False, title="Live subagent"))
+    async with _client(app) as client:
+        r2 = await client.get("/")
+    assert "1 sub-agent" not in r2.text  # no count pill at all
+    assert "Live subagent" not in r2.text  # and its row is gone too
+
+
+async def test_waiting_card_can_be_marked_done_and_undone(tmp_path):
+    # Feature: a manual mark-done control on a WAITING session card, reusing the
+    # /assistant/handle + /assistant/unhandle routes, so the pill flips
+    # WAITING <-> DONE in lockstep with the same evidence dismissal as triage.
+    app = _app_with_state(tmp_path)
+    assistant = app.state.assistant
+    assistant.config.enabled = True
+    key = "claude_code:test:sid1"
+    session = app.state.app_state.sessions[key]
+    # A live question -> the card shows the WAITING pill.
+    app.state.app_state.update_session(replace(session, question="Ship it?"))
+    assistant.view = AssistantView(
+        state="ready",
+        summary="One item needs attention.",
+        insights=(
+            AssistantInsight(
+                session_key=key,
+                kind="waiting",
+                headline="It asked whether to ship.",
+                detail="Waiting on your answer.",
+            ),
+        ),
+    )
+    updated = app.state.app_state.sessions[key]
+    assistant._signatures[key] = assistant._evidence_signature(updated, None, None)
+
+    async with _client(app) as client:
+        waiting = await client.get("/")
+    assert 'class="dh-pill dh-waiting"' in waiting.text
+    assert f'data-done-key="{key}"' in waiting.text
+    assert f'data-undo-key="{key}"' not in waiting.text
+
+    # Narrowest supported mobile width: the done button sits inside the card and
+    # does not push the meta row into horizontal overflow.
+    css = (Path(__file__).parents[1] / "src/agentdeck/web/static/app.css").read_text()
+    html = waiting.text.replace("</head>", f"<style>{css}</style></head>")
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        page = await browser.new_page(viewport={"width": 320, "height": 800})
+        await page.set_content(html)
+        btn = await page.locator(".done-btn").bounding_box()
+        card = await page.locator("a.session").first.bounding_box()
+        overflow = await page.evaluate(
+            "document.documentElement.scrollWidth > document.documentElement.clientWidth"
+        )
+        await browser.close()
+    assert btn is not None and card is not None
+    assert btn["x"] >= card["x"]
+    assert btn["x"] + btn["width"] <= card["x"] + card["width"] + 1
+    assert not overflow
+
+    async with _client(app) as client:
+        resp = await client.post("/assistant/handle", data={"session_key": key})
+    assert resp.status_code == 200
+    assert assistant._handled.get(key) is not None
+
+    async with _client(app) as client:
+        done = await client.get("/")
+    # The pill is now DONE, and the control offers undo instead.
+    assert 'class="dh-pill dh-done"' in done.text
+    assert 'class="dh-pill dh-waiting"' not in done.text
+    assert f'data-undo-key="{key}"' in done.text
+    assert f'data-done-key="{key}"' not in done.text
+
+    async with _client(app) as client:
+        back = await client.post("/assistant/unhandle", data={"session_key": key})
+    assert back.status_code == 200
+    assert key not in assistant._handled
+
+    async with _client(app) as client:
+        restored = await client.get("/")
+    assert 'class="dh-pill dh-waiting"' in restored.text
+    assert f'data-done-key="{key}"' in restored.text
