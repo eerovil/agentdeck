@@ -111,8 +111,9 @@ async def test_dashboard_renders_usage_and_session(tmp_path):
     assert "MEM" in r.text
     assert "61%" in r.text
     assert 'class="acct host-acct"' in r.text
-    # The "hide closed" filter toggle is present.
+    # The "hide closed" / "hide done" filter toggles are present.
     assert 'id="hide-closed"' in r.text
+    assert 'id="hide-done"' in r.text
     assert 'id="assistant-panel"' in r.text
     assert "Attention triage" in r.text
 
@@ -585,6 +586,75 @@ async def test_session_card_shows_deckhand_status_pill(tmp_path):
     # A delegated/subagent chat never shows a pill, even with a verdict.
     assert "Session subagent" in r.text  # the card itself renders
     assert 'title="Deckhand: Subagent internal step"' not in r.text
+
+
+async def test_hide_done_toggle_hides_done_rows_and_persists(tmp_path):
+    app = _app_with_state(tmp_path)
+    assistant = app.state.assistant
+    assistant.config.enabled = True
+    # Two resting rows: one manually dismissed (done pill), one never-classified
+    # (unknown "?" pill). Only the done row should hide when the toggle is on.
+    for sid in ("done", "keep"):
+        app.state.app_state.update_session(
+            Session(
+                key=f"claude_code:test:{sid}",
+                account_key="claude_code:test",
+                session_id=sid,
+                status=SessionStatus.LIVE,
+                title=f"Session {sid}",
+                last_role="agent",
+                thinking=False,
+            )
+        )
+    assistant._handled = {"claude_code:test:done": "sig"}
+    assistant._handled_insights = {
+        "claude_code:test:done": AssistantInsight(
+            "claude_code:test:done", "finished", "All shipped", "d"
+        ),
+    }
+    async with _client(app) as c:
+        r = await c.get("/")
+    assert 'class="dh-pill dh-done"' in r.text
+
+    done_sel = '#sessions a.session[data-session-key="claude_code:test:done"]'
+    keep_sel = '#sessions a.session[data-session-key="claude_code:test:keep"]'
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        page = await browser.new_page(viewport={"width": 390, "height": 800})
+
+        # Serve the rendered page from a real http origin so the localStorage the
+        # filter writes is readable (set_content's about:blank origin denies it).
+        async def handle(route):
+            if route.request.resource_type == "document":
+                await route.fulfill(status=200, content_type="text/html", body=r.text)
+            else:
+                await route.abort()
+
+        await page.route("**/*", handle)
+        await page.goto("http://localhost/")
+        # Default: the toggle is off and both rows are visible.
+        assert await page.locator("#hide-done").get_attribute("aria-pressed") == "false"
+        assert await page.locator(done_sel).is_visible()
+        assert await page.locator(keep_sel).is_visible()
+        # Toggle on -> only the done row hides.
+        await page.locator("#hide-done").click()
+        assert await page.locator(done_sel).is_hidden()
+        assert await page.locator(keep_sel).is_visible()
+        # Choice persists per-device and is reflected on the button.
+        assert await page.evaluate(
+            "() => localStorage.getItem('agentdeck.hideDone')"
+        ) == "1"
+        assert await page.locator("#hide-done").get_attribute("aria-pressed") == "true"
+        # A live list swap must not un-hide it: the filter re-applies on afterSwap.
+        await page.evaluate(
+            "() => document.getElementById('sessions')"
+            ".dispatchEvent(new CustomEvent('htmx:afterSwap'))"
+        )
+        assert await page.locator(done_sel).is_hidden()
+        # Toggle back off -> the done row returns.
+        await page.locator("#hide-done").click()
+        assert await page.locator(done_sel).is_visible()
+        await browser.close()
 
 
 def test_deckhand_pill_resolves_every_branch():

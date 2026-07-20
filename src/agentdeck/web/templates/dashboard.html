@@ -52,6 +52,7 @@
 </div>
 <div class="filter-row">
   <button id="hide-closed" type="button" class="toggle-btn" aria-pressed="false">Hide closed</button>
+  <button id="hide-done" type="button" class="toggle-btn" aria-pressed="false">Hide done</button>
 </div>
 <div id="search-empty" class="empty" hidden>no matching sessions</div>
 <div id="sessions" sse-swap="sessions">
@@ -63,15 +64,23 @@
   var input = document.getElementById('q');
   var emptyNote = document.getElementById('search-empty');
   var hideBtn = document.getElementById('hide-closed');
+  var doneBtn = document.getElementById('hide-done');
   if (!input) return;
   var KEY = 'agentdeck.listQuery';
   var HKEY = 'agentdeck.hideClosed';
+  var DKEY = 'agentdeck.hideDone';
 
   // "Hide closed" drops any kanban card whose GitHub state badge is terminal
   // (anything but open — done/merged/closed/dropped). Cards with no badge
   // (non-kanban, or state not resolved yet) are always kept.
   var hideClosed = false;
   try { hideClosed = localStorage.getItem(HKEY) === '1'; } catch (_) {}
+
+  // "Hide done" drops any card whose resolved Deckhand pill is `done` (you
+  // dismissed the card). Only the `done` pill state, not merged/finished; cards
+  // with any other pill or none are always kept. Off by default, per-device.
+  var hideDone = false;
+  try { hideDone = localStorage.getItem(DKEY) === '1'; } catch (_) {}
 
   // Everything worth matching on, pulled from stable attributes (data-prompt /
   // data-text hold the FULL latest messages, not the typewriter-truncated view).
@@ -94,25 +103,39 @@
     var shown = 0;
     cards.forEach(function (c) {
       var closed = hideClosed && c.querySelector('.st-badge:not(.st-open)');
-      var match = !closed && (!q || haystack(c).indexOf(q) !== -1);
+      var done = hideDone && c.querySelector('.dh-pill.dh-done');
+      var match = !closed && !done && (!q || haystack(c).indexOf(q) !== -1);
       c.style.display = match ? '' : 'none';
       if (match) shown++;
     });
     // Only show the "no matches" note when a filter is hiding everything —
     // an empty list with no filter already renders its own "no active sessions".
-    if (emptyNote) emptyNote.hidden = !((q || hideClosed) && cards.length && shown === 0);
+    if (emptyNote) emptyNote.hidden = !((q || hideClosed || hideDone) && cards.length && shown === 0);
     try { sessionStorage.setItem(KEY, input.value); } catch (_) {}
   }
 
   function syncBtn() {
-    if (!hideBtn) return;
-    hideBtn.setAttribute('aria-pressed', hideClosed ? 'true' : 'false');
-    hideBtn.classList.toggle('on', hideClosed);
+    if (hideBtn) {
+      hideBtn.setAttribute('aria-pressed', hideClosed ? 'true' : 'false');
+      hideBtn.classList.toggle('on', hideClosed);
+    }
+    if (doneBtn) {
+      doneBtn.setAttribute('aria-pressed', hideDone ? 'true' : 'false');
+      doneBtn.classList.toggle('on', hideDone);
+    }
   }
   if (hideBtn) {
     hideBtn.addEventListener('click', function () {
       hideClosed = !hideClosed;
       try { localStorage.setItem(HKEY, hideClosed ? '1' : '0'); } catch (_) {}
+      syncBtn();
+      apply();
+    });
+  }
+  if (doneBtn) {
+    doneBtn.addEventListener('click', function () {
+      hideDone = !hideDone;
+      try { localStorage.setItem(DKEY, hideDone ? '1' : '0'); } catch (_) {}
       syncBtn();
       apply();
     });
