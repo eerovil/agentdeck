@@ -593,6 +593,15 @@ async def test_new_session_route_and_enter_to_send_ui(tmp_path, monkeypatch):
         assert "New chat" in dashboard.text
         assert 'class="send-on-enter"' in dashboard.text
         detail = await client.get("/sessions/codex:test:sid")
+        assert detail.text.index('id="new-chat-account"') < detail.text.index(
+            'id="sessions"'
+        )
+        assert 'id="q"' in detail.text
+        assert 'id="hide-closed"' in detail.text
+        assert 'id="hide-done"' in detail.text
+        assert detail.text.count('data-agentdeck-action="new_session"') == 1
+        assert detail.text.count('data-agentdeck-action="send"') == 1
+        assert "var drafts = document.querySelectorAll(" in detail.text
         assert "Enter to send" in detail.text
         assert "requestSubmit" in detail.text
         response = await client.post(
@@ -709,6 +718,101 @@ async def test_new_session_rejects_unknown_model(tmp_path, monkeypatch):
         )
     assert response.status_code == 422
     assert called is False
+    await app.state.injector.stop()
+
+
+async def test_session_list_controls_stay_visible_from_detail_page(tmp_path):
+    app = _web_app(tmp_path)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        detail = await client.get("/sessions/codex:test:sid")
+
+    static_dir = Path(__file__).parents[1] / "src/agentdeck/web/static"
+    stylesheet = (static_dir / "app.css").read_text()
+    stack_script = (static_dir / "mobile_session_stack.js").read_text()
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        layouts = []
+        for width in (1200, 320):
+            context = await browser.new_context(
+                viewport={"width": width, "height": 800}, service_workers="block"
+            )
+            page = await context.new_page()
+
+            async def serve(route, request):
+                path = request.url.split("?", 1)[0].removeprefix(
+                    "http://agentdeck.test"
+                )
+                if path == "/sessions/codex:test:sid":
+                    await route.fulfill(
+                        status=200, content_type="text/html", body=detail.text
+                    )
+                elif path == "/static/mobile_session_stack.js":
+                    await route.fulfill(
+                        status=200, content_type="text/javascript", body=stack_script
+                    )
+                elif path == "/static/app.css":
+                    await route.fulfill(
+                        status=200, content_type="text/css", body=stylesheet
+                    )
+                else:
+                    await route.fulfill(status=204, body="")
+
+            await page.route("http://agentdeck.test/**", serve)
+            await page.goto("http://agentdeck.test/sessions/codex:test:sid")
+            if width < 1000:
+                await page.wait_for_function(
+                    "document.body.classList.contains('mobile-session-stack-ready')"
+                )
+                await page.locator("a.back").click()
+                await page.wait_for_function(
+                    "document.body.classList.contains('mobile-list-open')"
+                )
+
+            await page.locator(".session-sidebar #q").fill("no matching session")
+            layouts.append(
+                {
+                    "new_chat": await page.locator(
+                        ".session-sidebar .new-chat > summary"
+                    ).is_visible(),
+                    "search": await page.locator(".session-sidebar #q").is_visible(),
+                    "hide_closed": await page.locator(
+                        ".session-sidebar #hide-closed"
+                    ).is_visible(),
+                    "hide_done": await page.locator(
+                        ".session-sidebar #hide-done"
+                    ).is_visible(),
+                    "filter_works": not await page.locator(
+                        ".session-sidebar a.session"
+                    ).is_visible(),
+                    "overflow": await page.evaluate(
+                        "document.documentElement.scrollWidth > innerWidth"
+                    ),
+                }
+            )
+            await context.close()
+        await browser.close()
+
+    assert layouts == [
+        {
+            "new_chat": True,
+            "search": True,
+            "hide_closed": True,
+            "hide_done": True,
+            "filter_works": True,
+            "overflow": False,
+        },
+        {
+            "new_chat": True,
+            "search": True,
+            "hide_closed": True,
+            "hide_done": True,
+            "filter_works": True,
+            "overflow": False,
+        },
+    ]
     await app.state.injector.stop()
 
 

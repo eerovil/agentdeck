@@ -41,7 +41,11 @@ def main() -> int:
     ap.add_argument("--click", action="append", default=[], help="selector(s) to click first")
     args = ap.parse_args()
 
-    url = args.path if args.path.startswith("http") else args.base.rstrip("/") + "/" + args.path.lstrip("/")
+    url = (
+        args.path
+        if args.path.startswith("http")
+        else args.base.rstrip("/") + "/" + args.path.lstrip("/")
+    )
     errors: list[str] = []
 
     with sync_playwright() as p:

@@ -198,10 +198,9 @@ def render_limit_bars(templates: Jinja2Templates, accounts: list[Account], state
 
 
 def render_assistant(templates: Jinja2Templates, assistant, state: AppState) -> str:
-    working = sum(1 for session in state.visible_sessions() if session.thinking)
     return templates.get_template("partials/assistant_panel.html").render(
         assistant=assistant,
-        working_count=working,
+        working_count=state.working_count(),
     )
 
 

@@ -318,7 +318,7 @@ async def test_interrupt_returns_at_once_when_worker_exits_before_ack(tmp_path):
     proc = spawned[0]["process"]
 
     async def exit_before_ack():
-        while not any(l.get("type") == "control_request" for l in proc.stdin.lines):
+        while not any(line.get("type") == "control_request" for line in proc.stdin.lines):
             await asyncio.sleep(0)
         proc.returncode = 0
         proc.stdout.queue.put_nowait(b"")  # EOF ends the read loop -> teardown

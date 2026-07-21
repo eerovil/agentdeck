@@ -231,6 +231,8 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
             # recent writes — so a long tool run or slow first token stays busy.
             label = None if current.question else activity_label(live, streaming, last_ev, age)
             label = detailed_activity_label(label, last_ev)
+            if label is None and state.has_working_subagent(current):
+                label = "Working"
             busy = label is not None
             if (
                 current.status != last_status

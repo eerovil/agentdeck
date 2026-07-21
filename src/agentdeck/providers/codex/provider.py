@@ -108,6 +108,9 @@ class CodexProvider(SessionProvider):
         self._states = {}
         self._runtime_tasks: dict[str, asyncio.Task] = {}
         self._subagent_names: dict[str, str] = {}
+        # Track per-account runtime-refresh health so a persistent outage warns
+        # once (on the healthy->failing edge) instead of every scan interval.
+        self._refresh_ok: dict[str, bool] = {}
 
     async def start_account(self, account: Account, state) -> None:
         client = CodexRuntimeClient(
@@ -293,7 +296,21 @@ class CodexProvider(SessionProvider):
             try:
                 await client.refresh()
             except Exception as exc:  # noqa: BLE001 -- transcript scan remains useful
-                log.debug("Codex runtime unavailable during scan for %s: %s", account.key, exc)
+                # Warn only on the healthy->failing edge: a dead runtime client
+                # freezes cached liveness (finished sessions stay "working"), so
+                # it must be visible, but scan runs every few seconds and a real
+                # outage would otherwise flood the log.
+                if self._refresh_ok.get(account.key, True):
+                    log.warning(
+                        "Codex runtime unavailable during scan for %s: %s",
+                        account.key,
+                        exc,
+                    )
+                self._refresh_ok[account.key] = False
+            else:
+                if not self._refresh_ok.get(account.key, True):
+                    log.info("Codex runtime scan recovered for %s", account.key)
+                self._refresh_ok[account.key] = True
         sessions = []
         subagents: dict[str, list[SubagentProgress]] = {}
         turn_starts: dict[str, datetime] = {}

@@ -82,6 +82,10 @@ def _client(app):
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://t")
 
 
+def _session_card(html: str, session_key: str) -> str:
+    return html.split(f'data-session-key="{session_key}"', 1)[1].split("</a>", 1)[0]
+
+
 async def test_healthz(tmp_path):
     app = _app_with_state(tmp_path)
     async with _client(app) as c:
@@ -2028,6 +2032,41 @@ def test_session_tree_nests_subagents_under_parent():
     assert "a:o" not in top_keys  # orphan (parent gone) is dropped, not floated top-level
     assert [c.key for c in children["a:p"]] == ["a:c"]  # only the live subagent nests
     assert "a:o" not in children  # orphan has no visible parent to nest under
+    effective_parent = next(session for session in top if session.key == parent.key)
+    assert effective_parent.thinking is True
+    assert effective_parent.activity == "Working"
+    assert state.sessions[parent.key].thinking is False  # provider state stays raw
+    assert state.working_count() == 1
+
+    state.update_session(replace(child, status=SessionStatus.IDLE, thinking=False))
+    top, children = state.session_tree()
+    effective_parent = next(session for session in top if session.key == parent.key)
+    assert effective_parent.thinking is False
+    assert parent.key not in children
+
+
+def test_session_tree_includes_embedded_subagents_in_parent_activity():
+    from agentdeck.state import AppState
+
+    state = AppState()
+    parent = Session(
+        key="codex:p",
+        account_key="codex",
+        session_id="p",
+        status=SessionStatus.IDLE,
+        thinking=False,
+        subagent_count=2,
+        show_when_idle=True,
+    )
+    state.update_session(parent)
+
+    top, children = state.session_tree()
+
+    assert children == {}
+    assert top[0].thinking is True
+    assert top[0].activity == "Working"
+    assert state.sessions[parent.key].thinking is False
+    assert state.working_count() == 1
 
 
 def test_session_tree_nests_cross_provider_delegation():
@@ -2047,6 +2086,7 @@ def test_session_tree_nests_cross_provider_delegation():
         account_key="codex:codex",
         session_id="c",
         status=SessionStatus.LIVE,  # no parent_session_key of its own
+        thinking=True,
     )
     for s in (parent, child):
         state.update_session(s)
@@ -2055,6 +2095,8 @@ def test_session_tree_nests_cross_provider_delegation():
     top, children = state.session_tree()
     assert "codex:codex:c" not in {s.key for s in top}  # nested cross-provider
     assert [c.key for c in children["claude_code:main:p"]] == ["codex:codex:c"]
+    effective_parent = next(s for s in top if s.key == "claude_code:main:p")
+    assert effective_parent.thinking is True
 
 
 def test_mark_delegated_session_records_parent_and_nests():
@@ -2490,6 +2532,9 @@ async def test_subagent_count_renders_on_card_and_detail_header(tmp_path):
     assert "Inventory the Storm migration surface" in detail.text
     assert "Banach" in detail.text
     assert "Found one status-normalization bug." in detail.text
+    assert 'data-working="1"' in _session_card(dashboard.text, session.key)
+    assert '<span class="status-tag thinking">thinking</span>' in detail.text
+    assert "1 working" in dashboard.text
 
 
 async def test_nested_subagents_collapse_by_default_with_toggle(tmp_path):
@@ -2523,6 +2568,7 @@ async def test_nested_subagents_collapse_by_default_with_toggle(tmp_path):
 
     async with _client(app) as client:
         dashboard = await client.get("/")
+        detail = await client.get("/sessions/claude_code:test:sid1")
 
     text = dashboard.text
     # Collapsed by default, tied to the parent key.
@@ -2537,6 +2583,9 @@ async def test_nested_subagents_collapse_by_default_with_toggle(tmp_path):
     # The rows themselves are still rendered (hidden via CSS, not omitted).
     assert "Scout the parser" in text
     assert "Audit the boundary" in text
+    assert 'data-working="1"' in _session_card(text, "claude_code:test:sid1")
+    assert '<span class="status-tag thinking">thinking</span>' in detail.text
+    assert "1 working" in text
 
 
 def test_subagent_notification_renders_as_compact_expandable_row(tmp_path):
@@ -3078,6 +3127,43 @@ async def test_session_sse_primes_desktop_list(tmp_path):
     assert "The database choice is blocking this chat." in assistant_session
     assert "Hello World Session" in sessions
     assert 'aria-current="page"' in sessions
+
+
+async def test_session_sse_marks_parent_working_for_active_child(tmp_path):
+    from agentdeck.web.routes_sse import _session_stream
+
+    app = _app_with_state(tmp_path)
+    parent_key = "claude_code:test:sid1"
+    app.state.app_state.update_session(
+        Session(
+            key="claude_code:test:child",
+            account_key="claude_code:test",
+            session_id="child",
+            status=SessionStatus.LIVE,
+            thinking=True,
+            parent_session_key=parent_key,
+        )
+    )
+
+    class FakeRequest:
+        def __init__(self, application):
+            self.app = application
+
+        async def is_disconnected(self):
+            return False
+
+    gen = _session_stream(FakeRequest(app), parent_key)
+    try:
+        events = [
+            await asyncio.wait_for(gen.__anext__(), timeout=5.0)
+            for _ in range(6)
+        ]
+    finally:
+        await gen.aclose()
+
+    status = events[-1]
+    assert "event: status" in status
+    assert 'status-tag thinking' in status
 
 
 async def test_dead_subagents_drop_from_the_session_card(tmp_path):
