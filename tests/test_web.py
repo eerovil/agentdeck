@@ -129,6 +129,7 @@ async def test_new_issue_link_is_visible_in_shared_topbar(tmp_path):
         assert response.status_code == 200
         assert expected in response.text
         assert 'aria-label="Create AgentDeck GitHub issue"' in response.text
+        assert 'class="github-mark"' in response.text
 
     static_dir = Path(__file__).parents[1] / "src/agentdeck/web/static"
     css = (static_dir / "app.css").read_text()
@@ -142,6 +143,8 @@ async def test_new_issue_link_is_visible_in_shared_topbar(tmp_path):
               const rect = link.getBoundingClientRect();
               return {
                 visible: rect.width > 0 && rect.height > 0,
+                iconVisible: !!link.querySelector('.github-mark')
+                  && link.querySelector('.github-mark').getBoundingClientRect().width > 0,
                 left: rect.left,
                 right: rect.right,
                 viewport: document.documentElement.clientWidth,
@@ -154,6 +157,7 @@ async def test_new_issue_link_is_visible_in_shared_topbar(tmp_path):
         await browser.close()
 
     assert metrics["visible"]
+    assert metrics["iconVisible"]
     assert metrics["left"] >= 0
     assert metrics["right"] <= metrics["viewport"]
     assert metrics["overflow"] <= 1
