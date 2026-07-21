@@ -282,6 +282,7 @@ class TranscriptEvent:  # normalized transcript line (parsed from v0.2)
     subagent_id: str | None = None
     subagent_name: str | None = None
     subagent_identities: tuple[tuple[str, str], ...] = ()  # spawn output id/name pairs
+    image_media_types: tuple[str, ...] = ()  # safe raster images on this message
 
 
 @dataclass

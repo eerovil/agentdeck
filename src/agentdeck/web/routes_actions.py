@@ -7,7 +7,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from starlette.datastructures import FormData
 
 from ..models import Capability
@@ -23,7 +23,12 @@ from .deps import (
     require_access,
     resolve_session,
 )
-from .uploads import ImageUploadError, cleanup_image_files, save_uploaded_images
+from .uploads import (
+    ImageUploadError,
+    _sniff_extension,
+    cleanup_image_files,
+    save_uploaded_images,
+)
 
 log = logging.getLogger(__name__)
 
@@ -75,6 +80,63 @@ def _render_interaction(request: Request, session_key: str, interaction) -> HTML
         "partials/pending_interaction.html",
         {"session_key": session_key, "interaction": interaction},
     )
+
+
+_IMAGE_MEDIA_TYPES = {
+    ".gif": "image/gif",
+    ".jpg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
+_IMAGE_EXTENSIONS = {media_type: extension for extension, media_type in _IMAGE_MEDIA_TYPES.items()}
+
+
+@router.get("/sessions/{session_key}/transcript-images/{seq}/{image_index}")
+async def transcript_image(
+    request: Request, session_key: str, seq: int, image_index: int
+) -> Response:
+    """Serve one bounded embedded transcript image without inlining it in HTML."""
+    account, session, provider = resolve_session(request, session_key)
+    image = await provider.transcript_image(account, session, seq, image_index)
+    if image is None:
+        raise HTTPException(status_code=404, detail="transcript image not found")
+    media_type, content = image
+    expected_extension = _IMAGE_EXTENSIONS.get(media_type)
+    if (
+        expected_extension is None
+        or len(content) > get_config(request).inject.max_image_bytes
+        or _sniff_extension(content) != expected_extension
+    ):
+        raise HTTPException(status_code=404, detail="transcript image not found")
+    return Response(content, media_type=media_type, headers={"Cache-Control": "private, no-store"})
+
+
+@router.get("/sessions/{session_key}/pending-images/{item_id}/{image_index}")
+async def pending_message_image(
+    request: Request, session_key: str, item_id: int, image_index: int
+) -> Response:
+    """Serve one validated upload while its message is still pending."""
+    resolve_session(request, session_key)
+    status = get_injector(request).status(session_key)
+    item = next(
+        (
+            queued
+            for queued in status.items
+            if queued.id == item_id and queued.state in ("queued", "running")
+        ),
+        None,
+    ) if status else None
+    if item is None or image_index < 0 or image_index >= len(item.images):
+        raise HTTPException(status_code=404, detail="pending image not found")
+    image = item.images[image_index]
+    media_type = _IMAGE_MEDIA_TYPES.get(image.suffix)
+    if media_type is None:
+        raise HTTPException(status_code=404, detail="pending image not found")
+    try:
+        content = image.read_bytes()
+    except OSError:
+        raise HTTPException(status_code=404, detail="pending image not found") from None
+    return Response(content, media_type=media_type, headers={"Cache-Control": "private, no-store"})
 
 
 @router.post("/assistant/refresh", response_class=HTMLResponse)

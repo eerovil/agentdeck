@@ -164,6 +164,61 @@ TOOL_RESULT = {
     "type": "user",
     "message": {"role": "user", "content": [{"type": "tool_result", "content": "file listing"}]},
 }
+
+
+def test_claude_user_image_is_kept_with_text_and_image_only_turn_is_visible(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(transcripts, "_MAX_IMAGE_DATA_CHARS", 20)
+    p = tmp_path / "t.jsonl"
+    media = {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}
+    _write(
+        p,
+        [
+            {
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "source": media},
+                        {"type": "text", "text": "What is this?"},
+                    ],
+                },
+            },
+            {
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "image", "source": media}],
+                },
+            },
+            {
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {**media, "data": "a" * 21},
+                        },
+                        {"type": "text", "text": "Oversized image"},
+                    ],
+                },
+            },
+        ],
+    )
+
+    first, second, oversized = transcripts.read_events(p).events
+
+    assert first.text == "What is this?"
+    assert first.image_media_types == ("image/png",)
+    assert second.text is None
+    assert second.image_media_types == first.image_media_types
+    assert oversized.text == "Oversized image"
+    assert oversized.image_media_types == ()
+    assert transcripts.transcript_image(p, 1, 0) == ("image/png", b"\x89PNG\r\n\x1a\n")
+
+
 # The bookkeeping a completed /compact leaves in the transcript.
 COMPACT_SUMMARY = {
     "type": "user",

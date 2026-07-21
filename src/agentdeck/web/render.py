@@ -397,9 +397,11 @@ def render_session_list(
     )
 
 
-def render_transcript_events(templates: Jinja2Templates, events) -> str:
+def render_transcript_events(
+    templates: Jinja2Templates, events, *, session_key: str | None = None
+) -> str:
     tmpl = templates.get_template("partials/transcript_event.html")
-    return "".join(tmpl.render(e=e) for e in events)
+    return "".join(tmpl.render(e=e, session_key=session_key) for e in events)
 
 
 def render_session_status(templates: Jinja2Templates, session) -> str:

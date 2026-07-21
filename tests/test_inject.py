@@ -242,6 +242,63 @@ async def test_injection_service_keeps_each_queued_action_id(tmp_path):
     await service.stop()
 
 
+async def test_injection_keeps_image_until_durable_transcript_event(tmp_path):
+    durable = asyncio.Event()
+    provider_started = asyncio.Event()
+
+    class Provider:
+        async def transcript_cursor(self, account, session):
+            return (100, 5)
+
+        async def inject(self, account, session, message, *, timeout_s, images=None):
+            provider_started.set()
+            return InjectResult(True)
+
+        async def tail_transcript(self, account, session, byte_offset, seq):
+            assert (byte_offset, seq) == (100, 5)
+            if not durable.is_set():
+                return ([], byte_offset, seq)
+            return (
+                [
+                    TranscriptEvent(
+                        seq=6,
+                        role="user",
+                        text="inspect",
+                        image_media_types=("image/png",),
+                    )
+                ],
+                200,
+                6,
+            )
+
+    service = InjectionService(InjectConfig(enabled=True, timeout_s=1))
+    account = Account("codex:test", "codex", "test", tmp_path)
+    session = Session(
+        "codex:test:sid",
+        account.key,
+        "sid",
+        SessionStatus.IDLE,
+        capabilities=frozenset({Capability.INJECT}),
+    )
+    image = tmp_path / "pending.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\nsmall")
+
+    assert (await service.start(account, session, Provider(), "inspect", [image])).accepted
+    await asyncio.wait_for(provider_started.wait(), timeout=1)
+    await asyncio.sleep(0)
+    assert image.exists()
+    assert service.status(session.key).items[0].state == "running"
+
+    durable.set()
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        if not image.exists():
+            break
+    assert not image.exists()
+    assert service.status(session.key).items[0].state == "complete"
+    await service.stop()
+
+
 async def test_queued_message_remains_visible_after_navigation(tmp_path, monkeypatch):
     app = _web_app(tmp_path)
     app.state.app_state.sessions["codex:test:sid"].show_when_idle = True
@@ -488,9 +545,24 @@ async def test_inject_route_validates_images_and_cleans_up(tmp_path, monkeypatch
         await release.wait()
         return InjectResult(True)
 
+    async def fake_tail_transcript(account, session, byte_offset, seq):
+        return (
+            [
+                TranscriptEvent(
+                    seq=seq + 1,
+                    role="user",
+                    text="inspect",
+                    image_media_types=("image/png",),
+                )
+            ],
+            byte_offset + 1,
+            seq + 1,
+        )
+
     from agentdeck.providers import PROVIDERS
 
     monkeypatch.setattr(PROVIDERS["codex"], "inject", fake_inject)
+    monkeypatch.setattr(PROVIDERS["codex"], "tail_transcript", fake_tail_transcript)
     png = b"\x89PNG\r\n\x1a\nsmall"
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         invalid = await client.post(
@@ -522,6 +594,12 @@ async def test_inject_route_validates_images_and_cleans_up(tmp_path, monkeypatch
         assert saved.is_file()
         assert saved.name != "attacker-name.png"
         assert saved.suffix == ".png"
+        assert "/sessions/codex:test:sid/pending-images/1/0" in accepted.text
+        pending_image = await client.get("/sessions/codex:test:sid/pending-images/1/0")
+        assert pending_image.status_code == 200
+        assert pending_image.content == png
+        assert pending_image.headers["content-type"] == "image/png"
+        assert pending_image.headers["cache-control"] == "private, no-store"
         release.set()
         for _ in range(20):
             await asyncio.sleep(0)
@@ -1985,7 +2063,8 @@ async def test_immediate_feedback_is_specific_and_recovers_failed_inputs():
     html = """
       <div class="transcript"></div>
       <form id="send" data-agentdeck-action="send" hx-post="/sessions/test/inject">
-        <textarea name="message">keep this draft</textarea><button type="submit">Send</button>
+        <textarea name="message">keep this draft</textarea>
+        <input type="file" name="images"><button type="submit">Send</button>
       </form>
       <form id="stop" data-agentdeck-action="stop" hx-post="/sessions/test/interrupt">
         <button class="stop-button" type="submit">Stop</button>
@@ -2019,6 +2098,10 @@ async def test_immediate_feedback_is_specific_and_recovers_failed_inputs():
                 }));
                 return form;
               }
+              const transfer = new DataTransfer();
+              transfer.items.add(new File(['image'], 'screenshot.png', {type: 'image/png'}));
+              const imageInput = document.querySelector('#send input[name="images"]');
+              imageInput.files = transfer.files;
               const send = submit('#send');
               const sendRecord = send._agentdeckActionTiming;
               const stop = submit('#stop');
@@ -2026,6 +2109,8 @@ async def test_immediate_feedback_is_specific_and_recovers_failed_inputs():
               const fresh = submit('#new');
               const immediate = {
                 sendState: document.querySelector('.optimistic-message .message-state').textContent,
+                sendImages: document.querySelectorAll('.optimistic-message .ev-image').length,
+                sendImageAlt: document.querySelector('.optimistic-message .ev-image').alt,
                 stopText: stop.querySelector('button').textContent,
                 stopDisabled: stop.querySelector('button').disabled,
                 interactionStatus: interaction.querySelector('.interaction-submitting').textContent,
@@ -2059,6 +2144,8 @@ async def test_immediate_feedback_is_specific_and_recovers_failed_inputs():
 
     assert result["immediate"] == {
         "sendState": "Sending",
+        "sendImages": 1,
+        "sendImageAlt": "Attached image 1",
         "stopText": "Stopping…",
         "stopDisabled": True,
         "interactionStatus": "Submitting…",

@@ -91,6 +91,12 @@ class SessionProvider(ABC):
         the provider has no transcript."""
         return None
 
+    async def transcript_image(
+        self, account: Account, session: Session, seq: int, image_index: int
+    ) -> tuple[str, bytes] | None:
+        """Return one transcript image as ``(media_type, bytes)``."""
+        return None
+
     async def recent_conversation(
         self, account: Account, session: Session, limit: int = 4
     ) -> list[TranscriptEvent]:

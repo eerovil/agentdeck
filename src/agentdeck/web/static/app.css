@@ -470,6 +470,9 @@ details.ev.tool > .ev-text { margin-top: 6px; max-height: 420px; overflow: auto;
 .tool-name { font-weight: 600; color: var(--warn); }
 .tool-sum { color: var(--muted); }
 .ev-text { white-space: pre-wrap; word-break: break-word; font-size: 13.5px; line-height: 1.5; }
+.ev-images { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 7px; }
+.ev-image { display: block; max-width: 100%; max-height: 420px; object-fit: contain;
+  border: 1px solid var(--line); border-radius: 7px; background: var(--panel2); }
 /* An AskUserQuestion prompt inside the transcript — same amber dot as the card
    question, but wraps in full (a detail view, not the truncated list line). */
 .ev-question { display: flex; align-items: flex-start; gap: 7px; margin-top: 6px;

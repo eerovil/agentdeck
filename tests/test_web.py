@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import json
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1389,6 +1391,66 @@ async def test_markdown_links_reject_unsafe_schemes_and_attribute_breakout(tmp_p
     assert '<a href="https://e.com" target="_blank" rel="noopener">x</a>' in rendered[4]["html"]
 
 
+async def test_transcript_plain_web_urls_render_as_safe_links(tmp_path):
+    app = _app_with_state(tmp_path, with_transcript=True)
+    transcript = tmp_path / "projects" / "-tmp" / "sid1.jsonl"
+    lines = [json.loads(line) for line in transcript.read_text().splitlines()]
+    lines[0]["message"]["content"] = (
+        "See https://github.com/eerovil/agentdeck/pull/65. "
+        "Keep `https://example.test/code` literal and "
+        "[open docs](https://example.test/docs)."
+    )
+    transcript.write_text("".join(json.dumps(line) + "\n" for line in lines))
+
+    async with _client(app) as client:
+        response = await client.get("/sessions/claude_code:test:sid1")
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        results = []
+        for width in (1200, 320):
+            page = await browser.new_page(viewport={"width": width, "height": 800})
+            await page.set_content(response.text)
+            message = page.locator(".ev.user .ev-text")
+            links = message.locator("a")
+            await links.first.wait_for()
+            results.append(
+                {
+                    "links": await links.evaluate_all(
+                        """links => links.map(link => ({
+                          text: link.textContent,
+                          href: link.getAttribute('href'),
+                          target: link.getAttribute('target'),
+                          rel: link.getAttribute('rel'),
+                        }))"""
+                    ),
+                    "code_links": await message.locator("code a").count(),
+                    "code_text": await message.locator("code").text_content(),
+                }
+            )
+            await page.close()
+        await browser.close()
+
+    expected_links = [
+        {
+            "text": "https://github.com/eerovil/agentdeck/pull/65",
+            "href": "https://github.com/eerovil/agentdeck/pull/65",
+            "target": "_blank",
+            "rel": "noopener",
+        },
+        {
+            "text": "open docs",
+            "href": "https://example.test/docs",
+            "target": "_blank",
+            "rel": "noopener",
+        },
+    ]
+    for result in results:
+        assert result["links"] == expected_links
+        assert result["code_links"] == 0
+        assert result["code_text"] == "https://example.test/code"
+
+
 async def test_local_markdown_file_opens_from_absolute_path_with_line_suffix(tmp_path):
     app = _app_with_state(tmp_path)
     handoff = tmp_path / "handoff.md"
@@ -1885,6 +1947,80 @@ def test_tool_calls_visible_outputs_hidden_and_live_marker(tmp_path):
     assert 'data-activity-elapsed="12"' in activity
     assert ">12s</span>" in activity
     assert "tool-wait" not in render_tool_activity(templates, None)
+
+
+def test_transcript_user_message_renders_attached_images(tmp_path):
+    from agentdeck.models import TranscriptEvent
+    from agentdeck.web.render import render_transcript_events
+
+    app = _app_with_state(tmp_path)
+    html = render_transcript_events(
+        app.state.templates,
+        [
+            TranscriptEvent(
+                seq=1,
+                role="user",
+                text="See this",
+                image_media_types=("image/png", "image/jpeg"),
+            )
+        ],
+        session_key="claude_code:test:sid1",
+    )
+
+    assert 'aria-label="2 attached images"' in html
+    assert html.count('class="ev-image"') == 2
+    assert 'src="/sessions/claude_code:test:sid1/transcript-images/1/0"' in html
+    assert 'alt="Attached image 2"' in html
+
+    image_only = render_transcript_events(
+        app.state.templates,
+        [
+            TranscriptEvent(
+                seq=2,
+                role="user",
+                image_media_types=("image/png",),
+            )
+        ],
+        session_key="claude_code:test:sid1",
+    )
+    assert 'class="ev user"' in image_only
+    assert 'class="ev-image"' in image_only
+
+
+async def test_transcript_image_is_served_outside_the_html_response(tmp_path):
+    app = _app_with_state(tmp_path, with_transcript=True)
+    transcript = tmp_path / "projects" / "-tmp" / "sid1.jsonl"
+    lines = [json.loads(line) for line in transcript.read_text().splitlines()]
+    png = b"\x89PNG\r\n\x1a\nsmall"
+    lines[0]["message"]["content"] = [
+        {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": base64.b64encode(png).decode(),
+            },
+        },
+        {"type": "text", "text": "first question"},
+    ]
+    transcript.write_text("".join(json.dumps(line) + "\n" for line in lines))
+
+    async with _client(app) as client:
+        page = await client.get("/sessions/claude_code:test:sid1")
+        image = await client.get(
+            "/sessions/claude_code:test:sid1/transcript-images/1/0"
+        )
+        missing = await client.get(
+            "/sessions/claude_code:test:sid1/transcript-images/1/1"
+        )
+
+    assert "data:image" not in page.text
+    assert "/sessions/claude_code:test:sid1/transcript-images/1/0" in page.text
+    assert image.status_code == 200
+    assert image.content == png
+    assert image.headers["content-type"] == "image/png"
+    assert image.headers["cache-control"] == "private, no-store"
+    assert missing.status_code == 404
 
 
 def test_ask_user_question_renders_in_transcript(tmp_path):

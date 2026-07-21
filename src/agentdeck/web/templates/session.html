@@ -79,6 +79,7 @@
     {% set before = detail.earliest_seq %}
     {% include "partials/load_earlier.html" %}
     {% endif %}
+    {% set session_key = session.key %}
     {% for e in detail.events %}{% include "partials/transcript_event.html" %}{% endfor %}
     {% for item in pending_messages %}{% include "partials/pending_message.html" %}{% endfor %}
   </div>

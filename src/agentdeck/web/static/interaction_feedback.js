@@ -33,6 +33,24 @@
     text.textContent = input.value.trim();
     row.appendChild(head);
     row.appendChild(text);
+    var imageInput = form.querySelector('input[type="file"][name="images"]');
+    if (imageInput && imageInput.files && imageInput.files.length) {
+      var images = document.createElement('div');
+      images.className = 'ev-images';
+      images.setAttribute('aria-label', imageInput.files.length +
+        (imageInput.files.length === 1 ? ' attached image' : ' attached images'));
+      Array.from(imageInput.files).forEach(function (file, index) {
+        var image = document.createElement('img');
+        var url = URL.createObjectURL(file);
+        image.className = 'ev-image';
+        image.src = url;
+        image.alt = 'Attached image ' + (index + 1);
+        image.addEventListener('load', function () { URL.revokeObjectURL(url); }, {once: true});
+        image.addEventListener('error', function () { URL.revokeObjectURL(url); }, {once: true});
+        images.appendChild(image);
+      });
+      row.appendChild(images);
+    }
     transcript.appendChild(row);
     form._agentdeckOptimisticMessage = row;
     document.body.dispatchEvent(new CustomEvent('agentdeck:optimistic-send'));

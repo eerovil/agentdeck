@@ -10,6 +10,8 @@ and a byte offset lets us resume a read without rescanning the whole file.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import logging
 import re
@@ -28,6 +30,12 @@ _MAX_TEXT = 4000
 # preview — cap it generously so long responses aren't truncated, while still
 # bounding a pathological multi-MB paste from bloating a transcript payload.
 _MAX_RENDERED_TEXT = 200_000
+_MAX_IMAGE_DATA_CHARS = 14 * 1024 * 1024
+_MAX_IMAGE_TOTAL_CHARS = 28 * 1024 * 1024
+_MAX_IMAGES = 4
+_SAFE_IMAGE_MEDIA_TYPES = frozenset(
+    ("image/png", "image/jpeg", "image/webp", "image/gif")
+)
 
 
 @dataclass
@@ -49,22 +57,23 @@ def _parse_ts(value: object) -> datetime | None:
 
 def _text_from_content(
     content: object,
-) -> tuple[str | None, str | None, str | None, str | None, str | None]:
-    """Return (text, tool_name, tool_summary, question, answer) from a
+) -> tuple[str | None, str | None, str | None, str | None, str | None, tuple[str, ...]]:
+    """Return (text, tool_name, tool_summary, question, answer, image types) from a
     message.content value. ``question`` is the AskUserQuestion prompt when this
     line asks one; ``answer`` is your reply, parsed from the AskUserQuestion
     tool_result (which the CLI writes as "Your questions have been answered: …")
     so the choice is visible in the chat instead of being hidden with the other
     tool output."""
     if isinstance(content, str):
-        return (content[:_MAX_RENDERED_TEXT] or None, None, None, None, None)
+        return (content[:_MAX_RENDERED_TEXT] or None, None, None, None, None, ())
     if not isinstance(content, list):
-        return (None, None, None, None, None)
+        return (None, None, None, None, None, ())
     texts: list[str] = []
     tool_name: str | None = None
     tool_summary: str | None = None
     question: str | None = None
     answer: str | None = None
+    image_media_types = tuple(media_type for media_type, _data in _image_sources(content))
     for block in content:
         if not isinstance(block, dict):
             continue
@@ -88,7 +97,64 @@ def _text_from_content(
         elif btype == "thinking" and isinstance(block.get("thinking"), str):
             texts.append(block["thinking"])
     text = "\n".join(t for t in texts if t).strip()
-    return (text[:_MAX_RENDERED_TEXT] or None, tool_name, tool_summary, question, answer)
+    return (
+        text[:_MAX_RENDERED_TEXT] or None,
+        tool_name,
+        tool_summary,
+        question,
+        answer,
+        image_media_types,
+    )
+
+
+def _image_sources(content: object) -> tuple[tuple[str, str], ...]:
+    if not isinstance(content, list):
+        return ()
+    images = []
+    total = 0
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "image":
+            continue
+        source = block.get("source")
+        if not isinstance(source, dict) or source.get("type") != "base64":
+            continue
+        media_type = source.get("media_type")
+        data = source.get("data")
+        if (
+            media_type not in _SAFE_IMAGE_MEDIA_TYPES
+            or not isinstance(data, str)
+            or not data
+            or len(data) > _MAX_IMAGE_DATA_CHARS
+            or len(images) >= _MAX_IMAGES
+        ):
+            continue
+        total += len(data)
+        if total > _MAX_IMAGE_TOTAL_CHARS:
+            break
+        images.append((media_type, data))
+    return tuple(images)
+
+
+def transcript_image(path: Path, seq: int, image_index: int) -> tuple[str, bytes] | None:
+    """Decode one bounded image from an exact transcript line."""
+    if seq < 1 or image_index < 0:
+        return None
+    try:
+        with path.open("rb") as handle:
+            raw = next((line for number, line in enumerate(handle, 1) if number == seq), None)
+        data = json.loads(raw) if raw is not None else None
+    except (OSError, TypeError, ValueError):
+        return None
+    message = data.get("message") if isinstance(data, dict) else None
+    content = message.get("content") if isinstance(message, dict) else None
+    images = _image_sources(content)
+    if image_index >= len(images):
+        return None
+    media_type, encoded = images[image_index]
+    try:
+        return media_type, base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError):
+        return None
 
 
 # The AskUserQuestion tool_result the CLI writes once you answer (or dismiss)
@@ -231,14 +297,16 @@ def _event_from_line(seq: int, data: dict, subagent: str | None = None) -> Trans
         return None  # meta caveat, compaction summary, or slash-command echo
     message = data.get("message")
     content = message.get("content") if isinstance(message, dict) else None
-    text, tool_name, tool_summary, question, answer = _text_from_content(content)
+    text, tool_name, tool_summary, question, answer, image_media_types = _text_from_content(
+        content
+    )
     model = message.get("model") if isinstance(message, dict) else None
     usage = message.get("usage") if isinstance(message, dict) else None
     is_tool_result = tool_name is None and ltype == "user" and _looks_like_tool_result(content)
     # An AskUserQuestion answer arrives on a tool_result line but is your reply —
     # render it as a user turn, not a (hidden) tool result.
     role = "user" if answer is not None else ("tool" if is_tool_result else ltype)
-    if text is None and tool_name is None and answer is None:
+    if text is None and tool_name is None and answer is None and not image_media_types:
         return None  # nothing renderable (e.g. an isMeta bookkeeping line)
     return TranscriptEvent(
         seq=seq,
@@ -252,6 +320,7 @@ def _event_from_line(seq: int, data: dict, subagent: str | None = None) -> Trans
         usage=usage if isinstance(usage, dict) else None,
         ts=_parse_ts(data.get("timestamp")),
         subagent=subagent,
+        image_media_types=image_media_types,
     )
 
 

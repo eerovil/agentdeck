@@ -220,7 +220,10 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
                 account, session, offset, seq
             )
             if new_events:
-                yield format_sse("transcript", render_transcript_events(templates, new_events))
+                yield format_sse(
+                    "transcript",
+                    render_transcript_events(templates, new_events, session_key=session_key),
+                )
                 last_activity_t = loop.time()
                 last_ev = new_events[-1]
             current = state.sessions.get(session_key) or session
