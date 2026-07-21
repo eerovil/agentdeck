@@ -65,6 +65,26 @@ def slugify(title: str, maxlen: int = 40) -> str:
     return s[:maxlen].rstrip("-") or "issue"
 
 
+def by_allowed_author(candidates: list[dict], allowed: list[str] | None) -> list[dict]:
+    """Keep only issues opened by an allowed author.
+
+    The repo is public, so an issue's body becomes the worker's instructions —
+    only act on issues *we* filed. GitHub logins are case-insensitive. An empty
+    or missing allowlist disables the filter (accepts every author); the shipped
+    config always sets one, so that fallback only applies to a misconfiguration.
+    """
+    if not allowed:
+        log("warn: no allowed_authors configured — accepting issues from any author")
+        return candidates
+    allow = {a.lower() for a in allowed}
+    kept = []
+    for issue in candidates:
+        login = ((issue.get("author") or {}).get("login") or "").lower()
+        if login in allow:
+            kept.append(issue)
+    return kept
+
+
 def prd_issue_numbers(open_prs: list[dict]) -> set[int]:
     """Issue numbers that already have an open PR — matched by a closing keyword
     in the PR body or by an ``agent/issue-<n>-*`` head branch."""
@@ -140,7 +160,7 @@ def list_agent_issues(repo: str, label: str) -> list[dict]:
     out = _run(
         [
             "gh", "issue", "list", "-R", repo, "--label", label, "--state", "open",
-            "--limit", "100", "--json", "number,title,labels,updatedAt",
+            "--limit", "100", "--json", "number,title,labels,updatedAt,author",
         ]
     ).stdout
     return json.loads(out or "[]")
@@ -264,7 +284,11 @@ def main(argv: list[str] | None = None) -> int:
     now = time.time()
 
     state = load_state(state_path)
-    candidates = list_agent_issues(cfg["repo"], cfg["label"])
+    # Public repo: only ever act on issues WE opened (their body is the worker's
+    # prompt). Filter by author before anything else touches them.
+    candidates = by_allowed_author(
+        list_agent_issues(cfg["repo"], cfg["label"]), cfg.get("allowed_authors")
+    )
     open_prs = list_open_prs(cfg["repo"])
     prd = prd_issue_numbers(open_prs)
 
