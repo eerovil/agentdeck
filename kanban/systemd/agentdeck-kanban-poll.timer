@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the AgentDeck kanban poll every 30s
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=30s
+# Don't stack missed runs after sleep/suspend; the next tick catches up.
+Persistent=false
+Unit=agentdeck-kanban-poll.service
+
+[Install]
+WantedBy=timers.target

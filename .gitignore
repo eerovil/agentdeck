@@ -32,3 +32,6 @@ dist/
 
 # git worktrees created by tooling
 .worktrees/
+
+# kanban poller runtime state (dispatch ledger)
+.kanban/

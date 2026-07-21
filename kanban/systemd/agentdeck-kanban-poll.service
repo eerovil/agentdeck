@@ -1,0 +1,14 @@
+[Unit]
+Description=AgentDeck kanban poll — dispatch local workers for `agent`-labelled issues
+# Only meaningful when the live web process is up (delegations POST to it).
+After=agentdeck.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/eero/agentdeck
+# gh + uv live in ~/.local/bin; git/flock/bash in /usr/bin. User units get a bare PATH.
+Environment=PATH=/home/eero/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/eero/agentdeck/kanban/kanban_poll.sh
+# The poll spawns detached `agentdeck delegate` workers; don't reap them with the oneshot.
+KillMode=process
+TimeoutStartSec=120

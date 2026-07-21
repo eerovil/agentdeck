@@ -1,0 +1,14 @@
+{
+  "repo": "eerovil/agentdeck",
+  "label": "agent",
+  "repo_path": "/home/eero/agentdeck",
+  "base_branch": "master",
+  "worktrees_root": ".worktrees",
+  "state_path": "/home/eero/agentdeck/.kanban/state.json",
+  "agentdeck_bin": "/home/eero/agentdeck/.venv/bin/agentdeck",
+  "agentdeck_url": "http://127.0.0.1:8756",
+  "concurrency": 2,
+  "stale_hours": 2,
+  "branch_prefix": "agent/issue-",
+  "log_path": "/tmp/agentdeck-kanban.log"
+}

@@ -1,0 +1,76 @@
+# AgentDeck kanban poller
+
+An autonomous issue → PR pipeline for this repo. A `--user` systemd timer runs a
+**token-free** poll every ~30s; whenever an open issue is labelled `agent` and
+isn't already being worked, the poll spins up an **isolated git worktree** and
+dispatches a **local AgentDeck worker** (an `agentdeck delegate` Codex chat) that
+implements the change, validates it, and opens a PR against `master` — on its own.
+Promotion to live stays manual: the poller never merges or deploys.
+
+## How it works
+
+```
+systemd timer ─▶ kanban_poll.sh ─(flock)─▶ poller.py
+                                              │  gh issue list --label agent   (no LLM)
+                                              │  gh pr list                    (skip PR'd)
+                                              │  state file + stale gate       (skip in-flight)
+                                              ▼
+                        for each new issue (up to `concurrency`):
+                          git worktree add .worktrees/issue-<n>  +  uv sync
+                          agentdeck delegate --cwd <worktree>  <  worker_prompt.md   (detached)
+                                              │
+                          local AgentDeck Codex worker:
+                            implement ▶ .venv/bin/pytest ▶ ruff ▶ shot.py ▶ gh pr create (Closes #n)
+```
+
+- **Token-free at rest:** `poller.py` is plain `gh`/`git`/`uv`; the only token spend
+  is a dispatched worker, and only when there's real work.
+- **Isolation:** one worktree per issue under `.worktrees/issue-<n>`, each with its
+  own `.venv`. The Playwright browser tests run in-process (ASGI, no bound port or
+  DB), so parallel workers never collide.
+- **Idempotency:** `.kanban/state.json` (gitignored) records each dispatch. An issue
+  is skipped while a worker is in flight (`< stale_hours`), permanently once it has
+  an open PR, and becomes eligible again if a worker dies and goes stale.
+- **Concurrency:** up to `concurrency` (default 2) workers at once.
+- **Screenshots:** for UI-touching diffs the worker runs `shot.py`, which renders the
+  affected pages in-process and uploads PNGs to the `kanban-shots` release, embedding
+  them in the PR.
+
+## Files
+
+| File | Role |
+| --- | --- |
+| `config.json` | repo, label, paths, base branch, concurrency, stale window |
+| `poller.py` | the engine — select issues, make worktrees, dispatch workers |
+| `kanban_poll.sh` | flocked launcher run by the timer |
+| `worker_prompt.md` | the instructions handed to each worker delegation |
+| `shot.py` | in-process page screenshotter → `kanban-shots` release |
+| `systemd/*.{service,timer}` | the user timer that drives the poll |
+
+## Install / enable
+
+```sh
+# from the live checkout
+cd /home/eero/agentdeck
+ln -sf "$PWD/kanban/systemd/agentdeck-kanban-poll.service" ~/.config/systemd/user/
+ln -sf "$PWD/kanban/systemd/agentdeck-kanban-poll.timer"   ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now agentdeck-kanban-poll.timer
+```
+
+## Operate
+
+```sh
+# See what it WOULD dispatch, without doing anything:
+kanban/kanban_poll.sh --dry-run              # or: python kanban/poller.py --dry-run --verbose
+
+systemctl --user list-timers | grep kanban   # next fire
+tail -f /tmp/agentdeck-kanban.log            # poll + worker delegate logs
+cat /home/eero/agentdeck/.kanban/state.json  # dispatch ledger
+git worktree list                            # active issue worktrees
+
+systemctl --user stop agentdeck-kanban-poll.timer     # pause the pipeline
+```
+
+To hand an issue to the poller, just add the **`agent`** label. Clean up a finished
+worktree with `git worktree remove .worktrees/issue-<n>` after its PR is merged.
