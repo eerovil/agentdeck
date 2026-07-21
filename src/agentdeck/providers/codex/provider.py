@@ -478,12 +478,6 @@ class CodexProvider(SessionProvider):
             session.subagent_count = sum(
                 agent.status in ("working", "quiet") for agent in agents
             )
-            if session.subagent_count:
-                # Spawned-agent work is part of the parent chat's turn from the
-                # user's perspective, even when the parent rollout itself is
-                # quiet while it waits for its children.
-                session.thinking = True
-                session.activity = session.activity or "Working"
         self._paths = {key: value for key, value in self._paths.items() if key[0] != account.key}
         self._paths.update(current_paths)
         # Publish this account's delegation links so cross-provider children
@@ -525,11 +519,6 @@ class CodexProvider(SessionProvider):
                         else ("Working" if active else None)
                     )
                 )
-            if session.subagent_count:
-                # Keep the scan-derived parent activity intact between full
-                # scans; the cheap parent-rollout sweep cannot see child files.
-                thinking = True
-                activity = activity or "Working"
             values = (
                 status,
                 thinking,

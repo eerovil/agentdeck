@@ -416,8 +416,8 @@ async def test_running_spawned_agents_are_counted_on_parent_session(tmp_path):
     (session,) = [s for s in scanned if s.parent_session_key is None]
     assert session.session_id == parent_sid
     assert session.status == SessionStatus.IDLE
-    assert session.thinking is True
-    assert session.activity == "Working"
+    assert session.thinking is False
+    assert session.activity is None
     assert session.subagent_count == 1
     assert len(session.subagents) == 2
     assert session.subagents[0].nickname == "Faraday"
@@ -434,9 +434,9 @@ async def test_running_spawned_agents_are_counted_on_parent_session(tmp_path):
         "019f6085-6cb1-7920-891f-9403d202a6f0",  # completed (recent)
     }
     # A cheap liveness sweep only reads the quiet parent rollout; it must not
-    # erase the working state derived from the still-running child.
+    # invent provider-local activity for work represented by the child.
     assert provider.sweep_liveness(_account(tmp_path), [session]) == []
-    assert session.thinking is True
+    assert session.thinking is False
 
 
 def test_codex_compacts_subagent_notifications_without_clobbering_last_prompt(tmp_path):

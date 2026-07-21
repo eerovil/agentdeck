@@ -113,7 +113,7 @@ async def dashboard(request: Request) -> HTMLResponse:
             "assistant": request.app.state.assistant,
             "assistant_sessions": state.sessions,
             "deckhand_status": session_deckhand_status(request.app.state.assistant),
-            "working_count": sum(1 for s in state.visible_sessions() if s.thinking),
+            "working_count": state.working_count(),
         },
     )
     # Live dashboard — always revalidate so a deploy's HTML (and the inline
@@ -153,6 +153,9 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
     )
     label = activity_label(live, bool(session.thinking), last_ev, age)
     label = detailed_activity_label(label, last_ev)
+    if label is None and state.has_working_subagent(session):
+        label = "Working"
+    effective_session = state.effective_session(session)
     labels = session_labels(accounts)
     account_label = labels.get(session.account_key)
     owned_session = provider.owns_session(account, session)
@@ -166,7 +169,7 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
         request,
         "session.html",
         {
-            "session": session,
+            "session": effective_session,
             "detail": detail,
             # Desktop keeps the live session list beside the selected chat.
             "sessions": _detail_top,
@@ -198,7 +201,7 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
             "pending_interaction": provider.pending_interaction(account, session),
             "assistant": assistant,
             "assistant_sessions": state.sessions,
-            "working_count": sum(1 for s in state.visible_sessions() if s.thinking),
+            "working_count": state.working_count(),
             "assistant_insights": assistant_insights_for_session(
                 assistant, session.key
             ),
