@@ -122,6 +122,52 @@ async def test_dashboard_renders_usage_and_session(tmp_path):
     assert "Attention triage" in r.text
 
 
+async def test_new_issue_link_is_visible_in_shared_topbar(tmp_path):
+    app = _app_with_state(tmp_path, with_transcript=True)
+    async with _client(app) as client:
+        dashboard = await client.get("/")
+        session = await client.get("/sessions/claude_code:test:sid1")
+
+    expected = 'href="https://github.com/eerovil/agentdeck/issues/new"'
+    for response in (dashboard, session):
+        assert response.status_code == 200
+        assert expected in response.text
+        assert 'aria-label="Create AgentDeck GitHub issue"' in response.text
+        assert 'class="github-mark"' in response.text
+
+    static_dir = Path(__file__).parents[1] / "src/agentdeck/web/static"
+    css = (static_dir / "app.css").read_text()
+    html = dashboard.text.replace("</head>", f"<style>{css}</style></head>")
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        page = await browser.new_page(viewport={"width": 320, "height": 800})
+        await page.set_content(html)
+        metrics = await page.locator(".new-issue-link").evaluate(
+            """link => {
+              const rect = link.getBoundingClientRect();
+              return {
+                visible: rect.width > 0 && rect.height > 0,
+                iconVisible: !!link.querySelector('.github-mark')
+                  && link.querySelector('.github-mark').getBoundingClientRect().width > 0,
+                left: rect.left,
+                right: rect.right,
+                viewport: document.documentElement.clientWidth,
+                overflow: document.documentElement.scrollWidth
+                  - document.documentElement.clientWidth,
+                topbarPosition: getComputedStyle(link.closest('.topbar')).position,
+              };
+            }"""
+        )
+        await browser.close()
+
+    assert metrics["visible"]
+    assert metrics["iconVisible"]
+    assert metrics["left"] >= 0
+    assert metrics["right"] <= metrics["viewport"]
+    assert metrics["overflow"] <= 1
+    assert metrics["topbarPosition"] == "sticky"
+
+
 async def test_deckhand_shows_active_working_count(tmp_path):
     app = _app_with_state(tmp_path)
     app.state.assistant.config.enabled = True
