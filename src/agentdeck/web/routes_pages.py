@@ -17,6 +17,48 @@ from .deps import (
 router = APIRouter()
 
 
+def _session_list_controls_context(request: Request, accounts, state) -> dict[str, object]:
+    """Build the controls that accompany every full session list."""
+    from ..providers import PROVIDERS
+
+    new_chat_accounts = [
+        account
+        for account in accounts
+        if PROVIDERS[account.provider_id].can_start_session(account)
+    ]
+    new_chat_account_keys = {account.key for account in new_chat_accounts}
+    # Model options for each provider present in the create form; the picker JS
+    # shows only those matching the selected account's provider.
+    new_chat_models = [
+        {"provider_id": provider_id, "value": choice.value, "label": choice.label}
+        for provider_id in sorted({account.provider_id for account in new_chat_accounts})
+        for choice in PROVIDERS[provider_id].selectable_models
+    ]
+    cwd_options = sorted(
+        {
+            str(session.cwd)
+            for session in state.all_sessions()
+            if session.account_key in new_chat_account_keys and session.cwd is not None
+        }
+    )
+    manual_cwd = get_db(request).load_manual_new_chat_cwd()
+    if manual_cwd and manual_cwd not in cwd_options:
+        cwd_options.insert(0, manual_cwd)
+    # A configured default always wins over the remembered last-used cwd.
+    configured_default = request.app.state.config.inject.new_chat_default_cwd
+    default_cwd = configured_default or manual_cwd or (cwd_options[0] if cwd_options else "")
+    if default_cwd and default_cwd not in cwd_options:
+        cwd_options.insert(0, default_cwd)
+
+    return {
+        "new_chat_accounts": new_chat_accounts,
+        "new_chat_enabled": request.app.state.config.inject.enabled,
+        "new_chat_cwds": cwd_options,
+        "new_chat_default_cwd": default_cwd,
+        "new_chat_models": new_chat_models,
+    }
+
+
 def _pr_reference_text(events) -> str | None:
     """PR-bearing conversation fragments from the visible history.
 
@@ -55,42 +97,12 @@ async def dashboard(request: Request) -> HTMLResponse:
     templates = get_templates(request)
     accounts = get_accounts(request)
     state = get_state(request)
-    from ..providers import PROVIDERS
     from .render import (
         _usage_rows,
         session_deckhand_status,
         session_labels,
         session_queue_summaries,
     )
-
-    new_chat_accounts = [
-        account
-        for account in accounts
-        if PROVIDERS[account.provider_id].can_start_session(account)
-    ]
-    new_chat_account_keys = {account.key for account in new_chat_accounts}
-    # Model options for each provider present in the create form; the picker JS
-    # shows only those matching the selected account's provider.
-    new_chat_models = [
-        {"provider_id": provider_id, "value": choice.value, "label": choice.label}
-        for provider_id in sorted({account.provider_id for account in new_chat_accounts})
-        for choice in PROVIDERS[provider_id].selectable_models
-    ]
-    cwd_options = sorted(
-        {
-            str(session.cwd)
-            for session in state.all_sessions()
-            if session.account_key in new_chat_account_keys and session.cwd is not None
-        }
-    )
-    manual_cwd = get_db(request).load_manual_new_chat_cwd()
-    if manual_cwd and manual_cwd not in cwd_options:
-        cwd_options.insert(0, manual_cwd)
-    # A configured default always wins over the remembered last-used cwd.
-    configured_default = request.app.state.config.inject.new_chat_default_cwd
-    default_cwd = configured_default or manual_cwd or (cwd_options[0] if cwd_options else "")
-    if default_cwd and default_cwd not in cwd_options:
-        cwd_options.insert(0, default_cwd)
 
     top_sessions, children_of = state.session_tree()
     resp = templates.TemplateResponse(
@@ -105,11 +117,7 @@ async def dashboard(request: Request) -> HTMLResponse:
             "queue_summaries": session_queue_summaries(
                 state.visible_sessions(), request.app.state.injector
             ),
-            "new_chat_accounts": new_chat_accounts,
-            "new_chat_enabled": request.app.state.config.inject.enabled,
-            "new_chat_cwds": cwd_options,
-            "new_chat_default_cwd": default_cwd,
-            "new_chat_models": new_chat_models,
+            **_session_list_controls_context(request, accounts, state),
             "assistant": request.app.state.assistant,
             "assistant_sessions": state.sessions,
             "deckhand_status": session_deckhand_status(request.app.state.assistant),
@@ -213,6 +221,7 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
             # (the per-session SSE stream then keeps them live over one socket).
             "rows": _usage_rows(accounts, state),
             "host": state.host_stats,
+            **_session_list_controls_context(request, accounts, state),
         },
     )
     resp.headers["Cache-Control"] = "no-cache"

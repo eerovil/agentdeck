@@ -27,12 +27,14 @@
     var reloading = false;
     navigator.serviceWorker.addEventListener('controllerchange', function () {
       if (reloading) return;
-      var draft = document.querySelector(
+      var drafts = document.querySelectorAll(
         'form[data-clear-on-send] textarea[name="message"]'
       );
       // Do not disrupt someone composing a message just because a frontend
       // deploy landed. The next navigation will naturally load the new shell.
-      if (draft && draft.value) return;
+      for (var i = 0; i < drafts.length; i++) {
+        if (drafts[i].value) return;
+      }
       reloading = true;
       window.location.reload();
     });
