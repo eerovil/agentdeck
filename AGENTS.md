@@ -78,3 +78,17 @@ verified live. Perform that cycle once after acceptance criteria pass, not durin
   logs explain uncertainty, and local `master`, `origin/master`, and the worktree are expected.
 - A restart command returning is not deployment proof. Documentation-only guide changes are
   committed and pushed but require no service restart.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and PRDs are tracked in GitHub Issues via `gh`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the canonical Matt Pocock triage labels. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This repo uses a single-context domain documentation layout. See `docs/agents/domain.md`.
