@@ -26,8 +26,14 @@ body {
 }
 .topbar-row { display: flex; align-items: center; gap: 10px; }
 .brand { font-weight: 700; letter-spacing: .02em; font-size: 13px; color: var(--muted); text-transform: uppercase; }
+.topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+.new-issue-link { display: inline-flex; align-items: center; gap: 5px; min-height: 28px;
+  padding: 3px 8px; border: 1px solid var(--line); border-radius: 7px;
+  color: var(--muted); background: var(--panel2); font-size: 11px; font-weight: 650;
+  text-decoration: none; white-space: nowrap; }
+.new-issue-link:hover, .new-issue-link:focus-visible { color: var(--fg); border-color: var(--remote); }
 /* Push opt-in bell (issue #7). Hidden until push.js confirms browser + server support. */
-.notif-bell { margin-left: auto; display: inline-flex; align-items: center; padding: 4px;
+.notif-bell { display: inline-flex; align-items: center; padding: 4px;
   background: none; border: none; border-radius: 6px; color: var(--muted); cursor: pointer; }
 .notif-bell:hover { color: var(--fg); background: var(--panel2); }
 .notif-bell[data-state="on"] { color: var(--live); }
