@@ -230,9 +230,14 @@ def dispatch(cfg: dict, worktree: Path, prompt: str) -> None:
     prompt_file = worktree / ".kanban" / "prompt.md"
     prompt_file.parent.mkdir(parents=True, exist_ok=True)
     prompt_file.write_text(prompt)
+    # `--approval-policy never` is what makes the worker autonomous: Codex would
+    # otherwise prompt (and block) on commands like git rebase / push / gh pr
+    # create. Network is already enabled for delegations, so with never + a
+    # workspace-write sandbox scoped to the worktree it runs unattended.
     cmd = (
         f"{shlex.quote(cfg['agentdeck_bin'])} delegate "
         f"--cwd {shlex.quote(str(worktree))} --sandbox workspace-write "
+        f"--approval-policy never "
         f"< {shlex.quote(str(prompt_file))} >> {shlex.quote(cfg['log_path'])} 2>&1"
     )
     subprocess.Popen(

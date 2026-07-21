@@ -173,6 +173,12 @@ def _delegate(argv: list[str]) -> None:
     )
     parser.add_argument("--model", help="Codex model override")
     parser.add_argument(
+        "--approval-policy",
+        choices=("untrusted", "on-failure", "on-request", "never"),
+        help="Codex approval policy; use 'never' for a fully autonomous run"
+        " (no per-command prompts, e.g. an unattended kanban worker)",
+    )
+    parser.add_argument(
         "--parent-session",
         default=os.environ.get("CLAUDE_CODE_SESSION_ID"),
         help="id of the session initiating this delegation (defaults to"
@@ -201,6 +207,8 @@ def _delegate(argv: list[str]) -> None:
         payload["account_key"] = args.account
     if args.model:
         payload["model"] = args.model
+    if args.approval_policy:
+        payload["approval_policy"] = args.approval_policy
     if args.parent_session:
         payload["parent_session_id"] = args.parent_session
 

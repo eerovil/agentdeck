@@ -339,6 +339,7 @@ class InjectionService:
         *,
         sandbox: str = "workspace-write",
         model: str | None = None,
+        approval_policy: str = "on-request",
         parent_session_id: str | None = None,
     ) -> tuple[InjectResult, str | None]:
         """Start a machine-oriented delegation and retain a pollable result."""
@@ -367,6 +368,7 @@ class InjectionService:
                 message,
                 sandbox,
                 model,
+                approval_policy,
                 parent_session_id,
             ),
             name=f"delegation:{delegation_id}",
@@ -382,6 +384,7 @@ class InjectionService:
         message: str,
         sandbox: str,
         model: str | None,
+        approval_policy: str = "on-request",
         parent_session_id: str | None = None,
     ) -> None:
         session_key = None
@@ -393,7 +396,7 @@ class InjectionService:
                 timeout_s=self.config.timeout_s,
                 sandbox=sandbox,
                 model=model,
-                approval_policy="on-request",
+                approval_policy=approval_policy,
             )
             if not started.accepted or not started.session_id:
                 self._remember_delegation(
