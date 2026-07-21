@@ -121,6 +121,14 @@ class ClaudeWorkerRuntime:
             self.hosts[label] = host
         return host
 
+    def active_turn_count(self) -> int:
+        """Number of deck-owned Claude workers currently executing a turn."""
+        return sum(
+            bool(worker.get("turn_active"))
+            for host in self.hosts.values()
+            for worker in host.snapshot().get("workers", {}).values()
+        )
+
     async def resume_after_restart(self) -> None:
         """Drive any session that requested a post-restart continuation.
 
@@ -276,6 +284,14 @@ class CodexRuntime:
             raise HTTPException(status_code=404, detail="unknown Codex account")
         return client
 
+    def active_turn_count(self) -> int:
+        """Number of runtime-owned Codex threads currently executing a turn."""
+        return sum(
+            client.active_turn(thread_id) is not None
+            for client in self.clients.values()
+            for thread_id in client.owned_threads()
+        )
+
     def snapshot(self, label: str) -> dict[str, Any]:
         client = self.client(label)
         threads = {}
@@ -340,6 +356,16 @@ def create_runtime_app(config: AppConfig) -> FastAPI:
     @app.get("/healthz")
     async def healthz() -> dict[str, Any]:
         return {"ok": True, "accounts": sorted(runtime.clients)}
+
+    @app.get("/activity")
+    async def activity() -> dict[str, Any]:
+        """Restart-safety signal for host automation such as the kanban poller."""
+        codex = runtime.active_turn_count()
+        claude = claude_workers.active_turn_count()
+        return {
+            "active": bool(codex or claude),
+            "active_turns": {"codex": codex, "claude": claude},
+        }
 
     # --- deck-owned Claude workers (config-gated) ----------------------
 

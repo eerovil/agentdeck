@@ -94,6 +94,32 @@ async def test_cancelled_runtime_request_closes_web_side_socket(tmp_path):
     assert client._http.is_closed
 
 
+async def test_runtime_activity_reports_codex_and_claude_active_turns():
+    app = create_runtime_app(AppConfig())
+    codex = MagicMock()
+    codex.owned_threads.return_value = {"busy", "idle"}
+    codex.active_turn.side_effect = lambda thread_id: "turn-1" if thread_id == "busy" else None
+    app.state.runtime.clients["local"] = codex
+    claude = MagicMock()
+    claude.snapshot.return_value = {
+        "workers": {
+            "busy": {"turn_active": True},
+            "idle": {"turn_active": False},
+        }
+    }
+    app.state.claude_workers.hosts["main"] = claude
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://runtime"
+    ) as client:
+        response = await client.get("/activity")
+
+    assert response.json() == {
+        "active": True,
+        "active_turns": {"codex": 1, "claude": 1},
+    }
+
+
 async def test_runtime_client_sends_compact_action(tmp_path):
     requests = []
 

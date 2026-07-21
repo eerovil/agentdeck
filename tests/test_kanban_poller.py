@@ -6,6 +6,7 @@ dispatched — with no gh/git/uv/delegate I/O. The side-effecting wrappers
 """
 
 import importlib.util
+import subprocess
 from pathlib import Path
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -128,3 +129,77 @@ def test_state_roundtrip(tmp_path):
     assert poller.load_state(tmp_path / "nope.json") == {}
     (tmp_path / "bad.json").write_text("{not json")
     assert poller.load_state(tmp_path / "bad.json") == {}
+
+
+def test_runtime_restart_path_classification():
+    assert poller.needs_runtime_restart(["src/agentdeck/runtime.py"])
+    assert poller.needs_runtime_restart(["uv.lock"])
+    assert not poller.needs_runtime_restart(["src/agentdeck/web/routes_pages.py"])
+    assert not poller.needs_runtime_restart(["kanban/README.md"])
+
+
+def test_autodeploy_defers_runtime_until_chats_are_idle(tmp_path, monkeypatch):
+    old = "a" * 40
+    new = "b" * 40
+    deploy_state = tmp_path / "deploy.json"
+    poller.save_deploy_state(
+        deploy_state, {"web_sha": old, "runtime_sha": old}
+    )
+    cfg = {
+        "repo_path": str(tmp_path),
+        "base_branch": "master",
+        "autodeploy": {
+            "enabled": True,
+            "state_path": str(deploy_state),
+            "web_service": "agentdeck.service",
+            "runtime_service": "agentdeck-codex.service",
+            "runtime_socket": "/tmp/runtime.sock",
+            "health_url": "http://localhost/healthz",
+        },
+    }
+    current = {"sha": old}
+    commands = []
+    restarts = []
+    activity = {"active": True, "active_turns": {"codex": 1, "claude": 0}}
+
+    def fake_run(cmd, *, cwd=None, check=True):
+        commands.append((cmd, cwd, check))
+        stdout = ""
+        if cmd[-3:] == ["rev-parse", "--abbrev-ref", "HEAD"]:
+            stdout = "master\n"
+        if cmd[-2:] == ["status", "--porcelain"]:
+            stdout = ""
+        if "merge" in cmd and "--ff-only" in cmd:
+            current["sha"] = new
+        return subprocess.CompletedProcess(cmd, 0, stdout, "")
+
+    monkeypatch.setattr(poller, "_run", fake_run)
+    monkeypatch.setattr(
+        poller,
+        "_revision",
+        lambda _repo, ref: new if ref == "origin/master" else current["sha"],
+    )
+    monkeypatch.setattr(
+        poller, "_changed_paths", lambda _repo, _old, _new: ["src/agentdeck/runtime.py"]
+    )
+    monkeypatch.setattr(poller, "_runtime_activity", lambda _socket: activity)
+    monkeypatch.setattr(poller, "_restart_web", lambda _cfg: restarts.append("web"))
+    monkeypatch.setattr(poller, "_restart_runtime", lambda _cfg: restarts.append("runtime"))
+
+    poller.autodeploy(cfg)
+
+    assert poller.load_deploy_state(deploy_state) == {
+        "web_sha": new,
+        "runtime_sha": old,
+    }
+    assert restarts == ["web"]
+    assert any(cmd[:2] == ["uv", "sync"] for cmd, _cwd, _check in commands)
+
+    activity["active"] = False
+    poller.autodeploy(cfg)
+
+    assert poller.load_deploy_state(deploy_state) == {
+        "web_sha": new,
+        "runtime_sha": new,
+    }
+    assert restarts == ["web", "runtime"]
