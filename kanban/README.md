@@ -28,6 +28,10 @@ systemd timer ─▶ kanban_poll.sh ─(flock)─▶ poller.py
 - **Isolation:** one worktree per issue under `.worktrees/issue-<n>`, each with its
   own `.venv`. The Playwright browser tests run in-process (ASGI, no bound port or
   DB), so parallel workers never collide.
+- **Author guard (public repo):** an issue's body becomes the worker's prompt, so the
+  poll only acts on issues opened by an allow-listed author (`allowed_authors` in
+  `config.json`, default `["eerovil"]`). Issues from anyone else are ignored even if
+  they carry the `agent` label.
 - **Idempotency:** `.kanban/state.json` (gitignored) records each dispatch. An issue
   is skipped while a worker is in flight (`< stale_hours`), permanently once it has
   an open PR, and becomes eligible again if a worker dies and goes stale.

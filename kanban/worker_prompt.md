@@ -33,6 +33,8 @@ this worktree, never edit the base checkout, never restart or deploy services, n
 5. Commit onto `{branch}` (only files for this issue) ending the message with:
    `Co-Authored-By: Claude <noreply@anthropic.com>`
    then push:  `git push -u origin {branch}`
+   The branch is already at the current `{base_branch}` tip — just commit and push.
+   Do NOT rebase, reset, force-push, or otherwise rewrite history.
 6. Open the PR (reuse it if one already exists for this branch):
    `gh pr create -R {repo} --base {base_branch} --head {branch} --title "<concise title>" --body "<body>"`
    The body MUST start with `Closes #{number}` on its own line, then a short summary of what changed,

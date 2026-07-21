@@ -913,6 +913,51 @@ async def test_machine_delegation_api_returns_final_message(tmp_path, monkeypatc
     await app.state.injector.stop()
 
 
+async def test_delegation_forwards_never_approval_policy(tmp_path, monkeypatch):
+    # An autonomous caller (the kanban worker) asks for approval_policy "never" so
+    # Codex runs unattended (no git rebase / push / gh pr prompts). The request's
+    # policy must reach provider.start_session verbatim.
+    app = _web_app(tmp_path)
+    seen = {}
+
+    async def fake_start(account, cwd, message, *, timeout_s, sandbox, model, approval_policy):
+        seen["approval_policy"] = approval_policy
+        return InjectResult(True, session_id="auto-thread")
+
+    async def fake_wait(account, session_id, *, timeout_s):
+        return InjectResult(True)
+
+    async def fake_result(account, session_id):
+        return "done"
+
+    from agentdeck.providers import PROVIDERS
+
+    provider = PROVIDERS["codex"]
+    monkeypatch.setattr(provider, "start_session", fake_start)
+    monkeypatch.setattr(provider, "wait_for_session", fake_wait)
+    monkeypatch.setattr(provider, "session_result", fake_result)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/delegations",
+            json={"cwd": str(tmp_path), "message": "work the issue", "approval_policy": "never"},
+        )
+        assert response.status_code == 202
+        for _ in range(20):
+            await asyncio.sleep(0)
+            if seen:
+                break
+        assert seen["approval_policy"] == "never"
+        # An invalid policy is rejected by the request schema.
+        bad = await client.post(
+            "/api/delegations",
+            json={"cwd": str(tmp_path), "message": "x", "approval_policy": "whatever"},
+        )
+        assert bad.status_code == 422
+
+    await app.state.injector.stop()
+
+
 async def test_machine_delegation_api_validates_requests(tmp_path):
     disabled = _web_app(tmp_path, enabled=False)
     async with AsyncClient(

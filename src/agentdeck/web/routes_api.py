@@ -21,6 +21,10 @@ class DelegationRequest(BaseModel):
     account_key: str | None = None
     sandbox: Literal["read-only", "workspace-write"] = "workspace-write"
     model: str | None = None
+    # Codex approval policy. Human-initiated delegations default to "on-request"
+    # (Codex asks before commands it deems risky); an autonomous caller (e.g. the
+    # kanban worker) passes "never" so it runs unattended without prompts.
+    approval_policy: Literal["untrusted", "on-failure", "on-request", "never"] = "on-request"
     # Raw id of the session initiating this delegation (e.g. the invoking Claude
     # chat, from CLAUDE_CODE_SESSION_ID). Lets the delegated child nest under it.
     parent_session_id: str | None = None
@@ -188,6 +192,7 @@ async def start_delegation(request: Request, body: DelegationRequest) -> dict:
         body.message,
         sandbox=body.sandbox,
         model=body.model,
+        approval_policy=body.approval_policy,
         parent_session_id=body.parent_session_id,
     )
     if not result.accepted or delegation_id is None:

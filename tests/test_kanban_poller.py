@@ -30,6 +30,28 @@ def test_slugify_is_branch_safe():
     assert not poller.slugify("Trailing punctuation ...").endswith("-")
 
 
+def _issue_by(n, login):
+    return {"number": n, "title": "t", "author": ({"login": login} if login is not None else None)}
+
+
+def test_by_allowed_author_keeps_only_allowlisted_logins():
+    cands = [_issue_by(1, "eerovil"), _issue_by(2, "stranger"), _issue_by(3, "EEROVIL")]
+    kept = poller.by_allowed_author(cands, ["eerovil"])
+    # Case-insensitive match; the stranger's issue is dropped.
+    assert [i["number"] for i in kept] == [1, 3]
+
+
+def test_by_allowed_author_drops_missing_author():
+    cands = [_issue_by(1, None), {"number": 2, "title": "t"}, _issue_by(3, "eerovil")]
+    assert [i["number"] for i in poller.by_allowed_author(cands, ["eerovil"])] == [3]
+
+
+def test_by_allowed_author_empty_allowlist_accepts_all():
+    cands = [_issue_by(1, "anyone")]
+    assert poller.by_allowed_author(cands, []) == cands
+    assert poller.by_allowed_author(cands, None) == cands
+
+
 def test_prd_issue_numbers_from_body_and_branch():
     prs = [
         {"body": "Closes #12\n\ndetails", "headRefName": "agent/issue-12-foo"},
