@@ -1,10 +1,16 @@
 (function () {
   'use strict';
 
-  // Active Deckhand insight cards normally open the chat. Instead, focus the
-  // chat's row in the session list: scroll it into view and flash it. Handled
-  // items keep their normal open-the-chat link. Modified clicks (cmd/ctrl/shift/
-  // middle) still open the chat, so "open in new tab" keeps working.
+  // The first pointer activation on an active Deckhand insight focuses its row;
+  // a second activation on the same insight opens the chat. Handled items,
+  // keyboard activation, and modified clicks keep normal link navigation.
+
+  var doubleTapWindowMs = 600;
+  var lastTapKey = null;
+  var lastTapAt = 0;
+  var focusedCard = null;
+  var focusObserver = null;
+  var focusedCardHasBeenVisible = false;
 
   function plainLeftClick(event) {
     return event.button === 0 && !event.metaKey && !event.ctrlKey &&
@@ -28,26 +34,72 @@
     return document.querySelector('.session[data-session-key="' + key + '"]');
   }
 
-  function flash(card) {
-    card.classList.remove('dh-focus-flash');
-    void card.offsetWidth; // restart the animation if it's still mid-flash
-    card.classList.add('dh-focus-flash');
-    window.setTimeout(function () {
-      card.classList.remove('dh-focus-flash');
-    }, 1400);
+  function clearFocus() {
+    if (focusObserver) focusObserver.disconnect();
+    focusObserver = null;
+    if (focusedCard) focusedCard.classList.remove('dh-focused');
+    focusedCard = null;
+    focusedCardHasBeenVisible = false;
+  }
+
+  function focus(card) {
+    clearFocus();
+    focusedCard = card;
+    focusedCard.classList.add('dh-focused');
+
+    if (!window.IntersectionObserver) return;
+    focusObserver = new IntersectionObserver(function (entries) {
+      var entry = entries[0];
+      if (!entry || entry.target !== focusedCard) return;
+      if (entry.isIntersecting) {
+        focusedCardHasBeenVisible = true;
+      } else if (focusedCardHasBeenVisible) {
+        clearFocus();
+      }
+    });
+    focusObserver.observe(card);
   }
 
   // Capture phase so this runs before action_timing's click handler; preventing
   // default also makes that handler's isPlainNavigation() bail (no open spinner).
   document.addEventListener('click', function (event) {
+    var sessionLink = event.target.closest && event.target.closest('a.session');
+    var nestedAction = event.target.closest &&
+      event.target.closest('.expand-btn, .cc-btn, .gh-btn');
+    if (sessionLink === focusedCard && !nestedAction && plainLeftClick(event)) {
+      clearFocus();
+    }
+
     var link = event.target.closest && event.target.closest('.assistant-insight-link');
     if (!link || !plainLeftClick(event)) return;
-    event.preventDefault();
+    // Keyboard-generated clicks have detail=0 and should open directly.
+    if (event.detail === 0) return;
     var key = sessionKeyFromHref(link.href);
     if (!key) return;
+    var now = window.performance.now();
+    if (key === lastTapKey && now - lastTapAt <= doubleTapWindowMs) {
+      lastTapKey = null;
+      lastTapAt = 0;
+      clearFocus();
+      return;
+    }
+
+    event.preventDefault();
+    lastTapKey = key;
+    lastTapAt = now;
     var card = cardFor(key);
-    if (!card) return; // not in the list -> do nothing (per spec)
+    if (!card) return;
     card.scrollIntoView({behavior: 'smooth', block: 'center'});
-    flash(card);
+    focus(card);
   }, true);
+
+  // Session-list SSE swaps replace the focused row wholesale. Clear the old
+  // state before HTMX removes it rather than carrying stale DOM ownership.
+  document.addEventListener('htmx:beforeSwap', function (event) {
+    var target = event.detail && event.detail.target;
+    if (focusedCard && target &&
+        (target === focusedCard || target.contains(focusedCard))) {
+      clearFocus();
+    }
+  });
 })();
