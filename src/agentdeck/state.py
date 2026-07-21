@@ -233,6 +233,57 @@ class AppState:
             return resolved if resolved != session.key else None
         return self.delegation_parents.get(session.key)
 
+    def _effective_activity(
+        self, visible: list[Session]
+    ) -> tuple[set[str], set[str]]:
+        """Return effective-working keys and keys working through subagents.
+
+        Providers keep ``Session.thinking`` scoped to the session's own turn.
+        Parent activity is relationship state: Codex may report spawned agents
+        directly through ``subagent_count``, while Claude and delegated workers
+        appear as child sessions. Propagate either form through the parent graph
+        without mutating provider-owned session records.
+        """
+        key_by_session_id = {session.session_id: session.key for session in visible}
+        parent_by_key = {
+            session.key: self._parent_key(session, key_by_session_id)
+            for session in visible
+        }
+        own_working = {session.key for session in visible if session.thinking}
+        through_subagents = {
+            session.key for session in visible if session.subagent_count
+        }
+        frontier = list(own_working | through_subagents)
+        while frontier:
+            parent = parent_by_key.get(frontier.pop())
+            if parent is None or parent in through_subagents:
+                continue
+            through_subagents.add(parent)
+            frontier.append(parent)
+        return own_working | through_subagents, through_subagents
+
+    @staticmethod
+    def _with_effective_activity(session: Session, working_keys: set[str]) -> Session:
+        if session.key not in working_keys or session.thinking:
+            return session
+        return replace(session, thinking=True, activity=session.activity or "Working")
+
+    def effective_session(self, session: Session) -> Session:
+        """A display copy whose activity includes working descendants."""
+        visible = self.visible_sessions()
+        working_keys, _ = self._effective_activity(visible)
+        return self._with_effective_activity(session, working_keys)
+
+    def has_working_subagent(self, session: Session) -> bool:
+        """Whether embedded or nested subagent work makes this session active."""
+        _, through_subagents = self._effective_activity(self.visible_sessions())
+        return session.key in through_subagents
+
+    def working_count(self) -> int:
+        """Number of top-level chats effectively working right now."""
+        top, _ = self.session_tree()
+        return sum(session.thinking for session in top)
+
     def session_tree(self) -> tuple[list[Session], dict[str, list[Session]]]:
         """Split visible sessions into a one-level tree.
 
@@ -241,9 +292,11 @@ class AppState:
         whose parent isn't visible is dropped rather than floated as a top-level
         card — a subagent only makes sense under its parent, and an orphaned one
         (parent aged out) would otherwise clutter the list with contextless
-        cards. Order within each list follows ``visible_sessions``' sort.
+        cards. Order within each list follows ``visible_sessions``' sort, with
+        parents promoted when descendant work makes them effectively active.
         """
         visible = self.visible_sessions()
+        working_keys, _ = self._effective_activity(visible)
         # Resolve recorded (raw-id) delegation parents against what's visible
         # now; last writer wins on the astronomically-unlikely UUID collision.
         key_by_session_id = {s.session_id: s.key for s in visible}
@@ -254,8 +307,9 @@ class AppState:
         children: dict[str, list[Session]] = {}
         for s in visible:
             parent = self._parent_key(s, key_by_session_id)
+            effective = self._with_effective_activity(s, working_keys)
             if parent is None:
-                top.append(s)
+                top.append(effective)
             elif parent in top_keys:
                 # A finished Task/Agent subagent (its own transcript went quiet,
                 # so ``thinking`` aged out) is dead weight: it keeps padding the
@@ -264,10 +318,11 @@ class AppState:
                 # subagents (``parent_session_key`` set); a delegated worker child
                 # (cross-provider link, no ``parent_session_key``) still nests when
                 # idle, since an idle worker is not "dead".
-                if s.parent_session_key is not None and not s.thinking:
+                if s.parent_session_key is not None and s.key not in working_keys:
                     continue
-                children.setdefault(parent, []).append(s)
+                children.setdefault(parent, []).append(effective)
             # else: orphan subagent (parent not visible) — omit from the tree
+        top.sort(key=self._sort_key)
         return top, children
 
     # --- usage --------------------------------------------------------
