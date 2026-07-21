@@ -1391,6 +1391,66 @@ async def test_markdown_links_reject_unsafe_schemes_and_attribute_breakout(tmp_p
     assert '<a href="https://e.com" target="_blank" rel="noopener">x</a>' in rendered[4]["html"]
 
 
+async def test_transcript_plain_web_urls_render_as_safe_links(tmp_path):
+    app = _app_with_state(tmp_path, with_transcript=True)
+    transcript = tmp_path / "projects" / "-tmp" / "sid1.jsonl"
+    lines = [json.loads(line) for line in transcript.read_text().splitlines()]
+    lines[0]["message"]["content"] = (
+        "See https://github.com/eerovil/agentdeck/pull/65. "
+        "Keep `https://example.test/code` literal and "
+        "[open docs](https://example.test/docs)."
+    )
+    transcript.write_text("".join(json.dumps(line) + "\n" for line in lines))
+
+    async with _client(app) as client:
+        response = await client.get("/sessions/claude_code:test:sid1")
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        results = []
+        for width in (1200, 320):
+            page = await browser.new_page(viewport={"width": width, "height": 800})
+            await page.set_content(response.text)
+            message = page.locator(".ev.user .ev-text")
+            links = message.locator("a")
+            await links.first.wait_for()
+            results.append(
+                {
+                    "links": await links.evaluate_all(
+                        """links => links.map(link => ({
+                          text: link.textContent,
+                          href: link.getAttribute('href'),
+                          target: link.getAttribute('target'),
+                          rel: link.getAttribute('rel'),
+                        }))"""
+                    ),
+                    "code_links": await message.locator("code a").count(),
+                    "code_text": await message.locator("code").text_content(),
+                }
+            )
+            await page.close()
+        await browser.close()
+
+    expected_links = [
+        {
+            "text": "https://github.com/eerovil/agentdeck/pull/65",
+            "href": "https://github.com/eerovil/agentdeck/pull/65",
+            "target": "_blank",
+            "rel": "noopener",
+        },
+        {
+            "text": "open docs",
+            "href": "https://example.test/docs",
+            "target": "_blank",
+            "rel": "noopener",
+        },
+    ]
+    for result in results:
+        assert result["links"] == expected_links
+        assert result["code_links"] == 0
+        assert result["code_text"] == "https://example.test/code"
+
+
 async def test_local_markdown_file_opens_from_absolute_path_with_line_suffix(tmp_path):
     app = _app_with_state(tmp_path)
     handoff = tmp_path / "handoff.md"

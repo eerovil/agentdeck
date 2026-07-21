@@ -101,6 +101,39 @@
     var scheme = url.match(/^([a-z][a-z0-9+.-]*):/i);
     return !scheme || /^(?:https?|mailto)$/i.test(scheme[1]);
   }
+  function mdAutoLink(html) {
+    var template = document.createElement('template');
+    template.innerHTML = html;
+    var walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT);
+    var nodes = [], node;
+    while ((node = walker.nextNode())) {
+      if (!node.parentElement || !node.parentElement.closest('a, code')) nodes.push(node);
+    }
+    nodes.forEach(function (textNode) {
+      var text = textNode.nodeValue;
+      var pattern = /\bhttps?:\/\/[^\s<>"']+/gi;
+      var match, offset = 0, fragment = document.createDocumentFragment();
+      while ((match = pattern.exec(text))) {
+        var url = match[0];
+        var trailing = url.match(/[.,!?;:\)\]\}]+$/);
+        if (trailing) url = url.slice(0, -trailing[0].length);
+        if (!url) continue;
+        fragment.appendChild(document.createTextNode(text.slice(offset, match.index)));
+        var link = document.createElement('a');
+        link.setAttribute('href', url);
+        link.setAttribute('target', '_blank');
+        link.setAttribute('rel', 'noopener');
+        link.textContent = url;
+        fragment.appendChild(link);
+        offset = match.index + url.length;
+      }
+      if (offset) {
+        fragment.appendChild(document.createTextNode(text.slice(offset)));
+        textNode.replaceWith(fragment);
+      }
+    });
+    return template.innerHTML;
+  }
   function mdInline(s) {
     s = s.replace(/`([^`]+)`/g, function (_, c) { return '<code>' + c + '</code>'; });
     s = s.replace(/\*\*([^*]+?)\*\*/g, '<strong>$1</strong>');
@@ -109,7 +142,7 @@
       if (!mdSafeHref(url)) return match;
       return '<a href="' + url + '" target="_blank" rel="noopener">' + label + '</a>';
     });
-    return s;
+    return mdAutoLink(s);
   }
   function mdToHtml(text) {
     var segs = mdEscape(text).split(/```/), out = '';
