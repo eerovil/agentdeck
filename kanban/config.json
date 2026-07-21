@@ -11,5 +11,13 @@
   "concurrency": 2,
   "stale_hours": 2,
   "branch_prefix": "agent/issue-",
-  "log_path": "/tmp/agentdeck-kanban.log"
+  "log_path": "/tmp/agentdeck-kanban.log",
+  "autodeploy": {
+    "enabled": true,
+    "state_path": "/home/eero/agentdeck/.kanban/deploy.json",
+    "web_service": "agentdeck.service",
+    "runtime_service": "agentdeck-codex.service",
+    "runtime_socket": "/run/user/1000/agentdeck/codex-runtime.sock",
+    "health_url": "http://127.0.0.1:8756/healthz"
+  }
 }

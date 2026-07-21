@@ -5,7 +5,12 @@ An autonomous issue → PR pipeline for this repo. A `--user` systemd timer runs
 isn't already being worked, the poll spins up an **isolated git worktree** and
 dispatches a **local AgentDeck worker** (an `agentdeck delegate` Codex chat) that
 implements the change, validates it, and opens a PR against `master` — on its own.
-Promotion to live stays manual: the poller never merges or deploys.
+
+Merging a PR to GitHub `master` deploys automatically on the next poll. The
+poller fast-forwards only a clean local `master`, syncs dependencies, restarts
+and health-checks the web process, and records that phase separately. When the
+change touches persistent-runtime-owned code, its restart is deferred until the
+runtime reports that every owned Codex and Claude turn is idle.
 
 ## How it works
 
@@ -35,6 +40,9 @@ systemd timer ─▶ kanban_poll.sh ─(flock)─▶ poller.py
 - **Idempotency:** `.kanban/state.json` (gitignored) records each dispatch. An issue
   is skipped while a worker is in flight (`< stale_hours`), permanently once it has
   an open PR, and becomes eligible again if a worker dies and goes stale.
+- **Retryable deploys:** `.kanban/deploy.json` records the web and runtime revisions
+  independently. Failed health checks retry; runtime changes wait across polls
+  without delaying the safe web deployment.
 - **Concurrency:** up to `concurrency` (default 2) workers at once.
 - **Screenshots:** for UI-touching diffs the worker runs `shot.py`, which renders the
   affected pages in-process and uploads PNGs to the `kanban-shots` release, embedding
@@ -44,7 +52,7 @@ systemd timer ─▶ kanban_poll.sh ─(flock)─▶ poller.py
 
 | File | Role |
 | --- | --- |
-| `config.json` | repo, label, paths, base branch, concurrency, stale window |
+| `config.json` | repo, label, paths, base branch, concurrency, deploy settings |
 | `poller.py` | the engine — select issues, make worktrees, dispatch workers |
 | `kanban_poll.sh` | flocked launcher run by the timer |
 | `worker_prompt.md` | the instructions handed to each worker delegation |
