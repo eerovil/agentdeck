@@ -805,14 +805,127 @@ async def test_deckhand_pill_fits_narrow_mobile(tmp_path):
     assert size["cardOverflow"] <= 1
 
 
-async def test_deckhand_insight_click_focuses_row_instead_of_opening(tmp_path):
+async def test_deckhand_insight_pointer_focus_and_double_tap_lifecycle(tmp_path):
+    app = _app_with_state(tmp_path)
+    app.state.assistant.config.enabled = True
+    for number in (1, 2):
+        app.state.app_state.update_session(
+            Session(
+                key=f"claude_code:test:focus{number}",
+                account_key="claude_code:test",
+                session_id=f"focus{number}",
+                status=SessionStatus.LIVE,
+                title=f"Focus target {number}",
+                last_role="agent",
+                question="Ready to ship?",
+            )
+        )
+    app.state.assistant.view = AssistantView(
+        state="ready",
+        summary="Two agents need your attention.",
+        insights=tuple(
+            AssistantInsight(
+                session_key=f"claude_code:test:focus{number}",
+                kind="waiting",
+                headline=f"Agent {number} asked you a question",
+                detail="Ready to ship?",
+            )
+            for number in (1, 2)
+        ),
+    )
+    async with _client(app) as client:
+        response = await client.get("/")
+    static_dir = Path(__file__).parents[1] / "src/agentdeck/web/static"
+    css = (static_dir / "app.css").read_text()
+    timing_js = (static_dir / "action_timing.js").read_text()
+    focus_js = (static_dir / "deckhand_focus.js").read_text()
+    # A <base> gives links a real origin while the rendered dashboard and shipped
+    # scripts remain in-process.
+    html = response.text.replace(
+        "<head>", '<head><base href="http://agentdeck.test/">', 1
+    )
+    html = html.replace("</head>", f"<style>{css}</style></head>")
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        page = await browser.new_page(viewport={"width": 900, "height": 600})
+
+        async def serve_chat(route):
+            await route.fulfill(status=200, content_type="text/html", body="opened")
+
+        await page.route("http://agentdeck.test/sessions/**", serve_chat)
+        await page.set_content(html)
+        await page.add_script_tag(content=timing_js)
+        await page.add_script_tag(content=focus_js)
+        links = page.locator(".assistant-insight-link")
+        first = '.session[data-session-key="claude_code:test:focus1"]'
+        second = '.session[data-session-key="claude_code:test:focus2"]'
+
+        await links.nth(0).click()
+        assert await page.locator(first).evaluate(
+            "card => card.classList.contains('dh-focused')"
+        )
+
+        # The ring is state, not a 1.4-second animation timeout.
+        await page.wait_for_timeout(1500)
+        assert await page.locator(first).evaluate(
+            "card => card.classList.contains('dh-focused')"
+        )
+
+        # Once the focused row has been visible, scrolling it out clears focus.
+        await page.evaluate(
+            """() => {
+              var spacer = document.createElement('div');
+              spacer.style.height = '2000px';
+              document.body.appendChild(spacer);
+              scrollTo(0, document.body.scrollHeight);
+            }"""
+        )
+        await page.wait_for_function(
+            "sel => !document.querySelector(sel).classList.contains('dh-focused')",
+            arg=first,
+        )
+        await page.evaluate("scrollTo(0, 0)")
+
+        # A different item moves the one allowed highlight to its own row.
+        await links.nth(0).click()
+        await links.nth(1).click()
+        moved = await page.evaluate(
+            "([first, second]) => ({"
+            " first: document.querySelector(first).classList.contains('dh-focused'),"
+            " second: document.querySelector(second).classList.contains('dh-focused')})",
+            [first, second],
+        )
+        assert not moved["first"] and moved["second"]
+
+        # Outside the gesture window, the next tap is another focus, not an open.
+        await page.wait_for_timeout(650)
+        before = page.url
+        await links.nth(1).click()
+        assert page.url == before
+        assert await page.locator(second).evaluate(
+            "card => card.classList.contains('dh-focused')"
+        )
+
+        # The same item tapped again promptly follows its normal chat link.
+        # Dispatch directly so Playwright does not wait for smooth scrolling to
+        # settle and accidentally turn this into a >600ms physical click.
+        await links.nth(1).dispatch_event("click", {"button": 0, "detail": 1})
+        await page.wait_for_url("**/sessions/claude_code:test:focus2")
+        await browser.close()
+
+
+async def test_deckhand_insight_keeps_link_and_mobile_activation_semantics(tmp_path):
     app = _app_with_state(tmp_path)
     app.state.assistant.config.enabled = True
     app.state.app_state.update_session(
         Session(
-            key="claude_code:test:focus1", account_key="claude_code:test",
-            session_id="focus1", status=SessionStatus.LIVE,
-            title="Focus target", last_role="agent", question="Ready to ship?",
+            key="claude_code:test:focus1",
+            account_key="claude_code:test",
+            session_id="focus1",
+            status=SessionStatus.LIVE,
+            title="Focus target",
+            last_role="agent",
+            question="Ready to ship?",
         )
     )
     app.state.assistant.view = AssistantView(
@@ -831,39 +944,64 @@ async def test_deckhand_insight_click_focuses_row_instead_of_opening(tmp_path):
         response = await client.get("/")
     static_dir = Path(__file__).parents[1] / "src/agentdeck/web/static"
     css = (static_dir / "app.css").read_text()
-    timing_js = (static_dir / "action_timing.js").read_text()
     focus_js = (static_dir / "deckhand_focus.js").read_text()
-    # A <base> so the insight link's "/sessions/..." href resolves (set_content
-    # runs on about:blank); navigation is still prevented, so location won't move.
-    html = response.text.replace("<head>", '<head><base href="http://localhost/">', 1)
+    html = response.text.replace(
+        "<head>", '<head><base href="http://agentdeck.test/">', 1
+    )
     html = html.replace("</head>", f"<style>{css}</style></head>")
+
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()
-        page = await browser.new_page(viewport={"width": 900, "height": 600})
-        await page.set_content(html)
-        await page.add_script_tag(content=timing_js)
-        await page.add_script_tag(content=focus_js)
-        sel = '.session[data-session-key="claude_code:test:focus1"]'
-        present = await page.evaluate(
-            "(sel) => ({link: !!document.querySelector('.assistant-insight-link'),"
-            " card: !!document.querySelector(sel)})",
-            sel,
+
+        async def serve_chat(route):
+            await route.fulfill(status=200, content_type="text/html", body="opened")
+
+        # Enter is ordinary link activation and opens immediately.
+        keyboard = await browser.new_page(viewport={"width": 900, "height": 600})
+        await keyboard.route("http://agentdeck.test/sessions/**", serve_chat)
+        await keyboard.set_content(html)
+        await keyboard.add_script_tag(content=focus_js)
+        await keyboard.locator(".assistant-insight-link").press("Enter")
+        await keyboard.wait_for_url("**/sessions/claude_code:test:focus1")
+        await keyboard.close()
+
+        # Modified clicks remain unconsumed, preserving browser new-tab behavior.
+        modified = await browser.new_page(viewport={"width": 900, "height": 600})
+        await modified.set_content(html)
+        await modified.add_script_tag(content=focus_js)
+        prevented = await modified.locator(".assistant-insight-link").evaluate(
+            """link => {
+              var prevented;
+              link.addEventListener('click', event => {
+                prevented = event.defaultPrevented;
+                event.preventDefault();
+              }, {once: true});
+              link.dispatchEvent(new MouseEvent('click', {
+                bubbles: true, cancelable: true, button: 0, ctrlKey: true
+              }));
+              return prevented;
+            }"""
         )
-        assert present["link"] and present["card"]
-        before = await page.evaluate("() => location.href")
-        await page.locator(".assistant-insight-link").first.click()
-        after = await page.evaluate(
-            "(sel) => ({href: location.href,"
-            " flashed: document.querySelector(sel).classList.contains('dh-focus-flash'),"
-            " opening: !!document.querySelector('.assistant-insight-link.opening')})",
-            sel,
+        assert not prevented
+        await modified.close()
+
+        # On the narrow touch surface, manipulation disables double-tap zoom and
+        # two quick taps reliably become focus then navigation.
+        context = await browser.new_context(
+            viewport={"width": 320, "height": 800}, has_touch=True
         )
+        touch = await context.new_page()
+        await touch.route("http://agentdeck.test/sessions/**", serve_chat)
+        await touch.set_content(html)
+        await touch.add_script_tag(content=focus_js)
+        link = touch.locator(".assistant-insight-link")
+        assert await link.evaluate("node => getComputedStyle(node).touchAction") == "manipulation"
+        await link.tap()
+        assert await touch.locator(".session.dh-focused").count() == 1
+        await link.tap()
+        await touch.wait_for_url("**/sessions/claude_code:test:focus1")
+        await context.close()
         await browser.close()
-    # Clicking the insight did NOT navigate to the chat...
-    assert after["href"] == before
-    # ...it focused the row in the list (flash highlight) and skipped the open spinner.
-    assert after["flashed"]
-    assert not after["opening"]
 
 
 async def test_long_card_title_gets_full_width_three_line_layout(tmp_path):
