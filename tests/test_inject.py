@@ -1787,17 +1787,21 @@ async def test_composer_buttons_keep_textarea_focus(tmp_path):
     assert ">Stop</button>" in response.text  # both buttons present
 
     static_dir = Path(__file__).parents[1] / "src/agentdeck/web/static"
-    scripts = {
-        "/static/htmx.min.js": (static_dir / "htmx.min.js").read_text(),
-        "/static/sse.js": (static_dir / "sse.js").read_text(),
+    assets = {
+        "/static/app.css": ("text/css", (static_dir / "app.css").read_text()),
+        "/static/htmx.min.js": (
+            "text/javascript",
+            (static_dir / "htmx.min.js").read_text(),
+        ),
+        "/static/sse.js": ("text/javascript", (static_dir / "sse.js").read_text()),
     }
 
     async def press_and_check_focus(page, label):
-        await page.locator("#inject-message").focus()
+        prompt = page.locator("#inject-message")
+        await prompt.focus()
         assert await page.evaluate("document.activeElement.id") == "inject-message"
         btn = page.locator("#composer-controls button", has_text=label)
-        box = await btn.bounding_box()
-        await page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        await btn.hover()  # scroll into view and wait until the button can receive events
         await page.mouse.down()  # native mousedown — the moment focus would be stolen
         focused = await page.evaluate("document.activeElement.id")
         await page.mouse.up()
@@ -1824,9 +1828,10 @@ async def test_composer_buttons_keep_textarea_focus(tmp_path):
                 )
             elif path == "/sessions/codex:test:sid":
                 await route.fulfill(status=200, content_type="text/html", body=response.text)
-            elif path in scripts:
+            elif path in assets:
+                content_type, body = assets[path]
                 await route.fulfill(
-                    status=200, content_type="text/javascript", body=scripts[path]
+                    status=200, content_type=content_type, body=body
                 )
             else:
                 await route.fulfill(status=204, body="")
