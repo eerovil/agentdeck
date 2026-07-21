@@ -82,21 +82,39 @@ class CodexRuntimeClient:
     ) -> None:
         self.account = account
         self._on_change = on_change or (lambda _thread_id: None)
-        transport = transport or httpx.AsyncHTTPTransport(uds=str(runtime_socket_path()))
-        self._http = httpx.AsyncClient(
-            transport=transport,
+        # A cancelled _post() closes self._http so uvicorn can shut down promptly,
+        # but a still-running web process must be able to reopen it. Keep a factory
+        # so any call can lazily rebuild a closed client; otherwise refresh() would
+        # die silently and the cached runtime state (active turns, interactions)
+        # would freeze forever, pinning finished sessions as "working".
+        self._new_transport = (
+            (lambda: transport)
+            if transport is not None
+            else (lambda: httpx.AsyncHTTPTransport(uds=str(runtime_socket_path())))
+        )
+        self._http = self._make_client()
+        self._refresh_lock = asyncio.Lock()
+        self._state: dict[str, dict[str, Any]] = {}
+
+    def _make_client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            transport=self._new_transport(),
             base_url="http://agentdeck-runtime",
             timeout=httpx.Timeout(30.0, read=None),
         )
-        self._refresh_lock = asyncio.Lock()
-        self._state: dict[str, dict[str, Any]] = {}
+
+    def _client(self) -> httpx.AsyncClient:
+        # Reopen after a shutdown-path aclose() so the live process keeps syncing.
+        if self._http.is_closed:
+            self._http = self._make_client()
+        return self._http
 
     @property
     def _base(self) -> str:
         return f"/accounts/{self.account.label}"
 
     async def start(self) -> None:
-        response = await self._http.get("/healthz")
+        response = await self._client().get("/healthz")
         response.raise_for_status()
         await self.refresh()
 
@@ -105,7 +123,7 @@ class CodexRuntimeClient:
 
     async def refresh(self) -> set[str]:
         async with self._refresh_lock:
-            response = await self._http.get(f"{self._base}/state")
+            response = await self._client().get(f"{self._base}/state")
             response.raise_for_status()
             raw = response.json().get("threads", {})
             state = raw if isinstance(raw, dict) else {}
@@ -148,7 +166,7 @@ class CodexRuntimeClient:
         if client_action_id:
             payload = {**payload, "client_action_id": client_action_id}
         try:
-            response = await self._http.post(f"{self._base}/{action}", json=payload)
+            response = await self._client().post(f"{self._base}/{action}", json=payload)
             response.raise_for_status()
             result = self._result(response.json())
             await self.refresh()

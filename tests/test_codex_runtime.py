@@ -94,6 +94,34 @@ async def test_cancelled_runtime_request_closes_web_side_socket(tmp_path):
     assert client._http.is_closed
 
 
+async def test_client_reopens_after_cancellation_close(tmp_path):
+    # A cancelled turn closes the shared client (see the test above). A still-running
+    # web process must reopen it on the next call; otherwise refresh() dies silently
+    # and the cached runtime state freezes, pinning finished sessions as "working".
+    started = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/accounts/local/queue":
+            started.set()
+            await asyncio.Future()
+        if request.url.path == "/accounts/local/state":
+            return httpx.Response(200, json={"threads": {"thread-1": {}}})
+        raise AssertionError(request.url.path)
+
+    client = CodexRuntimeClient(_account(tmp_path), transport=httpx.MockTransport(handler))
+    task = asyncio.create_task(client.queue_turn("thread-1", "Queued work"))
+    await started.wait()
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    assert client._http.is_closed
+
+    # refresh() must transparently rebuild the closed client and resync state.
+    await client.refresh()
+    assert not client._http.is_closed
+    assert client.owns("thread-1")
+    await client.stop()
+
+
 async def test_runtime_client_sends_compact_action(tmp_path):
     requests = []
 
