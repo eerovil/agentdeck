@@ -190,6 +190,7 @@ class ClaudeCodeProvider(SessionProvider):
         ModelChoice("opus", "Opus 4.8"),
         ModelChoice("sonnet", "Sonnet"),
         ModelChoice("haiku", "Haiku"),
+        ModelChoice("fable", "Fable 5"),
     )
 
     def __init__(self) -> None:
