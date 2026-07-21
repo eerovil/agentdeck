@@ -575,6 +575,8 @@ body.bg-paused *, body.bg-paused *::before, body.bg-paused *::after {
 .new-chat[open] > summary { border-bottom: 1px solid var(--line); }
 .new-chat form { display: grid; grid-template-columns: 1fr; gap: 6px; padding: 11px; }
 .new-chat label { margin-top: 3px; color: var(--muted); font-size: 12px; font-weight: 600; }
+/* Model label+select share one grid cell; keep the label on its own line. */
+.new-chat .model-field label { display: block; margin-bottom: 4px; }
 .new-chat input, .new-chat select, .new-chat textarea { width: 100%; padding: 9px;
   border: 1px solid var(--line); border-radius: 8px; color: var(--fg);
   background: var(--bg); font: inherit; }

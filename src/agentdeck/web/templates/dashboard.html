@@ -15,9 +15,18 @@
     <label for="new-chat-account">Account</label>
     <select id="new-chat-account" name="account_key" required>
       {% for account in new_chat_accounts %}
-      <option value="{{ account.key }}">{{ account.label }}</option>
+      <option value="{{ account.key }}" data-provider="{{ account.provider_id }}">{{ account.label }}</option>
       {% endfor %}
     </select>
+    <div class="model-field" id="new-chat-model-field" hidden>
+      <label for="new-chat-model">Model</label>
+      <select id="new-chat-model" name="model">
+        <option value="">Default (account)</option>
+        {% for model in new_chat_models %}
+        <option value="{{ model.value }}" data-provider="{{ model.provider_id }}">{{ model.label }}</option>
+        {% endfor %}
+      </select>
+    </div>
     <label for="new-chat-cwd">Working directory</label>
     <input id="new-chat-cwd" name="cwd" type="text" list="new-chat-cwds"
            value="{{ new_chat_default_cwd }}"
@@ -38,6 +47,7 @@
   </form>
   <div id="new-session-result" class="inject-result"></div>
 </details>
+<script src="/static/model_picker.js?v={{ asset_ver }}" defer></script>
 {% endif %}
 {# Search lives OUTSIDE #sessions: that div is swapped wholesale on every SSE
    `sessions` push, so an input inside it would lose its value + focus on each

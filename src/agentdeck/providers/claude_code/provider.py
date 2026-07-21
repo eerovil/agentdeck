@@ -36,7 +36,7 @@ from ...models import (
     UsageSnapshot,
     activity_label,
 )
-from ..base import SessionProvider
+from ..base import ModelChoice, SessionProvider
 from . import history as history_mod
 from . import kanban as kanban_mod
 from . import registry as registry_mod
@@ -184,6 +184,13 @@ class ClaudeCodeProvider(SessionProvider):
     # that service has no Claude workers (feature off), start_session returns a
     # clean error and the provider stays a read-only transcript viewer.
     supports_new_session = True
+    # Aliases (not pinned ids) so the list survives model version bumps; the CLI
+    # resolves them. Applied via --model at worker spawn (new chat only).
+    selectable_models = (
+        ModelChoice("opus", "Opus 4.8"),
+        ModelChoice("sonnet", "Sonnet"),
+        ModelChoice("haiku", "Haiku"),
+    )
 
     def __init__(self) -> None:
         # (title, last_prompt, first_user, cwd, last_text) cache keyed by path,

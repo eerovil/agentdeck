@@ -10,7 +10,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 
 from ..models import (
     Account,
@@ -27,9 +27,32 @@ if TYPE_CHECKING:
     from ..state import AppState
 
 
+class ModelChoice(NamedTuple):
+    """One selectable model for a provider's create/turn model picker.
+
+    ``value`` is passed verbatim to the provider (``--model`` for Claude, the
+    ``thread/start`` ``model`` param for Codex). An empty value never appears
+    here — "account default" is rendered by the templates as a blank option.
+    """
+
+    value: str
+    label: str
+
+
 class SessionProvider(ABC):
     provider_id: ClassVar[str]
     supports_new_session: ClassVar[bool] = False
+    # Curated models the UI offers for this provider at new-chat creation (empty
+    # = no picker). The web layer validates any submitted model against this list
+    # before it reaches a CLI/app-server, so an unknown slug is a 422, never a raw
+    # arg. Model is fixed at spawn: the Claude worker is one long-lived process and
+    # Codex binds model at thread/start, so neither switches model mid-session.
+    selectable_models: ClassVar[tuple[ModelChoice, ...]] = ()
+
+    @classmethod
+    def is_valid_model(cls, model: str) -> bool:
+        """True if ``model`` is one of this provider's offered slugs."""
+        return any(choice.value == model for choice in cls.selectable_models)
 
     @abstractmethod
     async def scan_sessions(self, account: Account) -> list[Session]: ...

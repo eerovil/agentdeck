@@ -3146,3 +3146,70 @@ async def test_waiting_insight_dismissal_uses_message_key_and_survives_refresh(t
         replace(state.sessions[key], question="A different question?", last_text="One more?")
     )
     assert not assistant.is_handled(key)
+
+
+async def test_model_picker_filters_options_by_account_provider(tmp_path):
+    """model_picker.js keeps the model <select> in sync with the chosen account's
+    provider, at desktop and the narrowest supported mobile width. The app fixture
+    only wires a Codex account, so drive the JS directly against a two-provider
+    form that mirrors the dashboard markup."""
+    static_dir = Path(__file__).parents[1] / "src/agentdeck/web/static"
+    css = (static_dir / "app.css").read_text()
+    picker = (static_dir / "model_picker.js").read_text()
+    html = f"""<!doctype html><html><head><style>{css}</style></head>
+      <body><div class="new-chat" open><form>
+        <select id="new-chat-account" name="account_key">
+          <option value="codex:a" data-provider="codex">Codex A</option>
+          <option value="claude:b" data-provider="claude_code">Claude B</option>
+        </select>
+        <div class="model-field" id="new-chat-model-field" hidden>
+          <label for="new-chat-model">Model</label>
+          <select id="new-chat-model" name="model">
+            <option value="">Default (account)</option>
+            <option value="gpt-5.6-luna" data-provider="codex">Luna</option>
+            <option value="gpt-5.6-sol" data-provider="codex">Sol</option>
+            <option value="opus" data-provider="claude_code">Opus 4.8</option>
+            <option value="haiku" data-provider="claude_code">Haiku</option>
+          </select>
+        </div>
+      </form></div></body></html>"""
+
+    def options(page):
+        return page.evaluate(
+            """() => {
+              const sel = document.getElementById('new-chat-model');
+              const field = document.getElementById('new-chat-model-field');
+              return {
+                values: Array.from(sel.options).map(o => o.value),
+                selected: sel.value,
+                hidden: field.hidden,
+              };
+            }"""
+        )
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        page = await browser.new_page(viewport={"width": 320, "height": 800})
+        await page.set_content(html)
+        await page.add_script_tag(content=picker)
+
+        # Codex selected first: only its models (plus Default) are offered.
+        first = await options(page)
+        assert first["values"] == ["", "gpt-5.6-luna", "gpt-5.6-sol"]
+        assert first["hidden"] is False
+
+        # Pick a Codex model, then switch to the Claude account: the stale Codex
+        # slug is dropped and selection falls back to Default.
+        await page.select_option("#new-chat-model", "gpt-5.6-sol")
+        await page.select_option("#new-chat-account", "claude:b")
+        after = await options(page)
+        assert after["values"] == ["", "opus", "haiku"]
+        assert after["selected"] == ""
+        assert after["hidden"] is False
+
+        # Behaviour holds at desktop width too.
+        await page.set_viewport_size({"width": 900, "height": 800})
+        await page.select_option("#new-chat-account", "codex:a")
+        desktop = await options(page)
+        assert desktop["values"] == ["", "gpt-5.6-luna", "gpt-5.6-sol"]
+        await browser.close()

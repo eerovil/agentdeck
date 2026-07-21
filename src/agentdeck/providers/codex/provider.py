@@ -22,7 +22,7 @@ from ...models import (
     activity_label,
     detailed_activity_label,
 )
-from ..base import SessionProvider
+from ..base import ModelChoice, SessionProvider
 from . import transcripts as transcripts_mod
 from .inject import (
     inject_session,
@@ -91,6 +91,13 @@ class CodexProvider(SessionProvider):
 
     provider_id = "codex"
     supports_new_session = True
+    # Chosen at thread/start (new chat only); the app-server turn protocol has no
+    # model field, so a running thread keeps its creation model.
+    selectable_models = (
+        ModelChoice("gpt-5.6-luna", "Luna"),
+        ModelChoice("gpt-5.6-terra", "Terra"),
+        ModelChoice("gpt-5.6-sol", "Sol"),
+    )
 
     def __init__(self) -> None:
         self._meta_cache: dict[str, tuple[float, transcripts_mod.TranscriptMeta]] = {}

@@ -225,6 +225,7 @@ class InjectionService:
         message: str,
         images: list[Path] | None = None,
         *,
+        model: str | None = None,
         client_action_id: str | None = None,
     ) -> InjectResult:
         if not self.config.enabled:
@@ -247,7 +248,7 @@ class InjectionService:
         )
         with action_context:
             self._new_tasks[account.key] = asyncio.create_task(
-                self._run_new(account, provider, cwd, message, images or []),
+                self._run_new(account, provider, cwd, message, images or [], model),
                 name=f"new-session:{account.key}",
             )
         return InjectResult(True)
@@ -259,10 +260,13 @@ class InjectionService:
         cwd: Path,
         message: str,
         images: list[Path],
+        model: str | None = None,
     ) -> None:
         cleanup_now = True
         try:
             kwargs = {"images": images} if images else {}
+            if model:
+                kwargs["model"] = model
             result = await provider.start_session(
                 account,
                 cwd,

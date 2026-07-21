@@ -69,6 +69,13 @@ async def dashboard(request: Request) -> HTMLResponse:
         if PROVIDERS[account.provider_id].can_start_session(account)
     ]
     new_chat_account_keys = {account.key for account in new_chat_accounts}
+    # Model options for each provider present in the create form; the picker JS
+    # shows only those matching the selected account's provider.
+    new_chat_models = [
+        {"provider_id": provider_id, "value": choice.value, "label": choice.label}
+        for provider_id in sorted({account.provider_id for account in new_chat_accounts})
+        for choice in PROVIDERS[provider_id].selectable_models
+    ]
     cwd_options = sorted(
         {
             str(session.cwd)
@@ -102,6 +109,7 @@ async def dashboard(request: Request) -> HTMLResponse:
             "new_chat_enabled": request.app.state.config.inject.enabled,
             "new_chat_cwds": cwd_options,
             "new_chat_default_cwd": default_cwd,
+            "new_chat_models": new_chat_models,
             "assistant": request.app.state.assistant,
             "assistant_sessions": state.sessions,
             "deckhand_status": session_deckhand_status(request.app.state.assistant),

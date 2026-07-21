@@ -619,6 +619,110 @@ async def test_new_session_route_and_enter_to_send_ui(tmp_path, monkeypatch):
     await app.state.injector.stop()
 
 
+async def test_new_session_forwards_selected_model(tmp_path, monkeypatch):
+    app = _web_app(tmp_path)
+    seen = {}
+
+    async def fake_start(account, cwd, message, *, timeout_s, model=None):
+        seen["model"] = model
+        return InjectResult(True)
+
+    from agentdeck.providers import PROVIDERS
+
+    monkeypatch.setattr(PROVIDERS["codex"], "start_session", fake_start)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/sessions/new",
+            data={
+                "account_key": "codex:test",
+                "cwd": str(tmp_path),
+                "message": "build a new thing",
+                "model": "gpt-5.6-luna",
+            },
+            headers={"origin": "http://test"},
+        )
+        assert response.status_code == 202
+        for _ in range(10):
+            await asyncio.sleep(0)
+            status = app.state.injector.new_status("codex:test")
+            if status and status.state == "complete":
+                break
+    assert seen["model"] == "gpt-5.6-luna"
+    await app.state.injector.stop()
+
+
+async def test_new_session_blank_model_uses_account_default(tmp_path, monkeypatch):
+    app = _web_app(tmp_path)
+    seen = {}
+
+    async def fake_start(account, cwd, message, *, timeout_s, model=None):
+        seen["model"] = model
+        return InjectResult(True)
+
+    from agentdeck.providers import PROVIDERS
+
+    monkeypatch.setattr(PROVIDERS["codex"], "start_session", fake_start)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/sessions/new",
+            data={
+                "account_key": "codex:test",
+                "cwd": str(tmp_path),
+                "message": "build a new thing",
+                "model": "",
+            },
+            headers={"origin": "http://test"},
+        )
+        assert response.status_code == 202
+        for _ in range(10):
+            await asyncio.sleep(0)
+            status = app.state.injector.new_status("codex:test")
+            if status and status.state == "complete":
+                break
+    assert seen["model"] is None
+    await app.state.injector.stop()
+
+
+async def test_new_session_rejects_unknown_model(tmp_path, monkeypatch):
+    app = _web_app(tmp_path)
+    called = False
+
+    async def fake_start(account, cwd, message, *, timeout_s, model=None):
+        nonlocal called
+        called = True
+        return InjectResult(True)
+
+    from agentdeck.providers import PROVIDERS
+
+    monkeypatch.setattr(PROVIDERS["codex"], "start_session", fake_start)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/sessions/new",
+            data={
+                "account_key": "codex:test",
+                "cwd": str(tmp_path),
+                "message": "build a new thing",
+                # A Claude alias is not valid for a Codex account.
+                "model": "opus",
+            },
+            headers={"origin": "http://test"},
+        )
+    assert response.status_code == 422
+    assert called is False
+    await app.state.injector.stop()
+
+
+async def test_dashboard_renders_model_picker(tmp_path):
+    app = _web_app(tmp_path)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        dashboard = await client.get("/")
+    assert 'id="new-chat-model"' in dashboard.text
+    assert 'data-provider="codex"' in dashboard.text
+    assert "Default (account)" in dashboard.text
+    assert "model_picker.js" in dashboard.text
+    await app.state.injector.stop()
+
+
 async def test_new_session_status_redirect_target_resolves_before_next_scan(
     tmp_path, monkeypatch
 ):

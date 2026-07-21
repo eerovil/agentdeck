@@ -318,6 +318,14 @@ async def new_session(request: Request) -> HTMLResponse:
     except BaseException:
         cleanup_image_files(images)
         raise
+    # Blank = provider/account default (no --model). A non-blank value must be one
+    # the provider actually offers, so an unknown slug is a 422 rather than a raw
+    # arg handed to a CLI/app-server.
+    raw_model = form.get("model")
+    model = raw_model.strip() if isinstance(raw_model, str) else ""
+    if model and not provider.is_valid_model(model):
+        cleanup_image_files(images)
+        raise HTTPException(status_code=422, detail="invalid model")
     try:
         cwd = Path(raw_cwd).expanduser().resolve()
     except (OSError, RuntimeError):
@@ -332,6 +340,7 @@ async def new_session(request: Request) -> HTMLResponse:
                 cwd,
                 message,
                 images,
+                model=model or None,
                 client_action_id=client_action_id,
             )
     except BaseException:
