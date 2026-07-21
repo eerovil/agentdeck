@@ -7,5 +7,10 @@
     <time class="ev-time" datetime="{{ item.created_at.isoformat() }}" title="{{ item.created_at | chat_time_title }}">{{ item.created_at | chat_time }}</time>
   </div>
   <div class="ev-text">{{ item.text }}</div>
+  {% if item.images %}
+  <div class="ev-images" aria-label="{{ item.images | length }} attached image{% if item.images | length != 1 %}s{% endif %}">
+    {% for image in item.images %}<img class="ev-image" src="/sessions/{{ session_key }}/pending-images/{{ item.id }}/{{ loop.index0 }}" alt="Attached image {{ loop.index }}" loading="lazy">{% endfor %}
+  </div>
+  {% endif %}
 </div>
 {% if oob | default(false) %}</template>{% endif %}

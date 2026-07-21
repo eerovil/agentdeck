@@ -30,6 +30,49 @@ def _message(role: str, text: str, *, phase: str | None = None) -> dict:
     return _line("response_item", payload)
 
 
+def test_codex_user_image_is_kept_with_message_and_private_path_wrapper_is_hidden(tmp_path):
+    path = tmp_path / "rollout.jsonl"
+    image_url = "data:image/png;base64,iVBORw0KGgo="
+    message = _message("user", "Inspect this screenshot")
+    message["payload"]["content"].extend(
+        [
+            {
+                "type": "input_text",
+                "text": '<image name=[Image #1] path="/private/upload.png">',
+            },
+            {"type": "input_image", "image_url": image_url},
+            {"type": "input_text", "text": "</image>"},
+        ]
+    )
+    path.write_text(json.dumps(message) + "\n")
+
+    (event,) = transcripts.read_events(path).events
+
+    assert event.text == "Inspect this screenshot"
+    assert event.image_media_types == ("image/png",)
+    assert transcripts.transcript_image(path, 1, 0) == ("image/png", b"\x89PNG\r\n\x1a\n")
+
+
+def test_codex_image_only_message_is_visible_and_unsafe_image_url_is_ignored(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(transcripts, "_MAX_IMAGE_URL_CHARS", 40)
+    path = tmp_path / "rollout.jsonl"
+    message = _message("user", "")
+    message["payload"]["content"] = [
+        {"type": "input_image", "image_url": "data:image/jpeg;base64,/9j/"},
+        {"type": "input_image", "image_url": "https://example.com/tracker.png"},
+        {"type": "input_image", "image_url": "data:image/png;base64," + "a" * 41},
+    ]
+    path.write_text(json.dumps(message) + "\n")
+
+    (event,) = transcripts.read_events(path).events
+
+    assert event.text is None
+    assert event.image_media_types == ("image/jpeg",)
+    assert transcripts.transcript_image(path, 1, 0) == ("image/jpeg", b"\xff\xd8\xff")
+
+
 def _usage(last: dict, total: dict) -> dict:
     return _line(
         "event_msg",

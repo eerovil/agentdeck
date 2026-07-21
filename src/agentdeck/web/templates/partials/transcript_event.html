@@ -44,7 +44,7 @@
   {% if e.text %}<div class="ev-text">{{ e.text }}</div>{% endif %}
   <div class="ev-text ev-answer" title="your answer to the agent's question"><bdi>{{ e.answer }}</bdi></div>
 </div>
-{%- elif e.role == 'tool' or (not e.text and not e.question and not e.tool_name) -%}
+{%- elif e.role == 'tool' or (not e.text and not e.question and not e.tool_name and not e.image_media_types) -%}
 {%- else -%}
 <div class="ev {{ e.role }}{% if e.subagent %} sub{% endif %}">
   <div class="ev-head">
@@ -55,6 +55,11 @@
     </span>
   </div>
   {% if e.text %}<div class="ev-text">{{ e.text }}</div>{% endif %}
+  {% if e.image_media_types %}
+  <div class="ev-images" aria-label="{{ e.image_media_types | length }} attached image{% if e.image_media_types | length != 1 %}s{% endif %}">
+    {% for media_type in e.image_media_types %}<img class="ev-image" src="/sessions/{{ session_key }}/transcript-images/{{ e.seq }}/{{ loop.index0 }}" alt="Attached image {{ loop.index }}" loading="lazy">{% endfor %}
+  </div>
+  {% endif %}
   {% if e.question %}<div class="ev-question" title="the agent asked you to choose"><span class="q-dot"></span><span class="q-text"><bdi>{{ e.question }}</bdi></span></div>{% endif %}
 </div>
 {%- endif -%}

@@ -8,6 +8,8 @@ break a session.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import logging
 import re
@@ -25,6 +27,14 @@ _MAX_TITLE = 200
 _MAX_TOOL_SUMMARY = 160
 _META_HEAD = 128 * 1024
 _META_TAIL = 256 * 1024
+_MAX_IMAGE_URL_CHARS = 14 * 1024 * 1024
+_MAX_IMAGE_TOTAL_CHARS = 28 * 1024 * 1024
+_MAX_IMAGES = 4
+_SAFE_IMAGE_PREFIXES = {
+    f"data:{media_type};base64,": media_type
+    for media_type in ("image/png", "image/jpeg", "image/webp", "image/gif")
+}
+_IMAGE_WRAPPER = re.compile(r'^<image name=\[Image #\d+\] path="[^"\r\n]+">$')
 _DELEGATION_STATUS_MARKER = b"AgentDeck delegation: running (/sessions/"
 _DELEGATION_SESSION_RE = re.compile(
     r"(?:^|\r?\n|\\n)"
@@ -126,10 +136,62 @@ def _text_content(content: object) -> str | None:
         if not isinstance(block, dict) or block.get("type") not in ("input_text", "output_text"):
             continue
         value = block.get("text")
-        if isinstance(value, str) and value.strip():
-            parts.append(value.strip())
+        if not isinstance(value, str) or not value.strip():
+            continue
+        value = value.strip()
+        # Codex surrounds each persisted input_image with private path metadata.
+        # The image itself is rendered below; the transport wrapper is not chat.
+        if value == "</image>" or _IMAGE_WRAPPER.fullmatch(value):
+            continue
+        parts.append(value)
     text = "\n".join(parts).strip()
     return text or None
+
+
+def _image_sources(content: object) -> tuple[tuple[str, str], ...]:
+    """Bounded embedded raster image payloads from one Codex message."""
+    if not isinstance(content, list):
+        return ()
+    images = []
+    total = 0
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "input_image":
+            continue
+        value = block.get("image_url")
+        if not isinstance(value, str):
+            continue
+        prefix = next((item for item in _SAFE_IMAGE_PREFIXES if value.startswith(item)), None)
+        if prefix is None:
+            continue
+        if len(images) >= _MAX_IMAGES or len(value) > _MAX_IMAGE_URL_CHARS:
+            continue
+        total += len(value)
+        if total > _MAX_IMAGE_TOTAL_CHARS:
+            break
+        images.append((_SAFE_IMAGE_PREFIXES[prefix], value[len(prefix) :]))
+    return tuple(images)
+
+
+def transcript_image(path: Path, seq: int, image_index: int) -> tuple[str, bytes] | None:
+    """Decode one bounded image from an exact rollout line."""
+    if seq < 1 or image_index < 0:
+        return None
+    try:
+        with path.open("rb") as handle:
+            raw = next((line for number, line in enumerate(handle, 1) if number == seq), None)
+        data = json.loads(raw) if raw is not None else None
+    except (OSError, TypeError, ValueError):
+        return None
+    payload = data.get("payload") if isinstance(data, dict) else None
+    content = payload.get("content") if isinstance(payload, dict) else None
+    images = _image_sources(content)
+    if image_index >= len(images):
+        return None
+    media_type, encoded = images[image_index]
+    try:
+        return media_type, base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError):
+        return None
 
 
 def _strings(value: object, *, json_depth: int = 2):
@@ -496,7 +558,11 @@ def _event_from_line(seq: int, data: dict) -> TranscriptEvent | None:
     item_type = payload.get("type")
     if item_type == "message":
         native_role = payload.get("role")
-        text = _text_content(payload.get("content"))
+        content = payload.get("content")
+        text = _text_content(content)
+        image_media_types = tuple(
+            media_type for media_type, _data in _image_sources(content)
+        )
         notification = _subagent_notification(text) if native_role == "user" else None
         if notification is not None:
             agent_id, status, detail = notification
@@ -517,12 +583,18 @@ def _event_from_line(seq: int, data: dict) -> TranscriptEvent | None:
         if text is not None and role == "assistant":
             text = _strip_internal_assistant_metadata(text)
         if (
-            text is None
+            (text is None and not image_media_types)
             or (role == "user" and _is_noise_user(text))
             or (role == "system" and _is_internal_system(text))
         ):
             return None
-        return TranscriptEvent(seq=seq, role=role, text=text, ts=timestamp)
+        return TranscriptEvent(
+            seq=seq,
+            role=role,
+            text=text,
+            ts=timestamp,
+            image_media_types=image_media_types,
+        )
     if item_type in ("custom_tool_call", "function_call"):
         name = payload.get("name")
         arguments = payload.get("input", payload.get("arguments"))

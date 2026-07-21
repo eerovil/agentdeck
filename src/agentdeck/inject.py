@@ -171,6 +171,11 @@ class InjectionService:
                 item.state = "running"
                 self._snapshot(session.key)
                 try:
+                    transcript_offset = transcript_seq = 0
+                    if item.images:
+                        transcript_offset, transcript_seq = await provider.transcript_cursor(
+                            account, session
+                        )
                     kwargs = {"images": list(item.images)} if item.images else {}
                     action_context = (
                         client_action_context(item.client_action_id)
@@ -184,6 +189,15 @@ class InjectionService:
                             item.text,
                             timeout_s=self.config.timeout_s,
                             **kwargs,
+                        )
+                    if result.accepted and item.images:
+                        await self._wait_for_durable_images(
+                            account,
+                            session,
+                            provider,
+                            item,
+                            transcript_offset,
+                            transcript_seq,
                         )
                 finally:
                     cleanup_image_files(item.images)
@@ -216,6 +230,35 @@ class InjectionService:
             self._snapshot(session.key, "failed")
         finally:
             self._tasks.pop(session.key, None)
+
+    async def _wait_for_durable_images(
+        self,
+        account: Account,
+        session: Session,
+        provider: SessionProvider,
+        item: QueuedMessage,
+        byte_offset: int,
+        seq: int,
+    ) -> None:
+        """Keep pending uploads available until their transcript event exists."""
+        deadline = asyncio.get_running_loop().time() + self.config.timeout_s
+        while True:
+            events, byte_offset, seq = await provider.tail_transcript(
+                account, session, byte_offset, seq
+            )
+            if any(
+                event.role == "user"
+                and event.text == item.text
+                and len(event.image_media_types) == len(item.images)
+                for event in events
+            ):
+                return
+            if asyncio.get_running_loop().time() >= deadline:
+                log.warning(
+                    "timed out waiting for image transcript event in %s", session.key
+                )
+                return
+            await asyncio.sleep(0.1)
 
     async def start_new(
         self,

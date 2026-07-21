@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import json
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1885,6 +1887,80 @@ def test_tool_calls_visible_outputs_hidden_and_live_marker(tmp_path):
     assert 'data-activity-elapsed="12"' in activity
     assert ">12s</span>" in activity
     assert "tool-wait" not in render_tool_activity(templates, None)
+
+
+def test_transcript_user_message_renders_attached_images(tmp_path):
+    from agentdeck.models import TranscriptEvent
+    from agentdeck.web.render import render_transcript_events
+
+    app = _app_with_state(tmp_path)
+    html = render_transcript_events(
+        app.state.templates,
+        [
+            TranscriptEvent(
+                seq=1,
+                role="user",
+                text="See this",
+                image_media_types=("image/png", "image/jpeg"),
+            )
+        ],
+        session_key="claude_code:test:sid1",
+    )
+
+    assert 'aria-label="2 attached images"' in html
+    assert html.count('class="ev-image"') == 2
+    assert 'src="/sessions/claude_code:test:sid1/transcript-images/1/0"' in html
+    assert 'alt="Attached image 2"' in html
+
+    image_only = render_transcript_events(
+        app.state.templates,
+        [
+            TranscriptEvent(
+                seq=2,
+                role="user",
+                image_media_types=("image/png",),
+            )
+        ],
+        session_key="claude_code:test:sid1",
+    )
+    assert 'class="ev user"' in image_only
+    assert 'class="ev-image"' in image_only
+
+
+async def test_transcript_image_is_served_outside_the_html_response(tmp_path):
+    app = _app_with_state(tmp_path, with_transcript=True)
+    transcript = tmp_path / "projects" / "-tmp" / "sid1.jsonl"
+    lines = [json.loads(line) for line in transcript.read_text().splitlines()]
+    png = b"\x89PNG\r\n\x1a\nsmall"
+    lines[0]["message"]["content"] = [
+        {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": base64.b64encode(png).decode(),
+            },
+        },
+        {"type": "text", "text": "first question"},
+    ]
+    transcript.write_text("".join(json.dumps(line) + "\n" for line in lines))
+
+    async with _client(app) as client:
+        page = await client.get("/sessions/claude_code:test:sid1")
+        image = await client.get(
+            "/sessions/claude_code:test:sid1/transcript-images/1/0"
+        )
+        missing = await client.get(
+            "/sessions/claude_code:test:sid1/transcript-images/1/1"
+        )
+
+    assert "data:image" not in page.text
+    assert "/sessions/claude_code:test:sid1/transcript-images/1/0" in page.text
+    assert image.status_code == 200
+    assert image.content == png
+    assert image.headers["content-type"] == "image/png"
+    assert image.headers["cache-control"] == "private, no-store"
+    assert missing.status_code == 404
 
 
 def test_ask_user_question_renders_in_transcript(tmp_path):

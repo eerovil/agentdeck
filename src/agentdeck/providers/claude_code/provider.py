@@ -826,6 +826,16 @@ class ClaudeCodeProvider(SessionProvider):
             return []
         return await asyncio.to_thread(self._read_transcript_file, path, after_seq)
 
+    async def transcript_image(
+        self, account: Account, session: Session, seq: int, image_index: int
+    ) -> tuple[str, bytes] | None:
+        path = self._transcript_path(account, session)
+        return (
+            await asyncio.to_thread(transcripts_mod.transcript_image, path, seq, image_index)
+            if path is not None
+            else None
+        )
+
     def _read_transcript_file(self, path: Path, after_seq: int) -> list[TranscriptEvent]:
         """Read and filter a transcript outside the caller's event loop."""
         read = transcripts_mod.read_events(path)
