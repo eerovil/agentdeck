@@ -14,6 +14,7 @@ from agentdeck.models import (
     PendingInteraction,
     Session,
     SessionStatus,
+    TranscriptEvent,
 )
 from agentdeck.providers import PROVIDERS
 from agentdeck.providers.codex import provider as provider_mod
@@ -1126,6 +1127,34 @@ async def test_owned_runtime_projection_matches_scan_callback_and_sweep(tmp_path
     )
 
     assert projected_fields == callback_fields == sweep_fields
+
+
+async def test_owned_runtime_projection_uses_canonical_activity_policy(tmp_path):
+    sid = "019f5b2b-c830-7922-a1ce-8c9c69526c06"
+    _rollout(tmp_path, sid)
+    provider = CodexProvider()
+    account = _account(tmp_path)
+    client = MagicMock()
+    client.refresh = AsyncMock()
+    client.owns.return_value = True
+    client.active_turn.return_value = "turn-1"
+    client.interaction.return_value = None
+    provider._clients[account.key] = client
+    provider._cached_last_event = MagicMock(
+        return_value=TranscriptEvent(
+            seq=1,
+            role="assistant",
+            tool_name="AskUserQuestion",
+        )
+    )
+
+    (session,) = await provider.scan_sessions(account)
+
+    # A question tool is waiting, not working. The owned-runtime projection
+    # must preserve the canonical activity_label verdict instead of inventing
+    # a provider-local "Using AskUserQuestion" label.
+    assert session.status == SessionStatus.LIVE
+    assert session.activity is None
 
 
 async def test_owned_runtime_projection_suppresses_controls_during_outage(tmp_path):

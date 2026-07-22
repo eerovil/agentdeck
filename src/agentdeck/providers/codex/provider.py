@@ -227,10 +227,8 @@ class CodexProvider(SessionProvider):
         session.activity = (
             "Waiting for you"
             if interaction
-            else (
-                detailed_activity_label("Using tools", last_event)
-                if active and last_event is not None and last_event.tool_name
-                else ("Working" if active else None)
+            else detailed_activity_label(
+                activity_label(active, active, last_event), last_event
             )
         )
         session.question = self._interaction_summary(interaction)
