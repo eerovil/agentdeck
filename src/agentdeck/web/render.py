@@ -11,13 +11,42 @@ from fastapi.templating import Jinja2Templates
 
 from .. import triage
 from ..inject import InjectionService
-from ..models import Account, Capability
+from ..models import Account, Capability, TranscriptEvent, detailed_activity_label
 from ..models import activity_label as activity_label  # single impl lives in models
 from ..state import AppState, SessionPresentation
 
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def resolve_activity_label(
+    *,
+    has_question: bool,
+    live: bool,
+    streaming: bool,
+    last_event: TranscriptEvent | None,
+    age_s: float,
+    has_working_subagent: bool,
+) -> str | None:
+    """The session's activity badge text, or None when it should show nothing.
+
+    One home for the pipeline the initial page render and the live SSE tail must
+    agree on: a surfaced question suppresses the badge, then the open-turn label
+    is derived and refined, and a still-blank label finally falls back to
+    "Working" when a nested subagent is active. Each caller supplies its own
+    ``streaming``/``age_s`` because they read different clocks (the sweep's
+    ``thinking`` flag at page load, the SSE write-clock while tailing); only the
+    combination logic is shared, so the two paths cannot drift apart.
+    """
+    if has_question:
+        return None
+    label = detailed_activity_label(
+        activity_label(live, streaming, last_event, age_s), last_event
+    )
+    if label is None and has_working_subagent:
+        return "Working"
+    return label
 
 
 def reltime(value: datetime | None) -> str:

@@ -2127,6 +2127,77 @@ def test_activity_label_fallback():
     assert detailed_activity_label("Working", command) == "Working"
 
 
+def test_resolve_activity_label_pipeline():
+    from agentdeck.models import TranscriptEvent
+    from agentdeck.web.render import resolve_activity_label
+
+    tool_call = TranscriptEvent(seq=1, role="assistant", tool_name="Bash", text=None)
+    reply = TranscriptEvent(seq=1, role="assistant", text="done")
+
+    def resolve(**kw):
+        base = dict(
+            has_question=False,
+            live=True,
+            streaming=False,
+            last_event=tool_call,
+            age_s=0.0,
+            has_working_subagent=False,
+        )
+        return resolve_activity_label(**{**base, **kw})
+
+    # A surfaced question suppresses the badge even mid-tool — this is the guard
+    # the page-load path used to omit (it covers trailing natural-language
+    # questions, not only AskUserQuestion tool events).
+    assert resolve(has_question=True) is None
+    # Normal open-turn label flows through activity_label ("Using tools") and is
+    # then refined by detailed_activity_label to name the tool.
+    assert resolve() == "Using Bash"
+    command = TranscriptEvent(seq=2, role="assistant", tool_name="reasoning")
+    assert resolve(last_event=command) == "Thinking"
+    # Idle + no subagent → nothing; idle + a working subagent → "Working".
+    assert resolve(last_event=reply, streaming=False) is None
+    assert resolve(last_event=reply, streaming=False, has_working_subagent=True) == "Working"
+    # A not-live session yields no own-turn label, but an active nested subagent
+    # still surfaces "Working" through the fallback (unchanged from before).
+    assert resolve(live=False, has_working_subagent=True) == "Working"
+    assert resolve(live=False, has_working_subagent=False) is None
+
+
+async def test_session_detail_hides_activity_badge_when_question_pending(tmp_path):
+    # Regression: the initial page render must apply the same question guard the
+    # SSE tail does, so a LIVE session surfacing a question shows no activity
+    # badge on load (previously it flashed "Working" until the SSE tick blanked
+    # it ~1.5s later).
+    app = _app_with_state(tmp_path, with_transcript=True)
+    state = app.state.app_state
+
+    def _seed(question):
+        state.update_session(
+            Session(
+                key="claude_code:test:sid1",
+                account_key="claude_code:test",
+                session_id="sid1",
+                status=SessionStatus.LIVE,
+                thinking=True,  # streaming → activity_label would say "Working"
+                question=question,
+                title="Hello World Session",
+                capabilities=frozenset({Capability.TRANSCRIPT}),
+            )
+        )
+
+    async with _client(app) as client:
+        _seed("Which option do you want?")
+        with_question = await client.get("/sessions/claude_code:test:sid1")
+        _seed(None)
+        without_question = await client.get("/sessions/claude_code:test:sid1")
+
+    # Same streaming session: the badge is suppressed only because a question is
+    # surfaced — proving the guard, not merely an always-empty marker.
+    assert "tool-wait-label" not in with_question.text
+    assert "tool-wait-label" in without_question.text
+    assert "Working" in without_question.text
+
+
 def test_working_sessions_sort_first(tmp_path):
     from datetime import UTC, datetime, timedelta
 

@@ -144,12 +144,12 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
     )
     from datetime import UTC, datetime
 
-    from ..models import Capability, SessionStatus, detailed_activity_label
+    from ..models import Capability, SessionStatus
     from .render import (
         _usage_rows,
-        activity_label,
         assistant_insights_for_session,
         pending_injection_messages,
+        resolve_activity_label,
         session_deckhand_status,
         session_labels,
         session_queue_summaries,
@@ -162,11 +162,15 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
         if session.last_activity
         else 1e9
     )
-    label = activity_label(live, bool(session.thinking), last_ev, age)
-    label = detailed_activity_label(label, last_ev)
     presentation = state.session_presentation()
-    if label is None and presentation.has_working_subagent(session):
-        label = "Working"
+    label = resolve_activity_label(
+        has_question=bool(session.question),
+        live=live,
+        streaming=bool(session.thinking),
+        last_event=last_ev,
+        age_s=age,
+        has_working_subagent=presentation.has_working_subagent(session),
+    )
     effective_session = presentation.display(session)
     labels = session_labels(accounts)
     account_label = labels.get(session.account_key)

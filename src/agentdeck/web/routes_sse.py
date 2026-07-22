@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
-from ..models import Capability, SessionStatus, detailed_activity_label
+from ..models import Capability, SessionStatus
 from .deps import (
     get_accounts,
     get_injector,
@@ -26,7 +26,6 @@ from .deps import (
     resolve_session,
 )
 from .render import (
-    activity_label,
     render_assistant,
     render_assistant_session,
     render_composer_controls,
@@ -38,6 +37,7 @@ from .render import (
     render_subagent_activity,
     render_tool_activity,
     render_transcript_events,
+    resolve_activity_label,
 )
 
 router = APIRouter(dependencies=[Depends(require_access)])
@@ -274,10 +274,14 @@ async def _session_stream(
             streaming = live and age < THINKING_OFF_S
             # "Busy" (pulsing dot + activity marker) tracks the open turn, not just
             # recent writes — so a long tool run or slow first token stays busy.
-            label = None if current.question else activity_label(live, streaming, last_ev, age)
-            label = detailed_activity_label(label, last_ev)
-            if label is None and presentation.has_working_subagent(current):
-                label = "Working"
+            label = resolve_activity_label(
+                has_question=bool(current.question),
+                live=live,
+                streaming=streaming,
+                last_event=last_ev,
+                age_s=age,
+                has_working_subagent=presentation.has_working_subagent(current),
+            )
             busy = label is not None
             if (
                 current.status != last_status
