@@ -25,9 +25,10 @@ router = APIRouter(prefix="/partials", dependencies=[Depends(require_access)])
 
 @router.get("/assistant", response_class=HTMLResponse)
 async def assistant_panel(request: Request) -> HTMLResponse:
+    presentation = get_state(request).session_presentation()
     return HTMLResponse(
         render_assistant(
-            get_templates(request), request.app.state.assistant, get_state(request)
+            get_templates(request), request.app.state.assistant, presentation
         )
     )
 
@@ -41,11 +42,12 @@ async def limit_bars(request: Request) -> HTMLResponse:
 
 @router.get("/sessions", response_class=HTMLResponse)
 async def sessions(request: Request) -> HTMLResponse:
+    presentation = get_state(request).session_presentation()
     return HTMLResponse(
         render_session_list(
             get_templates(request),
             get_accounts(request),
-            get_state(request),
+            presentation,
             injector=get_injector(request),
             assistant=request.app.state.assistant,
         )

@@ -8,8 +8,10 @@ Mutations publish coarse-grained topics to the EventBus:
 from __future__ import annotations
 
 import re
-from dataclasses import replace
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from .events import EventBus
@@ -32,6 +34,26 @@ def generated_display_title(session: Session, semantic_title: str) -> str:
     suffix_match = _KANBAN_MODE_RE.search(session.title or "")
     suffix = suffix_match.group(0) if suffix_match else ""
     return f"{match.group(1)}#{match.group(2)} · {semantic_title}{suffix}"
+
+
+@dataclass(frozen=True)
+class SessionPresentation:
+    """One stable, request-scoped projection of the visible session graph."""
+
+    visible: tuple[Session, ...]
+    top_level: tuple[Session, ...]
+    children_of: Mapping[str, tuple[Session, ...]]
+    working_count: int
+    _display_by_key: Mapping[str, Session]
+    _working_through_subagents: frozenset[str]
+
+    def display(self, session: Session) -> Session:
+        """Return this snapshot's effective display copy of ``session``."""
+        return self._display_by_key.get(session.key, session)
+
+    def has_working_subagent(self, session: Session) -> bool:
+        """Whether embedded or nested subagent work makes ``session`` active."""
+        return session.key in self._working_through_subagents
 
 
 class AppState:
@@ -234,7 +256,7 @@ class AppState:
         return self.delegation_parents.get(session.key)
 
     def _effective_activity(
-        self, visible: list[Session]
+        self, visible: list[Session], parent_by_key: Mapping[str, str | None]
     ) -> tuple[set[str], set[str]]:
         """Return effective-working keys and keys working through subagents.
 
@@ -244,11 +266,6 @@ class AppState:
         appear as child sessions. Propagate either form through the parent graph
         without mutating provider-owned session records.
         """
-        key_by_session_id = {session.session_id: session.key for session in visible}
-        parent_by_key = {
-            session.key: self._parent_key(session, key_by_session_id)
-            for session in visible
-        }
         own_working = {session.key for session in visible if session.thinking}
         through_subagents = {
             session.key for session in visible if session.subagent_count
@@ -265,29 +282,13 @@ class AppState:
     @staticmethod
     def _with_effective_activity(session: Session, working_keys: set[str]) -> Session:
         if session.key not in working_keys or session.thinking:
-            return session
+            return replace(session)
         return replace(session, thinking=True, activity=session.activity or "Working")
 
-    def effective_session(self, session: Session) -> Session:
-        """A display copy whose activity includes working descendants."""
-        visible = self.visible_sessions()
-        working_keys, _ = self._effective_activity(visible)
-        return self._with_effective_activity(session, working_keys)
+    def session_presentation(self) -> SessionPresentation:
+        """Build one immutable display projection of the visible session graph.
 
-    def has_working_subagent(self, session: Session) -> bool:
-        """Whether embedded or nested subagent work makes this session active."""
-        _, through_subagents = self._effective_activity(self.visible_sessions())
-        return session.key in through_subagents
-
-    def working_count(self) -> int:
-        """Number of top-level chats effectively working right now."""
-        top, _ = self.session_tree()
-        return sum(session.thinking for session in top)
-
-    def session_tree(self) -> tuple[list[Session], dict[str, list[Session]]]:
-        """Split visible sessions into a one-level tree.
-
-        Returns ``(top_level, children_by_parent_key)``: subagent sessions
+        ``top_level`` and ``children_of`` split sessions into a one-level tree: subagents
         (``parent_session_key`` set) are grouped under their parent. A subagent
         whose parent isn't visible is dropped rather than floated as a top-level
         card — a subagent only makes sense under its parent, and an orphaned one
@@ -296,18 +297,26 @@ class AppState:
         parents promoted when descendant work makes them effectively active.
         """
         visible = self.visible_sessions()
-        working_keys, _ = self._effective_activity(visible)
         # Resolve recorded (raw-id) delegation parents against what's visible
         # now; last writer wins on the astronomically-unlikely UUID collision.
         key_by_session_id = {s.session_id: s.key for s in visible}
-        top_keys = {
-            s.key for s in visible if self._parent_key(s, key_by_session_id) is None
+        parent_by_key = {
+            session.key: self._parent_key(session, key_by_session_id)
+            for session in visible
+        }
+        working_keys, through_subagents = self._effective_activity(
+            visible, parent_by_key
+        )
+        top_keys = {key for key, parent in parent_by_key.items() if parent is None}
+        display_by_key = {
+            session.key: self._with_effective_activity(session, working_keys)
+            for session in visible
         }
         top: list[Session] = []
         children: dict[str, list[Session]] = {}
         for s in visible:
-            parent = self._parent_key(s, key_by_session_id)
-            effective = self._with_effective_activity(s, working_keys)
+            parent = parent_by_key[s.key]
+            effective = display_by_key[s.key]
             if parent is None:
                 top.append(effective)
             elif parent in top_keys:
@@ -323,7 +332,17 @@ class AppState:
                 children.setdefault(parent, []).append(effective)
             # else: orphan subagent (parent not visible) — omit from the tree
         top.sort(key=self._sort_key)
-        return top, children
+        immutable_children = MappingProxyType(
+            {parent: tuple(sessions) for parent, sessions in children.items()}
+        )
+        return SessionPresentation(
+            visible=tuple(display_by_key[session.key] for session in visible),
+            top_level=tuple(top),
+            children_of=immutable_children,
+            working_count=sum(session.thinking for session in top),
+            _display_by_key=MappingProxyType(display_by_key),
+            _working_through_subagents=frozenset(through_subagents),
+        )
 
     # --- usage --------------------------------------------------------
 

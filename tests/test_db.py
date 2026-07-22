@@ -126,7 +126,7 @@ def test_delegation_parent_survives_reopen_and_nests(tmp_path):
             ),
         ):
             restored.update_session(s)
-        _, children = restored.session_tree()
+        children = restored.session_presentation().children_of
         assert [c.key for c in children["claude_code:main:p"]] == ["codex:test:child"]
     finally:
         reopened.close()

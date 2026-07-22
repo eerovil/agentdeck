@@ -13,7 +13,7 @@ from .. import triage
 from ..inject import InjectionService
 from ..models import Account, Capability
 from ..models import activity_label as activity_label  # single impl lives in models
-from ..state import AppState
+from ..state import AppState, SessionPresentation
 
 
 def _now() -> datetime:
@@ -197,10 +197,12 @@ def render_limit_bars(templates: Jinja2Templates, accounts: list[Account], state
     )
 
 
-def render_assistant(templates: Jinja2Templates, assistant, state: AppState) -> str:
+def render_assistant(
+    templates: Jinja2Templates, assistant, presentation: SessionPresentation
+) -> str:
     return templates.get_template("partials/assistant_panel.html").render(
         assistant=assistant,
-        working_count=state.working_count(),
+        working_count=presentation.working_count,
     )
 
 
@@ -365,21 +367,20 @@ def pending_injection_messages(status) -> list:
 def render_session_list(
     templates: Jinja2Templates,
     accounts: list[Account],
-    state: AppState,
+    presentation: SessionPresentation,
     *,
     selected_session_key: str | None = None,
     injector: InjectionService | None = None,
     assistant=None,
 ) -> str:
-    top, children = state.session_tree()
     return templates.get_template("partials/session_list.html").render(
-        sessions=top,
-        children_of=children,
+        sessions=presentation.top_level,
+        children_of=presentation.children_of,
         labels=session_labels(accounts),
         selected_session_key=selected_session_key,
         deckhand_status=session_deckhand_status(assistant),
         queue_summaries=(
-            session_queue_summaries(state.visible_sessions(), injector) if injector else {}
+            session_queue_summaries(presentation.visible, injector) if injector else {}
         ),
     )
 

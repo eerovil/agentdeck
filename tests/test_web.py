@@ -5,6 +5,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from httpx import ASGITransport, AsyncClient
 from playwright.async_api import async_playwright
 
@@ -2199,7 +2200,7 @@ def test_active_sessions_keep_stable_relative_order(tmp_path):
     ]
 
 
-def test_session_tree_nests_subagents_under_parent():
+def test_session_presentation_nests_subagents_under_parent():
     from agentdeck.state import AppState
 
     state = AppState()
@@ -2234,7 +2235,8 @@ def test_session_tree_nests_subagents_under_parent():
     for s in (parent, child, dead, orphan):
         state.update_session(s)
 
-    top, children = state.session_tree()
+    presentation = state.session_presentation()
+    top, children = presentation.top_level, presentation.children_of
     top_keys = {s.key for s in top}
     assert "a:p" in top_keys  # parent stays top-level
     assert "a:c" not in top_keys  # child is nested, not top-level
@@ -2246,16 +2248,20 @@ def test_session_tree_nests_subagents_under_parent():
     assert effective_parent.thinking is True
     assert effective_parent.activity == "Working"
     assert state.sessions[parent.key].thinking is False  # provider state stays raw
-    assert state.working_count() == 1
+    assert presentation.working_count == 1
+    assert presentation.display(parent) is effective_parent
+    with pytest.raises(TypeError):
+        children["another"] = ()
 
     state.update_session(replace(child, status=SessionStatus.IDLE, thinking=False))
-    top, children = state.session_tree()
+    presentation = state.session_presentation()
+    top, children = presentation.top_level, presentation.children_of
     effective_parent = next(session for session in top if session.key == parent.key)
     assert effective_parent.thinking is False
     assert parent.key not in children
 
 
-def test_session_tree_includes_embedded_subagents_in_parent_activity():
+def test_session_presentation_includes_embedded_subagents_in_parent_activity():
     from agentdeck.state import AppState
 
     state = AppState()
@@ -2270,13 +2276,15 @@ def test_session_tree_includes_embedded_subagents_in_parent_activity():
     )
     state.update_session(parent)
 
-    top, children = state.session_tree()
+    presentation = state.session_presentation()
+    top, children = presentation.top_level, presentation.children_of
 
     assert children == {}
     assert top[0].thinking is True
     assert top[0].activity == "Working"
     assert state.sessions[parent.key].thinking is False
-    assert state.working_count() == 1
+    assert presentation.working_count == 1
+    assert presentation.has_working_subagent(parent) is True
 
 
 def test_session_tree_nests_cross_provider_delegation():
@@ -2302,7 +2310,8 @@ def test_session_tree_nests_cross_provider_delegation():
         state.update_session(s)
     state.set_delegation_parents("claude_code:main", {"codex:codex:c": "claude_code:main:p"})
 
-    top, children = state.session_tree()
+    presentation = state.session_presentation()
+    top, children = presentation.top_level, presentation.children_of
     assert "codex:codex:c" not in {s.key for s in top}  # nested cross-provider
     assert [c.key for c in children["claude_code:main:p"]] == ["codex:codex:c"]
     effective_parent = next(s for s in top if s.key == "claude_code:main:p")
@@ -2332,7 +2341,8 @@ def test_mark_delegated_session_records_parent_and_nests():
     # marker.
     state.mark_delegated_session("codex:codex:c", parent_session_id="p")
 
-    top, children = state.session_tree()
+    presentation = state.session_presentation()
+    top, children = presentation.top_level, presentation.children_of
     assert "codex:codex:c" not in {s.key for s in top}
     assert [c.key for c in children["claude_code:main:p"]] == ["codex:codex:c"]
     assert state.sessions["codex:codex:c"].is_delegated is True
@@ -2353,7 +2363,7 @@ def test_recorded_delegation_parent_self_heals_when_parent_appears():
     # anyway; the child stays top-level for now rather than nesting under a
     # phantom.
     state.mark_delegated_session("codex:codex:c", parent_session_id="p")
-    top, _ = state.session_tree()
+    top = state.session_presentation().top_level
     assert "codex:codex:c" in {s.key for s in top}
 
     # Once the parent is scanned in, lazy resolution nests the child with no
@@ -2366,7 +2376,8 @@ def test_recorded_delegation_parent_self_heals_when_parent_appears():
             status=SessionStatus.LIVE,
         )
     )
-    top, children = state.session_tree()
+    presentation = state.session_presentation()
+    top, children = presentation.top_level, presentation.children_of
     assert "codex:codex:c" not in {s.key for s in top}
     assert [c.key for c in children["claude_code:main:p"]] == ["codex:codex:c"]
 

@@ -81,20 +81,21 @@ async def _stream(request: Request) -> AsyncIterator[str]:
     accounts = get_accounts(request)
     injector = get_injector(request)
 
-    def render(topic: str) -> str:
+    def render(topic: str, presentation=None) -> str:
         if topic == "usage":
             return format_sse("usage", render_limit_bars(templates, accounts, state))
+        assert presentation is not None
         if topic == "assistant":
             return format_sse(
                 "assistant",
-                render_assistant(templates, request.app.state.assistant, state),
+                render_assistant(templates, request.app.state.assistant, presentation),
             )
         return format_sse(
             "sessions",
             render_session_list(
                 templates,
                 accounts,
-                state,
+                presentation,
                 injector=injector,
                 assistant=request.app.state.assistant,
             ),
@@ -103,9 +104,10 @@ async def _stream(request: Request) -> AsyncIterator[str]:
     loop = asyncio.get_event_loop()
     with state.bus.subscribe("usage", "sessions", "assistant") as sub:
         # Prime the client with current state on connect.
+        presentation = state.session_presentation()
         yield render("usage")
-        yield render("sessions")
-        yield render("assistant")
+        yield render("sessions", presentation)
+        yield render("assistant", presentation)
         last_usage_push = loop.time()
         while True:
             if await request.is_disconnected():
@@ -128,9 +130,14 @@ async def _stream(request: Request) -> AsyncIterator[str]:
             if not dirty:
                 yield ": ping\n\n"
                 continue
+            presentation = (
+                state.session_presentation()
+                if {"sessions", "assistant"} & dirty
+                else None
+            )
             for t in ("usage", "sessions", "assistant"):
                 if t in dirty:
-                    yield render(t)
+                    yield render(t, presentation)
             if "usage" in dirty:
                 last_usage_push = loop.time()
 
@@ -185,13 +192,14 @@ async def _session_stream(
     # session.html), so the page still holds one socket. Each fragment is
     # re-pushed only when its underlying state changes.
     with state.bus.subscribe("sessions", "assistant") as sidebar_sub:
+        presentation = state.session_presentation()
         yield format_sse("usage", render_limit_bars(templates, accounts, state))
         yield format_sse(
             "sessions",
             render_session_list(
                 templates,
                 accounts,
-                state,
+                presentation,
                 selected_session_key=session_key,
                 injector=injector,
                 assistant=request.app.state.assistant,
@@ -199,7 +207,7 @@ async def _session_stream(
         )
         yield format_sse(
             "assistant",
-            render_assistant(templates, request.app.state.assistant, state),
+            render_assistant(templates, request.app.state.assistant, presentation),
         )
         yield format_sse(
             "assistant-session",
@@ -256,6 +264,7 @@ async def _session_stream(
                 last_activity_t = loop.time()
                 last_ev = new_events[-1]
             current = state.sessions.get(session_key) or session
+            presentation = state.session_presentation()
             live = current.status == SessionStatus.LIVE
             age = loop.time() - last_activity_t
             streaming = live and age < THINKING_OFF_S
@@ -263,7 +272,7 @@ async def _session_stream(
             # recent writes — so a long tool run or slow first token stays busy.
             label = None if current.question else activity_label(live, streaming, last_ev, age)
             label = detailed_activity_label(label, last_ev)
-            if label is None and state.has_working_subagent(current):
+            if label is None and presentation.has_working_subagent(current):
                 label = "Working"
             busy = label is not None
             if (
@@ -312,7 +321,7 @@ async def _session_stream(
                     render_session_list(
                         templates,
                         accounts,
-                        state,
+                        presentation,
                         selected_session_key=session_key,
                         injector=injector,
                         assistant=request.app.state.assistant,
@@ -321,7 +330,9 @@ async def _session_stream(
             if "assistant" in sidebar_dirty:
                 yield format_sse(
                     "assistant",
-                    render_assistant(templates, request.app.state.assistant, state),
+                    render_assistant(
+                        templates, request.app.state.assistant, presentation
+                    ),
                 )
                 yield format_sse(
                     "assistant-session",

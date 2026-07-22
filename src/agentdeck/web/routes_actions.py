@@ -148,8 +148,9 @@ async def refresh_assistant(request: Request) -> HTMLResponse:
         raise HTTPException(status_code=409, detail="orchestration assistant is disabled")
     from .render import render_assistant
 
+    presentation = request.app.state.app_state.session_presentation()
     return HTMLResponse(
-        render_assistant(get_templates(request), assistant, request.app.state.app_state),
+        render_assistant(get_templates(request), assistant, presentation),
         status_code=202,
     )
 
@@ -166,8 +167,9 @@ async def handle_assistant_insight(request: Request) -> HTMLResponse:
         raise HTTPException(status_code=404, detail="Deckhand item not found")
     from .render import render_assistant
 
+    presentation = request.app.state.app_state.session_presentation()
     return HTMLResponse(
-        render_assistant(get_templates(request), assistant, request.app.state.app_state)
+        render_assistant(get_templates(request), assistant, presentation)
     )
 
 
@@ -183,8 +185,9 @@ async def unhandle_assistant_insight(request: Request) -> HTMLResponse:
         raise HTTPException(status_code=404, detail="handled Deckhand item not found")
     from .render import render_assistant
 
+    presentation = request.app.state.app_state.session_presentation()
     return HTMLResponse(
-        render_assistant(get_templates(request), assistant, request.app.state.app_state)
+        render_assistant(get_templates(request), assistant, presentation)
     )
 
 
