@@ -23,6 +23,7 @@ import httpx
 
 from ...action_context import current_client_action_id
 from ...models import (
+    CONTROL_CAPABILITIES,
     Account,
     Capability,
     InjectResult,
@@ -36,6 +37,7 @@ from ...models import (
     TranscriptEvent,
     UsageSnapshot,
     activity_label,
+    runtime_control_capabilities,
 )
 from ..base import ModelChoice, SessionProvider
 from . import history as history_mod
@@ -287,22 +289,19 @@ class ClaudeCodeProvider(SessionProvider):
         session.thinking = active
         session.activity = self._activity(True, transcript_path, last_activity) if active else None
         session.show_when_idle = True
-        capabilities = set(session.capabilities)
-        capabilities.difference_update(
-            {
-                Capability.INJECT,
-                Capability.STEER,
-                Capability.INTERRUPT,
-                Capability.INTERACT,
-            }
+        # Keep the read-only capabilities derived from the transcript; strip the
+        # whole control set and reapply the current live projection so a stale
+        # control capability cannot linger across a runtime becoming unavailable.
+        session.capabilities = (session.capabilities - CONTROL_CAPABILITIES) | (
+            runtime_control_capabilities(
+                available=workers.available,
+                active_turn=active,
+                actionable_interaction=(
+                    self._actionable_interaction(account, session.session_id)
+                    is not None
+                ),
+            )
         )
-        if workers.available:
-            capabilities.add(Capability.INJECT)
-            if active:
-                capabilities.update({Capability.STEER, Capability.INTERRUPT})
-            if self._actionable_interaction(account, session.session_id) is not None:
-                capabilities.add(Capability.INTERACT)
-        session.capabilities = frozenset(capabilities)
         return True
 
     @staticmethod

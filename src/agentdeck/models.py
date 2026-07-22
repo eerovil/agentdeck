@@ -27,6 +27,43 @@ class Capability(StrEnum):
     INTERACT = "interact"
 
 
+# The control capabilities a deck-owned runtime agent can grant. Read-only
+# affordances (TRANSCRIPT, DEEPLINK) are derived separately from the transcript
+# and are never part of this set. Providers strip this whole set before
+# reapplying the live projection so a stale control capability cannot linger.
+CONTROL_CAPABILITIES = frozenset(
+    {Capability.INJECT, Capability.STEER, Capability.INTERRUPT, Capability.INTERACT}
+)
+
+
+def runtime_control_capabilities(
+    *, available: bool, active_turn: bool, actionable_interaction: bool
+) -> frozenset[Capability]:
+    """Control capabilities an owned runtime agent grants right now.
+
+    This is the single home for the "what does ownership grant" policy that both
+    providers apply on top of their own read-only capabilities. It is a pure
+    projection of three facts each provider reads its own way:
+
+    - ``available`` — the owning runtime is reachable and owns this session;
+      without it no control capability is granted (an idle owned worker whose
+      runtime is unreachable is read-only).
+    - ``active_turn`` — a turn is in flight, so it can be steered or interrupted.
+    - ``actionable_interaction`` — a pending interaction is currently answerable.
+
+    Ownership grants INJECT (queue/steer the next turn); an active turn adds
+    STEER and INTERRUPT; an actionable interaction adds INTERACT.
+    """
+    if not available:
+        return frozenset()
+    capabilities = {Capability.INJECT}
+    if active_turn:
+        capabilities |= {Capability.STEER, Capability.INTERRUPT}
+    if actionable_interaction:
+        capabilities.add(Capability.INTERACT)
+    return frozenset(capabilities)
+
+
 @dataclass(frozen=True)
 class Account:
     key: str  # "claude_code:main" — provider_id ":" label-slug

@@ -22,6 +22,7 @@ from ...models import (
     UsageSnapshot,
     activity_label,
     detailed_activity_label,
+    runtime_control_capabilities,
 )
 from ..base import ModelChoice, SessionProvider
 from . import transcripts as transcripts_mod
@@ -259,20 +260,17 @@ class CodexProvider(SessionProvider):
 
     def _runtime_capabilities(self, account: Account, thread_id: str) -> frozenset[Capability]:
         client = self._clients.get(account.key)
-        capabilities = {Capability.TRANSCRIPT}
-        if (
-            client is None
-            or not self._refresh_ok.get(account.key, True)
-            or not client.owns(thread_id)
-        ):
-            return frozenset(capabilities)
-        active = client.active_turn(thread_id) is not None
-        capabilities.add(Capability.INJECT)
-        if active:
-            capabilities.update({Capability.STEER, Capability.INTERRUPT})
-        if self._actionable_interaction(account, thread_id) is not None:
-            capabilities.add(Capability.INTERACT)
-        return frozenset(capabilities)
+        available = (
+            client is not None
+            and self._refresh_ok.get(account.key, True)
+            and client.owns(thread_id)
+        )
+        return frozenset({Capability.TRANSCRIPT}) | runtime_control_capabilities(
+            available=available,
+            active_turn=available and client.active_turn(thread_id) is not None,
+            actionable_interaction=self._actionable_interaction(account, thread_id)
+            is not None,
+        )
 
     def _cached_meta(self, path: Path) -> transcripts_mod.TranscriptMeta:
         try:
