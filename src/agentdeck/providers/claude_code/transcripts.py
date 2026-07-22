@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from ...images import SUPPORTED_IMAGE_MEDIA_TYPES
 from ...models import TokenTotals, TranscriptEvent
 
 log = logging.getLogger(__name__)
@@ -33,9 +34,6 @@ _MAX_RENDERED_TEXT = 200_000
 _MAX_IMAGE_DATA_CHARS = 14 * 1024 * 1024
 _MAX_IMAGE_TOTAL_CHARS = 28 * 1024 * 1024
 _MAX_IMAGES = 4
-_SAFE_IMAGE_MEDIA_TYPES = frozenset(
-    ("image/png", "image/jpeg", "image/webp", "image/gif")
-)
 
 
 @dataclass
@@ -121,7 +119,7 @@ def _image_sources(content: object) -> tuple[tuple[str, str], ...]:
         media_type = source.get("media_type")
         data = source.get("data")
         if (
-            media_type not in _SAFE_IMAGE_MEDIA_TYPES
+            media_type not in SUPPORTED_IMAGE_MEDIA_TYPES
             or not isinstance(data, str)
             or not data
             or len(data) > _MAX_IMAGE_DATA_CHARS

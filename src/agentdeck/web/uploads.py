@@ -9,13 +9,7 @@ from pathlib import Path
 from starlette.datastructures import FormData, UploadFile
 
 from ..config import InjectConfig
-
-_CONTENT_TYPES = {
-    "image/gif": ".gif",
-    "image/jpeg": ".jpg",
-    "image/png": ".png",
-    "image/webp": ".webp",
-}
+from ..images import sniff_suffix, suffix_for_media_type
 
 
 class ImageUploadError(ValueError):
@@ -34,18 +28,6 @@ def cleanup_image_files(images: list[Path] | tuple[Path, ...]) -> None:
             pass
 
 
-def _sniff_extension(data: bytes) -> str | None:
-    if data.startswith(b"\x89PNG\r\n\x1a\n"):
-        return ".png"
-    if data.startswith(b"\xff\xd8\xff"):
-        return ".jpg"
-    if data.startswith((b"GIF87a", b"GIF89a")):
-        return ".gif"
-    if len(data) >= 12 and data.startswith(b"RIFF") and data[8:12] == b"WEBP":
-        return ".webp"
-    return None
-
-
 async def save_uploaded_images(form: FormData, config: InjectConfig) -> list[Path]:
     """Validate and save multipart image fields."""
     uploads = [item for item in form.getlist("images") if isinstance(item, UploadFile)]
@@ -59,7 +41,7 @@ async def save_uploaded_images(form: FormData, config: InjectConfig) -> list[Pat
     try:
         for upload in uploads:
             try:
-                expected = _CONTENT_TYPES.get(upload.content_type or "")
+                expected = suffix_for_media_type(upload.content_type or "")
                 if expected is None:
                     raise ImageUploadError("unsupported image content type")
                 data = await upload.read(config.max_image_bytes + 1)
@@ -70,7 +52,7 @@ async def save_uploaded_images(form: FormData, config: InjectConfig) -> list[Pat
             total += len(data)
             if total > config.max_image_total_bytes:
                 raise ImageUploadError("images are too large in total")
-            extension = _sniff_extension(data)
+            extension = sniff_suffix(data)
             if extension is None or extension != expected:
                 raise ImageUploadError("uploaded file is not the declared image type")
             if directory is None:

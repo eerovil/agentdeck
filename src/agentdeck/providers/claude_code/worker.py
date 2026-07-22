@@ -28,6 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from ...images import SUPPORTED_IMAGE_MEDIA_TYPES
 from ...models import Account
 from . import registry
 
@@ -1028,7 +1029,7 @@ class ClaudeWorkerHost:
     def _image_block(path_value: str) -> dict[str, Any]:
         path = Path(path_value)
         media_type, _ = mimetypes.guess_type(path.name)
-        if media_type not in {"image/png", "image/jpeg", "image/webp", "image/gif"}:
+        if media_type not in SUPPORTED_IMAGE_MEDIA_TYPES:
             raise WorkerError(f"unsupported image type: {path.name}")
         try:
             data = base64.b64encode(path.read_bytes()).decode("ascii")

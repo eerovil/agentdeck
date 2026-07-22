@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 from starlette.datastructures import FormData
 
+from ..images import media_type_for_suffix, sniff_suffix, suffix_for_media_type
 from ..models import Capability, InjectResult
 from ..providers import PROVIDERS
 from .action_timing import bind_action, timing_span
@@ -25,7 +26,6 @@ from .deps import (
 )
 from .uploads import (
     ImageUploadError,
-    _sniff_extension,
     cleanup_image_files,
     save_uploaded_images,
 )
@@ -82,15 +82,6 @@ def _render_interaction(request: Request, session_key: str, interaction) -> HTML
     )
 
 
-_IMAGE_MEDIA_TYPES = {
-    ".gif": "image/gif",
-    ".jpg": "image/jpeg",
-    ".png": "image/png",
-    ".webp": "image/webp",
-}
-_IMAGE_EXTENSIONS = {media_type: extension for extension, media_type in _IMAGE_MEDIA_TYPES.items()}
-
-
 @router.get("/sessions/{session_key}/transcript-images/{seq}/{image_index}")
 async def transcript_image(
     request: Request, session_key: str, seq: int, image_index: int
@@ -101,11 +92,11 @@ async def transcript_image(
     if image is None:
         raise HTTPException(status_code=404, detail="transcript image not found")
     media_type, content = image
-    expected_extension = _IMAGE_EXTENSIONS.get(media_type)
+    expected_extension = suffix_for_media_type(media_type)
     if (
         expected_extension is None
         or len(content) > get_config(request).inject.max_image_bytes
-        or _sniff_extension(content) != expected_extension
+        or sniff_suffix(content) != expected_extension
     ):
         raise HTTPException(status_code=404, detail="transcript image not found")
     return Response(content, media_type=media_type, headers={"Cache-Control": "private, no-store"})
@@ -130,7 +121,7 @@ async def pending_message_image(
     if item is None or image_index < 0 or image_index >= len(item.images):
         raise HTTPException(status_code=404, detail="pending image not found")
     image = item.images[image_index]
-    media_type = _IMAGE_MEDIA_TYPES.get(image.suffix)
+    media_type = media_type_for_suffix(image.suffix)
     if media_type is None:
         raise HTTPException(status_code=404, detail="pending image not found")
     try:

@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .action_context import client_action_context
 from .config import InjectConfig
+from .images import media_type_for_suffix
 from .models import Account, Capability, InjectResult, Session, TranscriptEvent
 from .providers.base import SessionProvider
 from .web.uploads import cleanup_image_files
@@ -43,14 +44,9 @@ class QueuedMessage:
 
     @property
     def image_media_types(self) -> tuple[str, ...]:
-        by_suffix = {
-            ".gif": "image/gif",
-            ".jpeg": "image/jpeg",
-            ".jpg": "image/jpeg",
-            ".png": "image/png",
-            ".webp": "image/webp",
-        }
-        return tuple(by_suffix.get(image.suffix.lower(), "") for image in self.images)
+        return tuple(
+            media_type_for_suffix(image.suffix) or "" for image in self.images
+        )
 
 
 @dataclass(frozen=True)

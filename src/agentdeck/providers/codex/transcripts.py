@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from ...images import SUPPORTED_IMAGE_MEDIA_TYPES
 from ...models import TokenTotals, TranscriptEvent
 
 log = logging.getLogger(__name__)
@@ -32,7 +33,7 @@ _MAX_IMAGE_TOTAL_CHARS = 28 * 1024 * 1024
 _MAX_IMAGES = 4
 _SAFE_IMAGE_PREFIXES = {
     f"data:{media_type};base64,": media_type
-    for media_type in ("image/png", "image/jpeg", "image/webp", "image/gif")
+    for media_type in SUPPORTED_IMAGE_MEDIA_TYPES
 }
 _IMAGE_WRAPPER = re.compile(r'^<image name=\[Image #\d+\] path="[^"\r\n]+">$')
 _DELEGATION_STATUS_MARKER = b"AgentDeck delegation: running (/sessions/"
