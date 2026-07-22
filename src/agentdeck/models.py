@@ -79,7 +79,7 @@ class SubagentProgress:
 class Session:
     key: str  # f"{account_key}:{session_id}" — used in all URLs (urlsafe)
     account_key: str
-    session_id: str  # provider-native id (Claude UUID)
+    session_id: str  # provider-scoped source id; child agents may use their agent id
     status: SessionStatus
     thinking: bool = False  # LIVE and actively writing its transcript right now
     cwd: Path | None = None
@@ -98,7 +98,9 @@ class Session:
     model: str | None = None  # last assistant line's model (v0.2)
     kind: str | None = None  # "interactive" | "sdk-cli" | RC worker …
     worker_type: str | None = None  # "kanban" | "cloud" | "you" — drives list colour
-    is_delegated: bool = False  # background/subagent work; excluded from Deckhand triage
+    # Broad background/child-work marker used for Deckhand exclusion; recorded
+    # delegation lineage is tracked separately in AppState.
+    is_delegated: bool = False
     issue_url: str | None = None  # GitHub issue/PR link for kanban worker sessions
     issue_status: str | None = None  # GitHub state text: open / closed / merged
     issue_status_kind: str | None = None  # badge colour: open|merged|done|dropped|closed

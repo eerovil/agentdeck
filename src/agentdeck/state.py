@@ -209,10 +209,11 @@ class AppState:
         return sorted(self.sessions.values(), key=self._sort_key)
 
     def visible_sessions(self) -> list[Session]:
-        """Sessions providers consider useful in the dashboard.
+        """Sessions providers consider eligible for dashboard presentation.
 
-        Idle sessions are hidden by default, but providers whose process state
-        cannot be mapped reliably (such as Codex) can keep them visible.
+        Sessions without confirmed local liveness are hidden by default, but
+        providers whose process state cannot be mapped reliably (such as Codex)
+        can keep them eligible.
         """
         return [
             s

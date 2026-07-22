@@ -433,7 +433,7 @@ class AssistantService:
                 cards.append(card)
                 continue
             if all_pulls_terminal(context):
-                # The agent's PR(s) merged/closed — shipped, nothing to review.
+                # The agent's PR(s) merged/closed — terminal, nothing to review.
                 continue
             if not needs_llm(session):
                 continue

@@ -56,7 +56,7 @@ This document covers how AgentDeck owns, addresses, and safely controls long-liv
 ## Delegation lineage
 
 - `InjectionService.start_delegation()` creates machine-oriented work and retains bounded pollable status. Once a session key exists, `AppState.mark_delegated_session()` records it in SQLite `delegated_sessions` so rescans and restarts preserve delegated status.
-- `parent_session_id` is stored as a raw cross-provider session ID and resolved lazily by `AppState.session_tree()`. `db.py:record_delegated_session` preserves an existing parent on a bare re-record and replaces it only when an authoritative parent is supplied.
+- `parent_session_id` is stored as a raw cross-provider session ID and resolved lazily by `AppState.session_presentation()`. `db.py:record_delegated_session` preserves an existing parent on a bare re-record and replaces it only when an authoritative parent is supplied.
 - `agentdeck delegate` defaults `--parent-session` from `CLAUDE_CODE_SESSION_ID` and sends it to `/api/delegations`. Recorded parentage outranks transcript-discovered delegation markers; see `.claude/codebase/providers-sessions.md` for nesting and true-subagent expiry rules.
 
 ## External dispatchers and kanban presentation

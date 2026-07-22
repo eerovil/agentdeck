@@ -16,8 +16,8 @@ For state producers and process boundaries, read [architecture-runtime.md](archi
 
 - `src/agentdeck/web/routes_sse.py::_stream` subscribes to `usage`, `sessions`, and `assistant`, primes all three on connection, coalesces queued topics, and otherwise emits heartbeat comments.
 - Usage is refreshed at least every `USAGE_REFRESH_S`; an `assistant` invalidation also dirties `sessions` because Deckhand pills are rendered into session cards.
-- `src/agentdeck/web/render.py::render_session_list` calls `AppState.session_tree()` and renders `partials/session_list.html`; relationship logic stays server-side.
-- `src/agentdeck/state.py::AppState.session_tree` returns one nesting level, omits orphan native subagents, drops finished native subagents, and keeps idle delegated-worker children nested.
+- `src/agentdeck/web/render.py::render_session_list` renders a supplied `SessionPresentation` through `partials/session_list.html`; relationship logic stays server-side.
+- `src/agentdeck/state.py::AppState.session_presentation` returns one immutable, request-scoped view with one nesting level, omits orphan native subagents, drops finished native subagents, and keeps inactive delegated child sessions nested.
 - `src/agentdeck/web/templates/dashboard.html` deliberately keeps search/filter inputs outside `#sessions`, which is replaced wholesale. It reapplies filtering after `htmx:afterSwap`.
 - `src/agentdeck/web/templates/base.html` keeps card feeds, expanded cards, and subagent-open sets keyed outside replaced fragments, then reapplies them after each list swap. Usage expansion lives on `<body>` plus `localStorage` for the same reason.
 
