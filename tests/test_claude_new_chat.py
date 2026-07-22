@@ -131,6 +131,7 @@ class _FakeWorkerClient:
         self.available = True
         self._live = True
         self._active = True
+        self._pending = None
 
     def owns(self, sid):
         return sid in self._owned
@@ -149,6 +150,9 @@ class _FakeWorkerClient:
 
     def cwd_for(self, sid):
         return None
+
+    def pending_interaction(self, sid):
+        return self._pending if sid in self._owned else None
 
     async def deliver(
         self,
@@ -528,18 +532,33 @@ async def test_control_actions_suppressed_when_runtime_unreachable():
             }
         ),
     )
+    fake._pending = {
+        "id": "permission-1",
+        "kind": "command_approval",
+        "thread_id": "sid-1",
+        "title": "Approve command?",
+    }
+    assert provider.pending_interaction(_account(), session) is None
+
+    provider.sweep_liveness(_account(), [session])
+    assert Capability.INTERACT in session.capabilities
+    assert provider.pending_interaction(_account(), session) is not None
 
     fake.available = False  # runtime unreachable
     provider.sweep_liveness(_account(), [session])
     assert Capability.INJECT not in session.capabilities
     assert Capability.STEER not in session.capabilities
     assert Capability.INTERRUPT not in session.capabilities
+    assert Capability.INTERACT not in session.capabilities
     assert Capability.TRANSCRIPT in session.capabilities  # still readable
     assert session.show_when_idle is True  # visible, just uncontrollable
+    assert provider.pending_interaction(_account(), session) is None
 
     fake.available = True  # reconnect re-grants control
     provider.sweep_liveness(_account(), [session])
     assert Capability.INJECT in session.capabilities
+    assert Capability.INTERACT in session.capabilities
+    assert provider.pending_interaction(_account(), session) is not None
 
 
 def test_runtime_availability_change_reprojects_cached_capabilities():

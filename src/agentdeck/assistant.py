@@ -22,7 +22,7 @@ from typing import Any
 from .config import AppConfig, AssistantConfig
 from .deckhand_runner import run_codex_json
 from .git_context import GitContext, GitContextResolver
-from .models import Account, PendingInteraction, Session
+from .models import Account, Capability, PendingInteraction, Session
 from .providers import PROVIDERS
 from .push import PushService
 from .state import AppState
@@ -265,6 +265,8 @@ class AssistantService:
     # --- session selection & evidence ---------------------------------
 
     def _interaction(self, session: Session) -> PendingInteraction | None:
+        if Capability.INTERACT not in session.capabilities:
+            return None
         account = next((a for a in self.accounts if a.key == session.account_key), None)
         if account is None:
             return None

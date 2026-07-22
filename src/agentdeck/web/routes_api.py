@@ -9,6 +9,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from ..models import Capability
 from ..providers import PROVIDERS
 from .deps import get_accounts, get_injector, get_state, require_access
 
@@ -222,7 +223,11 @@ async def delegation_status(request: Request, delegation_id: str) -> dict:
                 None,
             )
             if account is not None:
-                interaction = PROVIDERS[account.provider_id].pending_interaction(account, session)
+                interaction = (
+                    PROVIDERS[account.provider_id].pending_interaction(account, session)
+                    if Capability.INTERACT in session.capabilities
+                    else None
+                )
                 if interaction is not None and state == "running":
                     state = "waiting"
 

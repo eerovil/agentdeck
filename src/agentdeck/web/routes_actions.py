@@ -335,7 +335,11 @@ async def pending_interaction(request: Request, session_key: str) -> HTMLRespons
     return _render_interaction(
         request,
         session_key,
-        provider.pending_interaction(account, session),
+        (
+            provider.pending_interaction(account, session)
+            if Capability.INTERACT in session.capabilities
+            else None
+        ),
     )
 
 
@@ -344,6 +348,8 @@ async def answer_interaction(request: Request, session_key: str) -> HTMLResponse
     _require_same_origin(request)
     account, session, provider = resolve_session(request, session_key)
     bind_action(request, session_key=session.key, provider=account.provider_id)
+    if Capability.INTERACT not in session.capabilities:
+        raise HTTPException(status_code=403, detail="interaction unavailable")
     interaction = provider.pending_interaction(account, session)
     if interaction is None:
         raise HTTPException(status_code=409, detail="interaction is no longer pending")

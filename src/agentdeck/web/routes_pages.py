@@ -170,7 +170,6 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
     effective_session = presentation.display(session)
     labels = session_labels(accounts)
     account_label = labels.get(session.account_key)
-    owned_session = provider.owns_session(account, session)
     assistant = request.app.state.assistant
     git_context = await assistant.ensure_session_context(
         session, transcript_context=_pr_reference_text(detail.events)
@@ -211,8 +210,11 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
             ),
             "inject_max_chars": request.app.state.config.inject.max_message_chars,
             "can_interrupt": Capability.INTERRUPT in session.capabilities,
-            "owned_session": owned_session,
-            "pending_interaction": provider.pending_interaction(account, session),
+            "pending_interaction": (
+                provider.pending_interaction(account, session)
+                if Capability.INTERACT in session.capabilities
+                else None
+            ),
             "assistant": assistant,
             "assistant_sessions": state.sessions,
             "working_count": presentation.working_count,

@@ -14,7 +14,7 @@ from agentdeck.action_context import current_client_action_id
 from agentdeck.app import create_app
 from agentdeck.config import AccountConfig, AppConfig, HistoryConfig, InjectConfig
 from agentdeck.db import Db
-from agentdeck.inject import InjectionService, QueuedMessage
+from agentdeck.inject import DelegationStatus, InjectionService, QueuedMessage
 from agentdeck.models import (
     Account,
     Capability,
@@ -1533,6 +1533,37 @@ async def test_machine_delegation_api_validates_requests(tmp_path):
         assert missing.status_code == 404
 
 
+async def test_delegation_status_hides_interaction_without_capability(
+    tmp_path, monkeypatch
+):
+    app = _web_app(tmp_path)
+    interaction = _question_interaction(
+        "tok-stale", "Database", "Which database?", "Postgres", "SQLite"
+    )
+    from agentdeck.providers import PROVIDERS
+
+    monkeypatch.setattr(
+        PROVIDERS["codex"],
+        "pending_interaction",
+        lambda account, session: interaction,
+    )
+    app.state.injector._remember_delegation(
+        DelegationStatus(
+            "delegation-stale",
+            "running",
+            "codex:test",
+            session_key="codex:test:sid",
+        )
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/api/delegations/delegation-stale")
+
+    assert response.status_code == 200
+    assert response.json()["state"] == "running"
+    assert response.json()["interaction"] is None
+
+
 async def test_owned_session_question_shows_stop_beside_send(tmp_path, monkeypatch):
     app = _web_app(tmp_path)
     session = app.state.app_state.sessions["codex:test:sid"]
@@ -1567,7 +1598,6 @@ async def test_owned_session_question_shows_stop_beside_send(tmp_path, monkeypat
     from agentdeck.providers import PROVIDERS
 
     provider = PROVIDERS["codex"]
-    monkeypatch.setattr(provider, "owns_session", lambda account, session: True)
     monkeypatch.setattr(
         provider, "pending_interaction", lambda account, session: interaction
     )
@@ -1629,6 +1659,99 @@ async def test_owned_session_question_shows_stop_beside_send(tmp_path, monkeypat
         assert 'aria-label="Stopping active turn"' in stop.text
 
 
+async def test_pending_interaction_requires_interact_capability(tmp_path, monkeypatch):
+    app = _web_app(tmp_path)
+    session = app.state.app_state.sessions["codex:test:sid"]
+    session.capabilities = frozenset({Capability.TRANSCRIPT, Capability.INJECT})
+    interaction = _question_interaction(
+        "tok-stale", "Database", "Which database?", "Postgres", "SQLite"
+    )
+    from agentdeck.providers import PROVIDERS
+
+    provider = PROVIDERS["codex"]
+    monkeypatch.setattr(
+        provider, "pending_interaction", lambda account, session: interaction
+    )
+    answered = False
+
+    async def answer(*args, **kwargs):
+        nonlocal answered
+        answered = True
+        return InjectResult(True)
+
+    monkeypatch.setattr(provider, "answer_interaction", answer)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        page = await client.get("/sessions/codex:test:sid")
+        partial = await client.get("/partials/sessions/codex:test:sid/interaction")
+        response = await client.post(
+            "/sessions/codex:test:sid/interaction",
+            data={"interaction_id": "tok-stale", "answer__database": "Postgres"},
+            headers={"origin": "http://test"},
+        )
+
+    assert "Which database?" not in page.text
+    assert "Which database?" not in partial.text
+    assert response.status_code == 403
+    assert answered is False
+
+
+async def test_interaction_sse_uses_replaced_session_capabilities(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from agentdeck.providers import PROVIDERS
+    from agentdeck.web.routes_sse import _session_stream
+
+    app = _web_app(tmp_path)
+    state = app.state.app_state
+    session = state.sessions["codex:test:sid"]
+    session.capabilities = frozenset(
+        {Capability.TRANSCRIPT, Capability.INJECT, Capability.INTERACT}
+    )
+    interaction = _question_interaction(
+        "tok-current", "Database", "Which database?", "Postgres", "SQLite"
+    )
+    provider = PROVIDERS["codex"]
+    monkeypatch.setattr(
+        provider,
+        "pending_interaction",
+        lambda account, candidate: (
+            interaction if Capability.INTERACT in candidate.capabilities else None
+        ),
+    )
+    monkeypatch.setattr(provider, "transcript_cursor", _async_return((0, 0)))
+    monkeypatch.setattr(provider, "tail_transcript", _async_return(([], 0, 0)))
+    monkeypatch.setattr(provider, "last_event", _async_return(None))
+
+    class FakeRequest:
+        def __init__(self, application):
+            self.app = application
+
+        async def is_disconnected(self):
+            return False
+
+    stream = _session_stream(FakeRequest(app), session.key)
+    try:
+        for _ in range(5):
+            await asyncio.wait_for(stream.__anext__(), timeout=2)
+        state.update_session(
+            replace(
+                session,
+                capabilities=frozenset({Capability.TRANSCRIPT, Capability.INJECT}),
+            )
+        )
+        chunks = []
+        for _ in range(8):
+            chunk = await asyncio.wait_for(stream.__anext__(), timeout=2)
+            chunks.append(chunk)
+            if "event: interaction" in chunk:
+                break
+    finally:
+        await stream.aclose()
+
+    interaction_chunk = next(chunk for chunk in chunks if "event: interaction" in chunk)
+    assert "Which database?" not in interaction_chunk
+
+
 def _question_interaction(token, header, prompt, opt_a, opt_b):
     return PendingInteraction(
         id=token,
@@ -1664,7 +1787,6 @@ async def test_interaction_widget_is_sse_driven_not_polled(tmp_path, monkeypatch
     from agentdeck.providers import PROVIDERS
 
     provider = PROVIDERS["codex"]
-    monkeypatch.setattr(provider, "owns_session", lambda account, session: True)
     monkeypatch.setattr(
         provider, "pending_interaction", lambda account, session: interaction
     )
@@ -1702,7 +1824,6 @@ async def test_interaction_selection_survives_live_updates_e2e(tmp_path, monkeyp
     from agentdeck.providers import PROVIDERS
 
     provider = PROVIDERS["codex"]
-    monkeypatch.setattr(provider, "owns_session", lambda account, session: True)
     monkeypatch.setattr(provider, "pending_interaction", lambda account, session: q1)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -1815,7 +1936,6 @@ async def test_new_question_scrolls_into_view_e2e(tmp_path, monkeypatch):
     from agentdeck.providers import PROVIDERS
 
     provider = PROVIDERS["codex"]
-    monkeypatch.setattr(provider, "owns_session", lambda account, session: True)
     # No prompt at load, so the slot starts empty and only SSE drives it.
     monkeypatch.setattr(provider, "pending_interaction", lambda account, session: None)
 
@@ -1972,7 +2092,6 @@ async def test_full_question_lifecycle_e2e_with_mock_llm(tmp_path, monkeypatch):
     from agentdeck.providers import PROVIDERS
 
     provider = PROVIDERS["codex"]
-    monkeypatch.setattr(provider, "owns_session", lambda account, session: True)
     monkeypatch.setattr(
         provider, "pending_interaction", lambda account, session: box["pending"]
     )
@@ -2062,7 +2181,6 @@ async def test_approval_decision_survives_button_disable_e2e(tmp_path, monkeypat
     from agentdeck.providers import PROVIDERS
 
     provider = PROVIDERS["codex"]
-    monkeypatch.setattr(provider, "owns_session", lambda account, session: True)
     monkeypatch.setattr(provider, "pending_interaction", lambda account, session: approval)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

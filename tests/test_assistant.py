@@ -8,7 +8,7 @@ from agentdeck.assistant import AssistantInsight, AssistantService, AssistantVie
 from agentdeck.config import AccountConfig, AppConfig, AssistantConfig
 from agentdeck.db import Db
 from agentdeck.git_context import GitContext, PullRequestContext
-from agentdeck.models import PendingInteraction, Session, SessionStatus
+from agentdeck.models import Capability, PendingInteraction, Session, SessionStatus
 from agentdeck.providers import PROVIDERS
 from agentdeck.state import AppState
 
@@ -304,7 +304,9 @@ async def test_interaction_card_prioritized_and_deterministic(tmp_path, monkeypa
         PROVIDERS["codex"], "pending_interaction", lambda account, session: interaction
     )
     state = AppState()
-    state.update_session(_finished(tmp_path))
+    state.update_session(
+        _finished(tmp_path, capabilities=frozenset({Capability.INTERACT}))
+    )
     assistant = _service(tmp_path, runner, state=state)
 
     await assistant.refresh()
@@ -312,6 +314,20 @@ async def test_interaction_card_prioritized_and_deterministic(tmp_path, monkeypa
     (insight,) = assistant.view.insights
     assert insight.headline == "Approval needed"
     runner.assert_not_awaited()
+
+
+def test_interaction_is_hidden_without_interact_capability(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        PROVIDERS["codex"],
+        "pending_interaction",
+        lambda account, session: calls.append(session.key),
+    )
+    assistant = _service(tmp_path, AsyncMock())
+    session = _finished(tmp_path)
+
+    assert assistant._interaction(session) is None
+    assert calls == []
 
 
 async def test_checkpoint_restores_view_without_reclassifying(tmp_path):

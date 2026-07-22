@@ -250,6 +250,14 @@ class ClaudeCodeProvider(SessionProvider):
         client = self._workers.get(account.key)
         return bool(client and client.available)
 
+    def _actionable_interaction(
+        self, account: Account, session_id: str
+    ) -> PendingInteraction | None:
+        workers = self._workers.get(account.key)
+        if workers is None or not workers.available or not workers.owns(session_id):
+            return None
+        return _pending_from_dict(workers.pending_interaction(session_id))
+
     def _runtime_changed(self, account: Account, state) -> None:
         sessions = state.sessions_for_account(account.key)
         if self.sweep_liveness(account, sessions):
@@ -275,11 +283,20 @@ class ClaudeCodeProvider(SessionProvider):
         session.activity = self._activity(True, transcript_path, last_activity) if active else None
         session.show_when_idle = True
         capabilities = set(session.capabilities)
-        capabilities.difference_update({Capability.INJECT, Capability.STEER, Capability.INTERRUPT})
+        capabilities.difference_update(
+            {
+                Capability.INJECT,
+                Capability.STEER,
+                Capability.INTERRUPT,
+                Capability.INTERACT,
+            }
+        )
         if workers.available:
             capabilities.add(Capability.INJECT)
             if active:
                 capabilities.update({Capability.STEER, Capability.INTERRUPT})
+            if self._actionable_interaction(account, session.session_id) is not None:
+                capabilities.add(Capability.INTERACT)
         session.capabilities = frozenset(capabilities)
         return True
 
@@ -413,20 +430,12 @@ class ClaudeCodeProvider(SessionProvider):
         last_text, last_role = meta[4], meta[5]
         return last_text if last_role == "agent" else None
 
-    def owns_session(self, account: Account, session: Session) -> bool:
-        client = self._workers.get(account.key)
-        return bool(client and client.owns(session.session_id))
-
     def pending_interaction(
         self, account: Account, session: Session
     ) -> PendingInteraction | None:
-        client = self._workers.get(account.key)
-        if client is None:
+        if Capability.INTERACT not in session.capabilities:
             return None
-        raw = client.pending_interaction(session.session_id)
-        if raw is None:
-            return None
-        return _pending_from_dict(raw)
+        return self._actionable_interaction(account, session.session_id)
 
     async def answer_interaction(
         self,
@@ -440,6 +449,11 @@ class ClaudeCodeProvider(SessionProvider):
         client = self._workers.get(account.key)
         if client is None:
             return InjectResult(False, "Claude workers are not enabled on the runtime service")
+        if Capability.INTERACT not in session.capabilities:
+            return InjectResult(False, "interaction is unavailable")
+        interaction = self._actionable_interaction(account, session.session_id)
+        if interaction is None or interaction.id != interaction_id:
+            return InjectResult(False, "interaction is no longer pending")
         key = client.key_for(session.session_id)
         if key is None:
             return InjectResult(False, "this session is not a deck-owned worker")
@@ -784,7 +798,12 @@ class ClaudeCodeProvider(SessionProvider):
             s.show_when_idle = False
             capabilities = set(s.capabilities)
             capabilities.difference_update(
-                {Capability.INJECT, Capability.STEER, Capability.INTERRUPT}
+                {
+                    Capability.INJECT,
+                    Capability.STEER,
+                    Capability.INTERRUPT,
+                    Capability.INTERACT,
+                }
             )
             s.capabilities = frozenset(capabilities)
             s.kind = entry.kind if entry else s.kind

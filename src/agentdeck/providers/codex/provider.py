@@ -212,7 +212,7 @@ class CodexProvider(SessionProvider):
         if client is None or not client.owns(session.session_id):
             return False
         active = client.active_turn(session.session_id) is not None
-        interaction = client.interaction(session.session_id)
+        interaction = self._actionable_interaction(account, session.session_id)
         session.status = SessionStatus.LIVE if active else SessionStatus.IDLE
         session.thinking = active and interaction is None
         session.activity = (
@@ -237,6 +237,18 @@ class CodexProvider(SessionProvider):
             return " ".join(question.prompt for question in interaction.questions)
         return interaction.message or interaction.title
 
+    def _actionable_interaction(
+        self, account: Account, thread_id: str
+    ) -> PendingInteraction | None:
+        client = self._clients.get(account.key)
+        if (
+            client is None
+            or not self._refresh_ok.get(account.key, True)
+            or not client.owns(thread_id)
+        ):
+            return None
+        return client.interaction(thread_id)
+
     def _runtime_capabilities(self, account: Account, thread_id: str) -> frozenset[Capability]:
         client = self._clients.get(account.key)
         capabilities = {Capability.TRANSCRIPT}
@@ -250,7 +262,7 @@ class CodexProvider(SessionProvider):
         capabilities.add(Capability.INJECT)
         if active:
             capabilities.update({Capability.STEER, Capability.INTERRUPT})
-        if client.interaction(thread_id) is not None:
+        if self._actionable_interaction(account, thread_id) is not None:
             capabilities.add(Capability.INTERACT)
         return frozenset(capabilities)
 
@@ -739,12 +751,9 @@ class CodexProvider(SessionProvider):
         return meta.last_agent_message or meta.last_text
 
     def pending_interaction(self, account: Account, session: Session) -> PendingInteraction | None:
-        client = self._clients.get(account.key)
-        return client.interaction(session.session_id) if client is not None else None
-
-    def owns_session(self, account: Account, session: Session) -> bool:
-        client = self._clients.get(account.key)
-        return bool(client and client.owns(session.session_id))
+        if Capability.INTERACT not in session.capabilities:
+            return None
+        return self._actionable_interaction(account, session.session_id)
 
     async def steer(
         self,
@@ -777,6 +786,11 @@ class CodexProvider(SessionProvider):
         client = self._clients.get(account.key)
         if client is None:
             return InjectResult(False, "Codex app-server is unavailable")
+        if Capability.INTERACT not in session.capabilities:
+            return InjectResult(False, "interaction is unavailable")
+        interaction = self._actionable_interaction(account, session.session_id)
+        if interaction is None or interaction.id != interaction_id:
+            return InjectResult(False, "interaction is no longer pending")
         return await client.answer(
             session.session_id,
             interaction_id,

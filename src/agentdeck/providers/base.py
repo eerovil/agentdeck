@@ -168,12 +168,10 @@ class SessionProvider(ABC):
         """Return the latest assistant text for a delegated session."""
         return None
 
-    def owns_session(self, account: Account, session: Session) -> bool:
-        return False
-
     def pending_interaction(
         self, account: Account, session: Session
     ) -> PendingInteraction | None:
+        """Return only a currently actionable, runtime-available interaction."""
         return None
 
     async def steer(

@@ -7,7 +7,14 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 from agentdeck.config import AccountConfig
-from agentdeck.models import Account, Capability, InjectResult, Session, SessionStatus
+from agentdeck.models import (
+    Account,
+    Capability,
+    InjectResult,
+    PendingInteraction,
+    Session,
+    SessionStatus,
+)
 from agentdeck.providers import PROVIDERS
 from agentdeck.providers.codex import provider as provider_mod
 from agentdeck.providers.codex import transcripts
@@ -1148,7 +1155,14 @@ def test_watch_health_edges_reproject_stored_runtime_sessions(tmp_path):
     client = MagicMock()
     client.owns.return_value = True
     client.active_turn.return_value = "turn-1"
-    client.interaction.return_value = None
+    interaction = PendingInteraction(
+        id="question-1",
+        kind="question",
+        thread_id="thread-1",
+        turn_id="turn-1",
+        title="Choose a database",
+    )
+    client.interaction.return_value = interaction
     provider._clients[account.key] = client
     session = Session(
         key=f"{account.key}:thread-1",
@@ -1167,16 +1181,20 @@ def test_watch_health_edges_reproject_stored_runtime_sessions(tmp_path):
     )
     state = MagicMock()
     state.sessions = {session.key: session}
+    assert provider.pending_interaction(account, session) is None
 
     provider._refresh_ok[account.key] = False
     provider._reproject_runtime_sessions(account, state, client)
     assert session.capabilities == frozenset({Capability.TRANSCRIPT})
+    assert provider.pending_interaction(account, session) is None
 
     provider._refresh_ok[account.key] = True
     provider._reproject_runtime_sessions(account, state, client)
     assert Capability.INJECT in session.capabilities
     assert Capability.STEER in session.capabilities
     assert Capability.INTERRUPT in session.capabilities
+    assert Capability.INTERACT in session.capabilities
+    assert provider.pending_interaction(account, session) == interaction
 
 
 async def test_runtime_projection_is_withdrawn_when_ownership_disappears(tmp_path):
