@@ -209,8 +209,9 @@ _Avoid_: Completion, resolution, shipped
 
 **Deckhand Status**:
 The effective operator-facing attention state of a Session, distinct from its availability and
-activity.
-_Avoid_: Session status, liveness, activity
+activity. It has exactly one resolution per Session; presentation renders it without re-deriving
+its precedence.
+_Avoid_: Session status, liveness, activity, pill
 
 **Native Title**:
 The provider-supplied title of a Session.
