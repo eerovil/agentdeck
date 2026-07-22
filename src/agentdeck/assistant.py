@@ -690,9 +690,9 @@ class AssistantService:
     def is_handled(self, session_key: str) -> bool:
         """Whether ``session_key`` currently reads as dismissed (signature still
         matches). A convenience for the done/undo control."""
-        return session_key in self.handled_keys()
+        return session_key in self._handled_keys()
 
-    def handled_keys(self) -> frozenset[str]:
+    def _handled_keys(self) -> frozenset[str]:
         """Sessions currently dismissed by the operator — they render a ``done``
         pill. A dismissal is valid only while its capture-time signature still
         holds, so it auto-reverts here (before the periodic refresh even prunes
@@ -711,7 +711,7 @@ class AssistantService:
                 keys.add(key)
         return frozenset(keys)
 
-    def session_verdicts(self) -> dict[str, Verdict]:
+    def _session_verdicts(self) -> dict[str, Verdict]:
         """Durable per-session classifier verdict (blocked/finished), independent
         of the transient attention view. Unlike ``view.insights`` these survive a
         run that produces no cards, so a per-session status pill stays stable."""
@@ -727,8 +727,8 @@ class AssistantService:
         the final pill through ``triage.resolve_deckhand_status``, the single home
         for the precedence the web layer used to reconstruct from these internals.
         """
-        verdicts = self.session_verdicts()
-        handled = self.handled_keys()
+        verdicts = self._session_verdicts()
+        handled = self._handled_keys()
         live_by_key = {insight.session_key: insight for insight in self.view.insights}
         statuses: dict[str, DeckhandStatus] = {}
         for session in sessions:

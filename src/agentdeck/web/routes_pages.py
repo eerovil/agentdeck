@@ -99,7 +99,6 @@ async def dashboard(request: Request) -> HTMLResponse:
     state = get_state(request)
     from .render import (
         _usage_rows,
-        session_deckhand_status,
         session_labels,
         session_queue_summaries,
     )
@@ -120,7 +119,9 @@ async def dashboard(request: Request) -> HTMLResponse:
             **_session_list_controls_context(request, accounts, state),
             "assistant": request.app.state.assistant,
             "assistant_sessions": state.sessions,
-            "deckhand_status": session_deckhand_status(request.app.state.assistant),
+            "deckhand_status": request.app.state.assistant.deckhand_statuses(
+                presentation.visible
+            ),
             "working_count": presentation.working_count,
         },
     )
@@ -150,7 +151,6 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
         assistant_insights_for_session,
         pending_injection_messages,
         resolve_activity_label,
-        session_deckhand_status,
         session_labels,
         session_queue_summaries,
     )
@@ -191,7 +191,7 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
             "sessions": presentation.top_level,
             "children_of": presentation.children_of,
             "labels": labels,
-            "deckhand_status": session_deckhand_status(assistant),
+            "deckhand_status": assistant.deckhand_statuses(presentation.visible),
             "selected_session_key": session.key,
             "queue_summaries": session_queue_summaries(
                 presentation.visible, request.app.state.injector
