@@ -114,7 +114,7 @@ async def pending_message_image(
             queued
             for queued in status.items
             if queued.id == item_id
-            and queued.state in ("queued", "running", "accepted")
+            and queued.is_pending
         ),
         None,
     ) if status else None

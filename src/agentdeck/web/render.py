@@ -340,11 +340,7 @@ def session_queue_summaries(sessions, injector: InjectionService) -> dict[str, d
         status = injector.status(session.key)
         if status is None:
             continue
-        pending = [
-            item
-            for item in status.items
-            if item.state in ("queued", "running", "accepted")
-        ]
+        pending = [item for item in status.items if item.is_pending]
         if pending:
             summaries[session.key] = {
                 "count": len(pending),
@@ -357,11 +353,7 @@ def pending_injection_messages(status) -> list:
     """App-level turns not yet linked to a durable transcript event."""
     if status is None:
         return []
-    return [
-        item
-        for item in status.items
-        if item.state in ("queued", "running", "accepted")
-    ]
+    return [item for item in status.items if item.is_pending]
 
 
 def render_session_list(

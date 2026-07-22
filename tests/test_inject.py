@@ -2869,3 +2869,21 @@ async def test_composer_controls_survive_repeated_sse_updates_on_desktop_and_mob
             "horizontalOverflow": False,
         },
     ]
+
+
+def test_queued_message_is_pending_predicate():
+    """is_pending is the single home for the injection 'still in flight' rule."""
+    from agentdeck.inject import QueuedMessage
+
+    def _state(state):
+        item = QueuedMessage(1, "hi")
+        item.state = state
+        return item
+
+    assert _state("queued").is_pending
+    assert _state("running").is_pending
+    assert _state("accepted").is_pending
+    # Once the durable transcript row appears or the turn resolves, not pending.
+    assert not _state("observed").is_pending
+    assert not _state("complete").is_pending
+    assert not _state("failed").is_pending

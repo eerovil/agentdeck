@@ -48,6 +48,19 @@ class QueuedMessage:
             media_type_for_suffix(image.suffix) or "" for image in self.images
         )
 
+    @property
+    def is_pending(self) -> bool:
+        """The message is still in flight — queued, being delivered, or handed
+        off but not yet confirmed in the transcript. While pending its optimistic
+        row is shown and its uploaded images must stay served; once ``observed``,
+        ``complete``, or ``failed`` it no longer is.
+
+        This is distinct from the narrower internal subsets used inside the
+        delivery loop (matching a durable event, or failing in-flight items on
+        error) — do not fold those into this predicate.
+        """
+        return self.state in ("queued", "running", "accepted")
+
 
 @dataclass(frozen=True)
 class DelegationStatus:
