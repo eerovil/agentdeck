@@ -6,7 +6,10 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 from agentdeck.models import Account
-from agentdeck.providers.codex import WRITABLE_ROOTS_CONFIG_OVERRIDE
+from agentdeck.providers.codex import (
+    APPROVALS_REVIEWER_CONFIG_OVERRIDE,
+    WRITABLE_ROOTS_CONFIG_OVERRIDE,
+)
 from agentdeck.providers.codex.appserver import (
     AGENTDECK_DEVELOPER_INSTRUCTIONS,
     CodexAppServer,
@@ -73,6 +76,8 @@ async def test_app_server_enables_live_web_search(tmp_path):
         "sandbox_workspace_write.network_access=true",
         "--config",
         WRITABLE_ROOTS_CONFIG_OVERRIDE,
+        "--config",
+        APPROVALS_REVIEWER_CONFIG_OVERRIDE,
         "--stdio",
     )
     assert spawned["kwargs"]["env"]["CODEX_HOME"] == str(tmp_path)

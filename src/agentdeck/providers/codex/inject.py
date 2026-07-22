@@ -9,6 +9,7 @@ from pathlib import Path
 
 from ...models import Account, InjectResult, Session
 from . import (
+    APPROVALS_REVIEWER_CONFIG_OVERRIDE,
     NETWORK_ACCESS_CONFIG_OVERRIDE,
     WEB_SEARCH_CONFIG_OVERRIDE,
     WRITABLE_ROOTS_CONFIG_OVERRIDE,
@@ -69,6 +70,8 @@ async def inject_session(
             NETWORK_ACCESS_CONFIG_OVERRIDE,
             "--config",
             WRITABLE_ROOTS_CONFIG_OVERRIDE,
+            "--config",
+            APPROVALS_REVIEWER_CONFIG_OVERRIDE,
         ]
         for image in images or []:
             args.extend(("-i", str(image)))
@@ -127,6 +130,8 @@ async def start_session(
             NETWORK_ACCESS_CONFIG_OVERRIDE,
             "--config",
             WRITABLE_ROOTS_CONFIG_OVERRIDE,
+            "--config",
+            APPROVALS_REVIEWER_CONFIG_OVERRIDE,
         ]
         for image in images or []:
             args.extend(("-i", str(image)))

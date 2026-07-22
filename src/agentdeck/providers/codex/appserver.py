@@ -21,6 +21,7 @@ from ...models import (
     PendingInteraction,
 )
 from . import (
+    APPROVALS_REVIEWER_CONFIG_OVERRIDE,
     NETWORK_ACCESS_CONFIG_OVERRIDE,
     WEB_SEARCH_CONFIG_OVERRIDE,
     WRITABLE_ROOTS_CONFIG_OVERRIDE,
@@ -213,6 +214,8 @@ class CodexAppServer:
                     NETWORK_ACCESS_CONFIG_OVERRIDE,
                     "--config",
                     WRITABLE_ROOTS_CONFIG_OVERRIDE,
+                    "--config",
+                    APPROVALS_REVIEWER_CONFIG_OVERRIDE,
                     "--stdio",
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,

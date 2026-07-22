@@ -38,3 +38,15 @@ WRITABLE_ROOTS_CONFIG_OVERRIDE = (
     + ",".join(f'"{root}"' for root in _WRITABLE_ROOTS)
     + "]"
 )
+
+# Have an LLM review approval requests instead of a human for AgentDeck-owned chats.
+# Codex's default `approval_policy = on-request` makes the model raise an approval
+# prompt whenever it wants to escalate out of the workspace-write sandbox; with the
+# default `approvals_reviewer = "user"` (set in the account's config.toml) each of those
+# lands on the human, so delegated/deck-driven chats stall waiting for manual clicks.
+# `auto_review` routes those requests to a reviewer model, letting AgentDeck chats run
+# unattended. NOTE: this lets a model auto-approve commands with no human gate — the
+# dashboard has no auth, and the sandbox already grants the home tree + runtime dir as
+# writable roots, so an auto-approved command can touch every repo and the live account
+# budget. This is a deliberate, process-global default for AgentDeck-launched Codex only.
+APPROVALS_REVIEWER_CONFIG_OVERRIDE = 'approvals_reviewer="auto_review"'
