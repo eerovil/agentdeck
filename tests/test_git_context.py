@@ -405,3 +405,41 @@ async def test_gh_command_retries_without_failed_environment_token(monkeypatch):
     assert (code, output) == (0, "[]")
     assert calls[0] is None
     assert "GH_TOKEN" not in calls[1]
+
+
+def _pull(status: str, *, draft: bool = False):
+    from agentdeck.git_context import PullRequestContext
+
+    return PullRequestContext(
+        repository="o/r",
+        number=1,
+        title="t",
+        url="https://github.com/o/r/pull/1",
+        status=status,
+        draft=draft,
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "is_open", "is_merged", "is_terminal"),
+    [
+        ("open", True, False, False),
+        ("merged", False, True, True),
+        ("closed", False, False, True),
+        # An unexpected status is neither open nor terminal, so it is never
+        # silently cached as done or suppressed as resolved.
+        ("locked", False, False, False),
+    ],
+)
+def test_pull_request_status_predicates(status, is_open, is_merged, is_terminal):
+    pull = _pull(status)
+    assert pull.is_open is is_open
+    assert pull.is_merged is is_merged
+    assert pull.is_terminal is is_terminal
+
+
+def test_terminal_is_not_merely_the_complement_of_open():
+    # closed and merged are both terminal but only one is merged; a draft is
+    # still open (draft-ness is orthogonal to status).
+    assert _pull("closed").is_terminal and not _pull("closed").is_merged
+    assert _pull("open", draft=True).is_open

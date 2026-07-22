@@ -48,10 +48,29 @@ class PullRequestContext:
     number: int
     title: str
     url: str
-    status: str
+    status: str  # "open" | "merged" | "closed"; interpret via the properties below
     draft: bool = False
     head_branch: str | None = None
     base_branch: str | None = None
+
+    @property
+    def is_open(self) -> bool:
+        """The PR is still open (a merged/closed PR is not)."""
+        return self.status == "open"
+
+    @property
+    def is_merged(self) -> bool:
+        """The PR actually merged (a PR closed without merging did not)."""
+        return self.status == "merged"
+
+    @property
+    def is_terminal(self) -> bool:
+        """The PR is resolved — merged or closed — so nothing is left to do.
+
+        Kept an explicit set rather than ``not is_open`` so an unexpected status
+        string is never treated as terminal by default.
+        """
+        return self.status in {"merged", "closed"}
 
     def as_json(self) -> dict:
         return {
@@ -309,7 +328,7 @@ class GitContextResolver:
                 fetched_at, pulls = cached
                 ttl = (
                     self.TERMINAL_TTL_S
-                    if pulls and all(pull.status in {"closed", "merged"} for pull in pulls)
+                    if pulls and all(pull.is_terminal for pull in pulls)
                     else self.OPEN_TTL_S
                 )
                 if now - fetched_at < ttl:
@@ -358,7 +377,7 @@ class GitContextResolver:
                     self.NEGATIVE_TTL_S
                     if pull is None
                     else self.TERMINAL_TTL_S
-                    if pull.status in {"closed", "merged"}
+                    if pull.is_terminal
                     else self.OPEN_TTL_S
                 )
                 if now - fetched_at < ttl:

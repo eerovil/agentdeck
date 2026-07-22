@@ -110,7 +110,7 @@ def _open_pull(context: GitContext | None) -> object | None:
         (
             pull
             for pull in context.pull_requests
-            if pull.status == "open" and not pull.draft
+            if pull.is_open and not pull.draft
         ),
         None,
     )
@@ -211,7 +211,7 @@ def all_pulls_terminal(context: GitContext | None) -> bool:
     """
     if context is None or not context.pull_requests:
         return False
-    return all(pull.status in {"merged", "closed"} for pull in context.pull_requests)
+    return all(pull.is_terminal for pull in context.pull_requests)
 
 
 def has_merged_pr(context: GitContext | None) -> bool:
@@ -223,7 +223,7 @@ def has_merged_pr(context: GitContext | None) -> bool:
     """
     if context is None:
         return False
-    return any(pull.status == "merged" for pull in context.pull_requests)
+    return any(pull.is_merged for pull in context.pull_requests)
 
 
 def needs_llm(session: Session) -> bool:
