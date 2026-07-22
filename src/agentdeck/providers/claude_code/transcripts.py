@@ -15,14 +15,25 @@ import binascii
 import json
 import logging
 import re
-from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 
 from ...images import SUPPORTED_IMAGE_MEDIA_TYPES
 from ...models import TokenTotals, TranscriptEvent
+from ..transcript_reader import (
+    LineParser,
+    TranscriptRead,
+    TranscriptReader,
+    parse_ts,
+    read_line,
+)
+from ..transcript_reader import (
+    transcript_cursor as transcript_cursor,
+)
 
 log = logging.getLogger(__name__)
+
+# Local alias keeps existing private-name call sites unchanged.
+_parse_ts = parse_ts
 
 _MAX_TOOL_SUMMARY = 160
 # Short caps for list-card previews (last_text) and bookkeeping snippets.
@@ -34,23 +45,6 @@ _MAX_RENDERED_TEXT = 200_000
 _MAX_IMAGE_DATA_CHARS = 14 * 1024 * 1024
 _MAX_IMAGE_TOTAL_CHARS = 28 * 1024 * 1024
 _MAX_IMAGES = 4
-
-
-@dataclass
-class TranscriptRead:
-    events: list[TranscriptEvent]
-    byte_offset: int  # resume point for the next incremental read
-    seq: int  # highest seq emitted so far
-    skipped: int  # malformed lines skipped this read
-
-
-def _parse_ts(value: object) -> datetime | None:
-    if not isinstance(value, str):
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
 
 
 def _text_from_content(
@@ -137,12 +131,7 @@ def transcript_image(path: Path, seq: int, image_index: int) -> tuple[str, bytes
     """Decode one bounded image from an exact transcript line."""
     if seq < 1 or image_index < 0:
         return None
-    try:
-        with path.open("rb") as handle:
-            raw = next((line for number, line in enumerate(handle, 1) if number == seq), None)
-        data = json.loads(raw) if raw is not None else None
-    except (OSError, TypeError, ValueError):
-        return None
+    data = read_line(path, seq)
     message = data.get("message") if isinstance(data, dict) else None
     content = message.get("content") if isinstance(message, dict) else None
     images = _image_sources(content)
@@ -272,7 +261,7 @@ def _is_noise_user(obj: dict) -> bool:
     return bool(obj.get("isMeta") or obj.get("isCompactSummary")) or _is_slash_command_line(obj)
 
 
-def _event_from_line(seq: int, data: dict, subagent: str | None = None) -> TranscriptEvent | None:
+def _event_from_line(seq: int, data: dict) -> TranscriptEvent | None:
     ltype = data.get("type")
     if ltype == "queue-operation":
         # A message typed while the agent was busy. Only the "enqueue" carries
@@ -286,7 +275,6 @@ def _event_from_line(seq: int, data: dict, subagent: str | None = None) -> Trans
                 text=content.strip()[:_MAX_RENDERED_TEXT],
                 queued=True,
                 ts=_parse_ts(data.get("timestamp")),
-                subagent=subagent,
             )
         return None
     if ltype not in ("user", "assistant", "system"):
@@ -317,7 +305,6 @@ def _event_from_line(seq: int, data: dict, subagent: str | None = None) -> Trans
         model=model if isinstance(model, str) else None,
         usage=usage if isinstance(usage, dict) else None,
         ts=_parse_ts(data.get("timestamp")),
-        subagent=subagent,
         image_media_types=image_media_types,
     )
 
@@ -328,73 +315,27 @@ def _looks_like_tool_result(content: object) -> bool:
     )
 
 
-def read_events(
-    path: Path, *, byte_offset: int = 0, seq: int = 0, subagent: str | None = None
-) -> TranscriptRead:
+class _ClaudeLineParser(LineParser):
+    def event_from_line(self, seq: int, obj: dict) -> TranscriptEvent | None:
+        return _event_from_line(seq, obj)
+
+    def is_turn_boundary(self, obj: dict) -> bool:
+        # A completed /compact (or other slash command) closes the turn: the
+        # agent is idle afterwards, so the open-turn probe must reset here and a
+        # resumed read must not carry a stale pre-compact open turn.
+        return _is_compact_boundary(obj)
+
+
+_READER = TranscriptReader(_ClaudeLineParser())
+
+
+def read_events(path: Path, *, byte_offset: int = 0, seq: int = 0) -> TranscriptRead:
     """Read new complete lines from ``byte_offset`` onward.
 
     A trailing line without a newline is left unconsumed (offset stops before
     it) so the next read picks it up once fully written.
     """
-    events: list[TranscriptEvent] = []
-    skipped = 0
-    try:
-        with path.open("rb") as f:
-            f.seek(byte_offset)
-            data = f.read()
-    except OSError:
-        return TranscriptRead(events, byte_offset, seq, 0)
-
-    consumed = 0
-    # Only iterate complete lines (those terminated by \n).
-    last_nl = data.rfind(b"\n")
-    if last_nl == -1:
-        return TranscriptRead(events, byte_offset, seq, 0)
-    complete = data[: last_nl + 1]
-    consumed = len(complete)
-    for raw in complete.splitlines():
-        line = raw.strip()
-        if not line:
-            seq += 1
-            continue
-        seq += 1
-        try:
-            obj = json.loads(line)
-        except ValueError:
-            skipped += 1
-            continue
-        if not isinstance(obj, dict):
-            skipped += 1
-            continue
-        ev = _event_from_line(seq, obj, subagent=subagent)
-        if ev is not None:
-            events.append(ev)
-    if skipped:
-        log.debug("%s: skipped %d malformed transcript lines", path.name, skipped)
-    # An enqueued message the agent later processed shows up twice — once as the
-    # queue-operation and once as the real user turn. Keep the real turn (shown
-    # where it was processed) and drop the queued duplicate; queued messages
-    # that were never processed have no real turn and stay.
-    real_user_texts = {e.text for e in events if e.role == "user" and not e.queued and e.text}
-    if real_user_texts:
-        events = [e for e in events if not (e.queued and e.text in real_user_texts)]
-    return TranscriptRead(events, byte_offset + consumed, seq, skipped)
-
-
-def transcript_cursor(path: Path, *, chunk_size: int = 256 * 1024) -> tuple[int, int]:
-    """End cursor with bounded memory, counting only newline-terminated lines."""
-    offset = seq = position = 0
-    try:
-        with path.open("rb") as handle:
-            while chunk := handle.read(chunk_size):
-                seq += chunk.count(b"\n")
-                last_newline = chunk.rfind(b"\n")
-                if last_newline != -1:
-                    offset = position + last_newline + 1
-                position += len(chunk)
-    except OSError:
-        return (0, 0)
-    return (offset, seq)
+    return _READER.read_events(path, byte_offset=byte_offset, seq=seq)
 
 
 def last_event(path: Path, *, tail: int = 65536) -> TranscriptEvent | None:
@@ -402,71 +343,14 @@ def last_event(path: Path, *, tail: int = 65536) -> TranscriptEvent | None:
     to tell whether the agent's turn is still open (last line is a tool call /
     tool result / user prompt → busy) or closed (last line is an assistant text
     reply → waiting for input)."""
-    try:
-        size = path.stat().st_size
-        with path.open("rb") as f:
-            if size > tail:
-                f.seek(size - tail)
-                f.readline()  # discard the partial first line after a mid-file seek
-            data = f.read()
-    except OSError:
-        return None
-    found: TranscriptEvent | None = None
-    for raw in data.splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(obj, dict):
-            continue
-        if _is_compact_boundary(obj):
-            # A completed /compact (or other slash command) closes the turn: the
-            # agent is idle afterwards, not mid-work. Drop whatever tool_result /
-            # prompt preceded it so the open-turn probe reads as waiting.
-            found = None
-            continue
-        ev = _event_from_line(0, obj)
-        if ev is not None:
-            found = ev
-    return found
+    return _READER.last_event(path, tail=tail)
 
 
 def recent_conversation(
     path: Path, *, limit: int = 4, tail: int = 1024 * 1024
 ) -> list[TranscriptEvent]:
     """Recent conversational messages from a bounded complete-line file tail."""
-    try:
-        size = path.stat().st_size
-        with path.open("rb") as handle:
-            if size > tail:
-                handle.seek(size - tail)
-                handle.readline()
-            data = handle.read(tail)
-    except OSError:
-        return []
-    events = []
-    for raw in data.splitlines():
-        try:
-            obj = json.loads(raw)
-        except ValueError:
-            continue
-        if not isinstance(obj, dict):
-            continue
-        event = _event_from_line(0, obj)
-        if event is not None and event.role in ("user", "assistant") and event.text:
-            events.append(event)
-    real_user_texts = {
-        event.text for event in events if event.role == "user" and not event.queued
-    }
-    events = [
-        event
-        for event in events
-        if not (event.queued and event.text in real_user_texts)
-    ]
-    return events[-limit:]
+    return _READER.recent_conversation(path, limit=limit, tail=tail)
 
 
 def last_context_tokens(path: Path, *, tail: int = 65536) -> int | None:
