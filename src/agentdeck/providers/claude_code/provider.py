@@ -217,7 +217,10 @@ class ClaudeCodeProvider(SessionProvider):
     # --- deck-owned workers (optional; runtime-gated) ------------------
 
     async def start_account(self, account: Account, state) -> None:
-        client = ClaudeWorkerClient(account, on_change=lambda: state.bus.publish("sessions"))
+        client = ClaudeWorkerClient(
+            account,
+            on_change=lambda: self._runtime_changed(account, state),
+        )
         self._workers[account.key] = client
         self._states[account.key] = state
         await client.probe()
@@ -229,7 +232,7 @@ class ClaudeCodeProvider(SessionProvider):
         while True:
             await asyncio.sleep(1.0)
             try:
-                await client.refresh()  # publishes "sessions" itself on change
+                await client.refresh()  # callback reprojects cached Sessions on change
             except Exception as exc:  # noqa: BLE001 -- reconnect on the next poll
                 log.debug("claude worker refresh failed for %s: %s", account.key, exc)
 
@@ -246,6 +249,11 @@ class ClaudeCodeProvider(SessionProvider):
     def can_start_session(self, account: Account) -> bool:
         client = self._workers.get(account.key)
         return bool(client and client.available)
+
+    def _runtime_changed(self, account: Account, state) -> None:
+        sessions = state.sessions_for_account(account.key)
+        if self.sweep_liveness(account, sessions):
+            state.bus.publish("sessions")
 
     def _project_owned_worker(
         self,

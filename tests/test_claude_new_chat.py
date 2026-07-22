@@ -14,6 +14,7 @@ from agentdeck.providers.claude_code.provider import ClaudeCodeProvider
 from agentdeck.providers.claude_code.worker import DeliverResult
 from agentdeck.providers.claude_code.worker_client import ClaudeWorkerClient
 from agentdeck.runtime import create_runtime_app
+from agentdeck.state import AppState
 
 
 def _account() -> Account:
@@ -539,3 +540,50 @@ async def test_control_actions_suppressed_when_runtime_unreachable():
     fake.available = True  # reconnect re-grants control
     provider.sweep_liveness(_account(), [session])
     assert Capability.INJECT in session.capabilities
+
+
+def test_runtime_availability_change_reprojects_cached_capabilities():
+    provider = ClaudeCodeProvider()
+    fake = _FakeWorkerClient()
+    account = _account()
+    provider._workers[account.key] = fake
+    state = AppState()
+    session = Session(
+        key=f"{account.key}:sid-1",
+        account_key=account.key,
+        session_id="sid-1",
+        status=SessionStatus.LIVE,
+        thinking=True,
+        capabilities=frozenset(
+            {
+                Capability.TRANSCRIPT,
+                Capability.INJECT,
+                Capability.STEER,
+                Capability.INTERRUPT,
+            }
+        ),
+    )
+    state.sessions[session.key] = session
+
+    with state.bus.subscribe("sessions") as events:
+        fake.available = False
+        provider._runtime_changed(account, state)
+
+        assert session.capabilities == frozenset({Capability.TRANSCRIPT})
+        assert events.get_nowait() == ("sessions", None)
+
+        provider._runtime_changed(account, state)
+        assert events.get_nowait() is None
+
+        fake.available = True
+        provider._runtime_changed(account, state)
+
+        assert session.capabilities == frozenset(
+            {
+                Capability.TRANSCRIPT,
+                Capability.INJECT,
+                Capability.STEER,
+                Capability.INTERRUPT,
+            }
+        )
+        assert events.get_nowait() == ("sessions", None)
