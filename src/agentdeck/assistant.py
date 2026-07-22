@@ -604,7 +604,7 @@ class AssistantService:
         # would otherwise revert it every refresh. This holds whether or not
         # Deckhand also raised a waiting card; drop that card so the panel clears
         # (and _apply_handled keeps the next refresh from resurfacing it).
-        if session is not None and session.question:
+        if session is not None and session.is_waiting:
             msig = self._message_signature(session)
             self._waiting_done[session_key] = msig
             if self.state.db:

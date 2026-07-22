@@ -148,7 +148,7 @@ def structured_trigger(
         return AssistantInsight(key, KIND_WAITING, headline, _head(detail, _MAX_TASK_CHARS))
 
     # 2. The agent ended its last reply with a question directed at you.
-    if session.question:
+    if session.is_waiting:
         return AssistantInsight(
             key, KIND_WAITING, "Asked you a question", _head(session.question, _MAX_TASK_CHARS)
         )

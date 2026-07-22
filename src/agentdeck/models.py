@@ -169,6 +169,11 @@ class Session:
     def display_title(self) -> str:
         return self.generated_title or self.title or self.session_id[:8]
 
+    @property
+    def is_waiting(self) -> bool:
+        """Waiting Session (CONTEXT.md): paused on a question directed at the operator."""
+        return bool(self.question)
+
 
 @dataclass
 class UsageSnapshot:

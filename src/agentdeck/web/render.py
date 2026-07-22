@@ -256,7 +256,7 @@ def render_session_done(templates: Jinja2Templates, assistant, session_key: str)
     return templates.get_template("partials/session_done_button.html").render(
         assistant_insights=assistant_insights_for_session(assistant, session_key),
         session_handled=assistant.is_handled(session_key),
-        session_waiting=session is not None and bool(session.question),
+        session_waiting=session is not None and session.is_waiting,
         session_key=session_key,
     )
 
@@ -345,7 +345,7 @@ def deckhand_pill(session, status_map: dict | None) -> dict | None:
     dh = (status_map or {}).get(session.key)
     if dh and dh["state"] == "done" and not session.thinking:
         return {"state": "done", "label": "done", "title": "Deckhand: " + dh["headline"]}
-    if session.question:
+    if session.is_waiting:
         return {
             "state": "waiting",
             "label": "waiting",
