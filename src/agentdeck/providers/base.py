@@ -71,8 +71,12 @@ class SessionProvider(ABC):
 
     # --- optional hooks (non-abstract) ---------------------------------
 
-    def sweep_liveness(self, account: Account, sessions: list[Session]) -> list[Session]:
-        """Cheap pid-liveness recheck; return only the sessions that changed."""
+    def sweep_liveness(
+        self, account: Account, sessions: list[Session], state: AppState
+    ) -> list[Session]:
+        """Cheap pid-liveness recheck. Apply the refresh through
+        ``state.apply_session_changes`` so mutation and its ``"sessions"``
+        notification stay one transition; returns the sessions that changed."""
         return []
 
     async def transcript_cursor(self, account: Account, session: Session) -> tuple[int, int]:

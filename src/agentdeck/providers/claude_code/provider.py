@@ -17,6 +17,7 @@ import logging
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import httpx
 
@@ -43,6 +44,9 @@ from . import registry as registry_mod
 from . import transcripts as transcripts_mod
 from .usage import UsagePoller, fetch_usage_once
 from .worker_client import ClaudeWorkerClient
+
+if TYPE_CHECKING:
+    from ...state import AppState
 
 # Max events rendered on a detail page; older ones fetched via "load earlier".
 DETAIL_WINDOW = 400
@@ -260,8 +264,9 @@ class ClaudeCodeProvider(SessionProvider):
 
     def _runtime_changed(self, account: Account, state) -> None:
         sessions = state.sessions_for_account(account.key)
-        if self.sweep_liveness(account, sessions):
-            state.bus.publish("sessions")
+        # sweep_liveness applies the refresh and publishes once through AppState
+        # if any owned worker's projection changed.
+        self.sweep_liveness(account, sessions, state)
 
     def _project_owned_worker(
         self,
@@ -715,18 +720,20 @@ class ClaudeCodeProvider(SessionProvider):
             )
         return sessions
 
-    def sweep_liveness(self, account: Account, sessions: list[Session]) -> list[Session]:
+    def sweep_liveness(
+        self, account: Account, sessions: list[Session], state: AppState
+    ) -> list[Session]:
         """Cheap recheck (~every 10s): flip LIVE↔IDLE and refresh the activity
         (busy) state from the open turn, so both update between full scans."""
         entries = {e.session_id: e for e in registry_mod.read_registry(account.root)}
-        changed: list[Session] = []
         workers = self._workers.get(account.key)
-        for s in sessions:
+
+        def project(s: Session) -> None:
             # Subagents have no process-registry ground truth; the sweep would
             # force them IDLE and flicker their state. Leave them to the full
             # scan (which derives liveness from transcript mtime).
             if s.parent_session_key is not None:
-                continue
+                return
             entry = entries.get(s.session_id)
             owned = workers is not None and workers.owns(s.session_id)
             live_now = workers.live(s.session_id) if owned else bool(
@@ -770,21 +777,6 @@ class ClaudeCodeProvider(SessionProvider):
             deep_link_now = (
                 registry_mod.session_deep_link(entry.pid) if (entry and live_now) else None
             )
-            before = (
-                s.status,
-                s.thinking,
-                s.activity,
-                s.last_prompt,
-                s.last_text,
-                s.last_role,
-                s.question,
-                s.context_tokens,
-                s.pid,
-                s.deep_link,
-                s.show_when_idle,
-                s.capabilities,
-                s.kind,
-            )
             s.status = status_now
             s.thinking = thinking_now
             s.activity = activity_now
@@ -813,24 +805,8 @@ class ClaudeCodeProvider(SessionProvider):
                 transcript_path=tp,
                 last_activity=_mtime(tp) if tp is not None else s.last_activity,
             )
-            after = (
-                s.status,
-                s.thinking,
-                s.activity,
-                s.last_prompt,
-                s.last_text,
-                s.last_role,
-                s.question,
-                s.context_tokens,
-                s.pid,
-                s.deep_link,
-                s.show_when_idle,
-                s.capabilities,
-                s.kind,
-            )
-            if after != before:
-                changed.append(s)
-        return changed
+
+        return state.apply_session_changes(sessions, project)
 
     # --- usage ---------------------------------------------------------
 

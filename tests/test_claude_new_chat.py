@@ -291,7 +291,7 @@ async def test_owned_worker_liveness_stays_visible_without_cli_registry():
         status=SessionStatus.IDLE,
     )
 
-    changed = provider.sweep_liveness(_account(), [session])
+    changed = provider.sweep_liveness(_account(), [session], AppState())
 
     assert changed == [session]
     assert session.status is SessionStatus.LIVE
@@ -299,7 +299,7 @@ async def test_owned_worker_liveness_stays_visible_without_cli_registry():
     assert session.show_when_idle is True
 
     fake._active = False
-    changed = provider.sweep_liveness(_account(), [session])
+    changed = provider.sweep_liveness(_account(), [session], AppState())
     assert changed == [session]
     assert session.status is SessionStatus.LIVE
     assert session.thinking is False
@@ -350,7 +350,7 @@ async def test_owned_worker_projection_matches_scan_and_sweep(tmp_path):
                 Capability.INTERRUPT,
             }
         )
-        provider.sweep_liveness(account, [session])
+        provider.sweep_liveness(account, [session], AppState())
         sweep_fields = (
             session.status,
             session.thinking,
@@ -385,7 +385,7 @@ async def test_owned_worker_projection_is_withdrawn_when_ownership_disappears():
     )
 
     fake._owned.clear()
-    changed = provider.sweep_liveness(_account(), [session])
+    changed = provider.sweep_liveness(_account(), [session], AppState())
 
     assert changed == [session]
     assert session.status is SessionStatus.IDLE
@@ -540,12 +540,12 @@ async def test_control_actions_suppressed_when_runtime_unreachable():
     }
     assert provider.pending_interaction(_account(), session) is None
 
-    provider.sweep_liveness(_account(), [session])
+    provider.sweep_liveness(_account(), [session], AppState())
     assert Capability.INTERACT in session.capabilities
     assert provider.pending_interaction(_account(), session) is not None
 
     fake.available = False  # runtime unreachable
-    provider.sweep_liveness(_account(), [session])
+    provider.sweep_liveness(_account(), [session], AppState())
     assert Capability.INJECT not in session.capabilities
     assert Capability.STEER not in session.capabilities
     assert Capability.INTERRUPT not in session.capabilities
@@ -555,7 +555,7 @@ async def test_control_actions_suppressed_when_runtime_unreachable():
     assert provider.pending_interaction(_account(), session) is None
 
     fake.available = True  # reconnect re-grants control
-    provider.sweep_liveness(_account(), [session])
+    provider.sweep_liveness(_account(), [session], AppState())
     assert Capability.INJECT in session.capabilities
     assert Capability.INTERACT in session.capabilities
     assert provider.pending_interaction(_account(), session) is not None

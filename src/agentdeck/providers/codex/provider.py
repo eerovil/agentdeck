@@ -6,6 +6,7 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ...models import (
     Account,
@@ -33,6 +34,9 @@ from .inject import (
 )
 from .runtime_client import CodexRuntimeClient
 from .usage import UsagePoller, fetch_usage_once
+
+if TYPE_CHECKING:
+    from ...state import AppState
 
 DETAIL_WINDOW = 400
 MAX_SESSIONS = 200
@@ -135,26 +139,29 @@ class CodexProvider(SessionProvider):
                 was_ok = self._refresh_ok.get(account.key, True)
                 self._refresh_ok[account.key] = False
                 if was_ok:
+                    # Set the flag first so the reprojection withdraws controls,
+                    # then let AppState publish once if any session changed.
                     self._reproject_runtime_sessions(account, state, client)
-                    state.bus.publish("sessions")
                 log.debug("Codex runtime refresh failed for %s: %s", account.key, exc)
             else:
                 was_ok = self._refresh_ok.get(account.key, True)
                 self._refresh_ok[account.key] = True
                 if not was_ok:
                     self._reproject_runtime_sessions(account, state, client)
-                    state.bus.publish("sessions")
 
     def _reproject_runtime_sessions(
         self, account: Account, state, client: CodexRuntimeClient
-    ) -> None:
-        for session in state.sessions.values():
-            if (
-                session.account_key == account.key
-                and session.parent_session_key is None
-                and (client.owns(session.session_id) or session.kind == "appServer")
-            ):
-                self._project_runtime_session(account, session)
+    ) -> list[Session]:
+        targets = [
+            session
+            for session in state.sessions.values()
+            if session.account_key == account.key
+            and session.parent_session_key is None
+            and (client.owns(session.session_id) or session.kind == "appServer")
+        ]
+        return state.apply_session_changes(
+            targets, lambda session: self._project_runtime_session(account, session)
+        )
 
     async def stop_account(self, account: Account) -> None:
         task = self._runtime_tasks.pop(account.key, None)
@@ -169,9 +176,10 @@ class CodexProvider(SessionProvider):
 
     def _runtime_changed(self, account: Account, state, thread_id: str) -> None:
         session = state.sessions.get(f"{account.key}:{thread_id}")
-        if session is not None:
-            self._project_runtime_session(account, session)
-        state.bus.publish("sessions")
+        targets = [session] if session is not None else []
+        state.apply_session_changes(
+            targets, lambda session: self._project_runtime_session(account, session)
+        )
 
     def _project_runtime_session(
         self,
@@ -558,49 +566,20 @@ class CodexProvider(SessionProvider):
             state.set_delegation_parents(account.key, delegation_parent)
         return sessions
 
-    def sweep_liveness(self, account: Account, sessions: list[Session]) -> list[Session]:
+    def sweep_liveness(
+        self, account: Account, sessions: list[Session], state: AppState
+    ) -> list[Session]:
         """Refresh recency-derived status and mtime-cached card metadata."""
-        changed = []
-        for session in sessions:
+
+        def project(session: Session) -> None:
             # Subagent child sessions: _transcript_path rejects is_subagent
             # rollouts, so the sweep can't refresh them. Leave their state to the
             # full scan, which builds them from the spawned rollout directly.
             if session.parent_session_key is not None:
-                continue
-            before = (
-                session.status,
-                session.thinking,
-                session.activity,
-                session.last_activity,
-                session.last_prompt,
-                session.last_text,
-                session.last_role,
-                session.model,
-                session.tokens,
-                session.context_tokens,
-                session.capabilities,
-                session.question,
-                session.kind,
-            )
+                return
             self._project_runtime_session(account, session)
-            after = (
-                session.status,
-                session.thinking,
-                session.activity,
-                session.last_activity,
-                session.last_prompt,
-                session.last_text,
-                session.last_role,
-                session.model,
-                session.tokens,
-                session.context_tokens,
-                session.capabilities,
-                session.question,
-                session.kind,
-            )
-            if after != before:
-                changed.append(session)
-        return changed
+
+        return state.apply_session_changes(sessions, project)
 
     async def fetch_usage(self, account: Account) -> UsageSnapshot | None:
         try:

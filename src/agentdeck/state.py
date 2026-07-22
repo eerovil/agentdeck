@@ -8,7 +8,7 @@ Mutations publish coarse-grained topics to the EventBus:
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from types import MappingProxyType
@@ -179,6 +179,32 @@ class AppState:
         if session is not None and not session.is_delegated:
             self.sessions[session_key] = replace(session, is_delegated=True)
         self.bus.publish("sessions")
+
+    def apply_session_changes(
+        self,
+        sessions: Iterable[Session],
+        project: Callable[[Session], object],
+    ) -> list[Session]:
+        """Own the live-overlay transition: mutate, detect change, publish once.
+
+        The liveness sweep and Persistent Runtime callbacks refresh fields on
+        the ``Session`` objects the read model already holds. ``project``
+        applies that in-place refresh to each session; a session counts as
+        changed only when it differs from a whole-object pre-image, so no
+        per-field list can fall out of sync with what ``project`` writes.
+        ``"sessions"`` is published exactly once for the batch, and only when
+        something changed. Returns the changed sessions (same identities) so a
+        sweep can still report what it touched.
+        """
+        changed: list[Session] = []
+        for session in sessions:
+            before = replace(session)
+            project(session)
+            if session != before:
+                changed.append(session)
+        if changed:
+            self.bus.publish("sessions")
+        return changed
 
     def _sort_key(self, s: Session) -> tuple[int, int, float]:
         status_order = _STATUS_ORDER.get(s.status, 9)

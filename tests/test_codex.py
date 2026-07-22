@@ -19,6 +19,7 @@ from agentdeck.providers import PROVIDERS
 from agentdeck.providers.codex import provider as provider_mod
 from agentdeck.providers.codex import transcripts
 from agentdeck.providers.codex.provider import CodexProvider
+from agentdeck.state import AppState
 
 
 def _line(type_: str, payload: dict, timestamp: str = "2026-07-13T10:00:00Z") -> dict:
@@ -485,7 +486,7 @@ async def test_running_spawned_agents_are_counted_on_parent_session(tmp_path):
     }
     # A cheap liveness sweep only reads the quiet parent rollout; it must not
     # invent provider-local activity for work represented by the child.
-    assert provider.sweep_liveness(_account(tmp_path), [session]) == []
+    assert provider.sweep_liveness(_account(tmp_path), [session], AppState()) == []
     assert session.thinking is False
 
 
@@ -1059,7 +1060,7 @@ async def test_codex_sweep_refreshes_status_and_tail_metadata(tmp_path):
 
     with path.open("a") as handle:
         handle.write(json.dumps(_message("user", "One more change")) + "\n")
-    changed = provider.sweep_liveness(account, [session])
+    changed = provider.sweep_liveness(account, [session], AppState())
     assert changed == [session]
     assert session.status == SessionStatus.LIVE
     assert session.thinking is True
@@ -1096,7 +1097,7 @@ async def test_owned_runtime_projection_matches_scan_callback_and_sweep(tmp_path
     session.question = "stale question"
     session.kind = None
     session.capabilities = frozenset()
-    state = MagicMock()
+    state = AppState()
     state.sessions = {session.key: session}
     provider._runtime_changed(account, state, sid)
     callback_fields = (
@@ -1114,7 +1115,7 @@ async def test_owned_runtime_projection_matches_scan_callback_and_sweep(tmp_path
     session.question = "stale question"
     session.kind = None
     session.capabilities = frozenset()
-    provider.sweep_liveness(account, [session])
+    provider.sweep_liveness(account, [session], state)
     sweep_fields = (
         session.status,
         session.thinking,
@@ -1179,7 +1180,7 @@ def test_watch_health_edges_reproject_stored_runtime_sessions(tmp_path):
             }
         ),
     )
-    state = MagicMock()
+    state = AppState()
     state.sessions = {session.key: session}
     assert provider.pending_interaction(account, session) is None
 
@@ -1213,7 +1214,7 @@ async def test_runtime_projection_is_withdrawn_when_ownership_disappears(tmp_pat
 
     client.owns.return_value = False
     session.question = "stale runtime question"
-    state = MagicMock()
+    state = AppState()
     state.sessions = {session.key: session}
     provider._runtime_changed(account, state, sid)
 
@@ -1225,7 +1226,7 @@ async def test_runtime_projection_is_withdrawn_when_ownership_disappears(tmp_pat
 
     session.kind = "appServer"
     session.capabilities = frozenset({Capability.TRANSCRIPT, Capability.INJECT})
-    provider.sweep_liveness(account, [session])
+    provider.sweep_liveness(account, [session], state)
     assert session.kind is None
     assert session.capabilities == frozenset({Capability.TRANSCRIPT})
 
@@ -1255,7 +1256,7 @@ def test_transcriptless_runtime_projection_is_withdrawn_during_sweep(tmp_path):
         ),
     )
 
-    changed = provider.sweep_liveness(account, [session])
+    changed = provider.sweep_liveness(account, [session], AppState())
 
     assert changed == [session]
     assert session.status is SessionStatus.IDLE

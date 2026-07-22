@@ -57,14 +57,10 @@ class Collector:
             await asyncio.sleep(interval)
             try:
                 current = self.state.sessions_for_account(account.key)
-                changed = provider.sweep_liveness(account, current)
-                if changed:
-                    # sweep mutates the state's own objects in place, so state
-                    # already reflects the change — just announce it. (Calling
-                    # update_session here would early-return on the same-identity
-                    # object and never publish, so the list would only refresh on
-                    # the slower full scan.)
-                    self.state.bus.publish("sessions")
+                # The sweep refreshes state's own session objects and publishes
+                # "sessions" once through AppState if anything changed, so the
+                # mutation and its notification stay a single transition.
+                provider.sweep_liveness(account, current, self.state)
             except Exception as exc:  # noqa: BLE001
                 log.debug("liveness sweep failed for %s: %s", account.key, exc)
 
