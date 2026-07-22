@@ -120,6 +120,7 @@ class CodexProvider(SessionProvider):
         self._clients[account.key] = client
         self._states[account.key] = state
         await client.start()
+        self._refresh_ok[account.key] = True
         self._runtime_tasks[account.key] = asyncio.create_task(
             self._watch_runtime(account, state, client),
             name=f"codex-runtime:{account.key}",
@@ -131,7 +132,29 @@ class CodexProvider(SessionProvider):
             try:
                 await client.refresh()
             except Exception as exc:  # noqa: BLE001 -- reconnect on the next poll
+                was_ok = self._refresh_ok.get(account.key, True)
+                self._refresh_ok[account.key] = False
+                if was_ok:
+                    self._reproject_runtime_sessions(account, state, client)
+                    state.bus.publish("sessions")
                 log.debug("Codex runtime refresh failed for %s: %s", account.key, exc)
+            else:
+                was_ok = self._refresh_ok.get(account.key, True)
+                self._refresh_ok[account.key] = True
+                if not was_ok:
+                    self._reproject_runtime_sessions(account, state, client)
+                    state.bus.publish("sessions")
+
+    def _reproject_runtime_sessions(
+        self, account: Account, state, client: CodexRuntimeClient
+    ) -> None:
+        for session in state.sessions.values():
+            if (
+                session.account_key == account.key
+                and session.parent_session_key is None
+                and (client.owns(session.session_id) or session.kind == "appServer")
+            ):
+                self._project_runtime_session(account, session)
 
     async def stop_account(self, account: Account) -> None:
         task = self._runtime_tasks.pop(account.key, None)
@@ -140,19 +163,56 @@ class CodexProvider(SessionProvider):
             await asyncio.gather(task, return_exceptions=True)
         client = self._clients.pop(account.key, None)
         self._states.pop(account.key, None)
+        self._refresh_ok.pop(account.key, None)
         if client is not None:
             await client.stop()
 
     def _runtime_changed(self, account: Account, state, thread_id: str) -> None:
         session = state.sessions.get(f"{account.key}:{thread_id}")
+        if session is not None:
+            self._project_runtime_session(account, session)
+        state.bus.publish("sessions")
+
+    def _project_runtime_session(
+        self,
+        account: Account,
+        session: Session,
+        path: Path | None = None,
+    ) -> bool:
+        """Project transcript baseline plus any owned runtime overlay."""
+        path = path or self._transcript_path(account, session)
+        if path is not None:
+            last_activity = _mtime(path)
+            status, thinking, activity = self._derived_state(path, last_activity)
+            meta = self._cached_meta(path)
+            session.status = status
+            session.thinking = thinking
+            session.activity = activity
+            session.last_activity = last_activity
+            session.last_prompt = meta.last_prompt
+            session.last_text = meta.last_text
+            session.last_role = meta.last_role
+            session.model = meta.model
+            session.tokens = meta.tokens
+            session.context_tokens = meta.context_tokens
+            session.capabilities = self._capabilities(
+                account, session.session_id, path, meta, status
+            )
+            session.kind = _display_kind(meta.kind)
+            last_event = self._cached_last_event(path)
+        else:
+            session.status = SessionStatus.IDLE
+            session.thinking = False
+            session.activity = None
+            session.capabilities = frozenset()
+            session.kind = None
+            last_event = None
+        session.question = None
         client = self._clients.get(account.key)
-        if session is None or client is None or not client.owns(thread_id):
-            state.bus.publish("sessions")
-            return
-        active = client.active_turn(thread_id) is not None
-        interaction = client.interaction(thread_id)
-        path = self._transcript_path(account, session)
-        last_event = self._cached_last_event(path) if path is not None else None
+        if client is None or not client.owns(session.session_id):
+            return False
+        active = client.active_turn(session.session_id) is not None
+        interaction = client.interaction(session.session_id)
         session.status = SessionStatus.LIVE if active else SessionStatus.IDLE
         session.thinking = active and interaction is None
         session.activity = (
@@ -166,8 +226,8 @@ class CodexProvider(SessionProvider):
         )
         session.question = self._interaction_summary(interaction)
         session.kind = "appServer"
-        session.capabilities = self._runtime_capabilities(account, thread_id)
-        state.bus.publish("sessions")
+        session.capabilities = self._runtime_capabilities(account, session.session_id)
+        return True
 
     @staticmethod
     def _interaction_summary(interaction: PendingInteraction | None) -> str | None:
@@ -180,7 +240,11 @@ class CodexProvider(SessionProvider):
     def _runtime_capabilities(self, account: Account, thread_id: str) -> frozenset[Capability]:
         client = self._clients.get(account.key)
         capabilities = {Capability.TRANSCRIPT}
-        if client is None or not client.owns(thread_id):
+        if (
+            client is None
+            or not self._refresh_ok.get(account.key, True)
+            or not client.owns(thread_id)
+        ):
             return frozenset(capabilities)
         active = client.active_turn(thread_id) is not None
         capabilities.add(Capability.INJECT)
@@ -420,62 +484,40 @@ class CodexProvider(SessionProvider):
             current_paths[(account.key, session_id)] = path
             last_activity = _mtime(path)
             status, thinking, activity = self._derived_state(path, last_activity)
-            last_event = self._cached_last_event(path)
-            client = self._clients.get(account.key)
-            interaction = None
-            if client is not None and client.owns(session_id):
-                active = client.active_turn(session_id) is not None
-                interaction = client.interaction(session_id)
-                status = SessionStatus.LIVE if active else SessionStatus.IDLE
-                thinking = active and interaction is None
-                activity = (
-                    "Waiting for you"
-                    if interaction
-                    else (
-                        detailed_activity_label("Using tools", last_event)
-                        if active and last_event is not None and last_event.tool_name
-                        else ("Working" if active else None)
-                    )
-                )
-            sessions.append(
-                Session(
-                    key=f"{account.key}:{session_id}",
-                    account_key=account.key,
-                    session_id=session_id,
-                    status=status,
-                    thinking=thinking,
-                    activity=activity,
-                    question=self._interaction_summary(interaction),
-                    cwd=Path(meta.cwd) if meta.cwd else None,
-                    title=meta.title,
-                    initial_prompt=meta.first_prompt,
-                    last_prompt=meta.last_prompt,
-                    last_text=meta.last_text,
-                    last_role=meta.last_role,
-                    model=meta.model,
-                    kind=(
-                        "appServer"
-                        if client is not None and client.owns(session_id)
-                        else _display_kind(meta.kind)
-                    ),
-                    worker_type="you",
-                    is_delegated=(
-                        meta.kind == "exec"
-                        or f"{account.key}:{session_id}" in delegated_session_keys
-                    ),
-                    # An AgentDeck-delegated session nests under the chat that
-                    # delegated it (same treatment as a spawned subagent).
-                    parent_session_key=delegation_parent.get(
-                        f"{account.key}:{session_id}"
-                    ),
-                    started_at=meta.started_at,
-                    last_activity=last_activity,
-                    tokens=meta.tokens,
-                    context_tokens=meta.context_tokens,
-                    show_when_idle=True,
-                    capabilities=self._capabilities(account, session_id, path, meta, status),
-                )
+            session = Session(
+                key=f"{account.key}:{session_id}",
+                account_key=account.key,
+                session_id=session_id,
+                status=status,
+                thinking=thinking,
+                activity=activity,
+                cwd=Path(meta.cwd) if meta.cwd else None,
+                title=meta.title,
+                initial_prompt=meta.first_prompt,
+                last_prompt=meta.last_prompt,
+                last_text=meta.last_text,
+                last_role=meta.last_role,
+                model=meta.model,
+                kind=_display_kind(meta.kind),
+                worker_type="you",
+                is_delegated=(
+                    meta.kind == "exec"
+                    or f"{account.key}:{session_id}" in delegated_session_keys
+                ),
+                # An AgentDeck-delegated session nests under the chat that
+                # delegated it (same treatment as a spawned subagent).
+                parent_session_key=delegation_parent.get(
+                    f"{account.key}:{session_id}"
+                ),
+                started_at=meta.started_at,
+                last_activity=last_activity,
+                tokens=meta.tokens,
+                context_tokens=meta.context_tokens,
+                show_when_idle=True,
+                capabilities=self._capabilities(account, session_id, path, meta, status),
             )
+            self._project_runtime_session(account, session, path)
+            sessions.append(session)
         for session in sessions:
             agents = subagents.get(session.session_id, [])
             turn_started = turn_starts.get(session.session_id)
@@ -513,44 +555,7 @@ class CodexProvider(SessionProvider):
             # full scan, which builds them from the spawned rollout directly.
             if session.parent_session_key is not None:
                 continue
-            path = self._transcript_path(account, session)
-            if path is None:
-                continue
-            last_activity = _mtime(path)
-            status, thinking, activity = self._derived_state(path, last_activity)
-            meta = self._cached_meta(path)
-            last_event = self._cached_last_event(path)
-            client = self._clients.get(account.key)
-            interaction = None
-            if client is not None and client.owns(session.session_id):
-                active = client.active_turn(session.session_id) is not None
-                interaction = client.interaction(session.session_id)
-                status = SessionStatus.LIVE if active else SessionStatus.IDLE
-                thinking = active and interaction is None
-                activity = (
-                    "Waiting for you"
-                    if interaction
-                    else (
-                        detailed_activity_label("Using tools", last_event)
-                        if active and last_event is not None and last_event.tool_name
-                        else ("Working" if active else None)
-                    )
-                )
-            values = (
-                status,
-                thinking,
-                activity,
-                last_activity,
-                meta.last_prompt,
-                meta.last_text,
-                meta.last_role,
-                meta.model,
-                meta.tokens,
-                meta.context_tokens,
-                self._capabilities(account, session.session_id, path, meta, status),
-                self._interaction_summary(interaction),
-            )
-            current = (
+            before = (
                 session.status,
                 session.thinking,
                 session.activity,
@@ -563,10 +568,10 @@ class CodexProvider(SessionProvider):
                 session.context_tokens,
                 session.capabilities,
                 session.question,
+                session.kind,
             )
-            if values == current:
-                continue
-            (
+            self._project_runtime_session(account, session)
+            after = (
                 session.status,
                 session.thinking,
                 session.activity,
@@ -579,8 +584,10 @@ class CodexProvider(SessionProvider):
                 session.context_tokens,
                 session.capabilities,
                 session.question,
-            ) = values
-            changed.append(session)
+                session.kind,
+            )
+            if after != before:
+                changed.append(session)
         return changed
 
     async def fetch_usage(self, account: Account) -> UsageSnapshot | None:

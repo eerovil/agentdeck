@@ -1061,6 +1061,193 @@ async def test_codex_sweep_refreshes_status_and_tail_metadata(tmp_path):
     assert session.last_role == "user"
 
 
+async def test_owned_runtime_projection_matches_scan_callback_and_sweep(tmp_path):
+    sid = "019f5b2b-c830-7922-a1ce-8c9c69526c06"
+    _rollout(tmp_path, sid)
+    provider = CodexProvider()
+    account = _account(tmp_path)
+    client = MagicMock()
+    client.refresh = AsyncMock()
+    client.owns.return_value = True
+    client.active_turn.return_value = "turn-1"
+    client.interaction.return_value = None
+    provider._clients[account.key] = client
+
+    (session,) = await provider.scan_sessions(account)
+    projected_fields = (
+        session.status,
+        session.thinking,
+        session.activity,
+        session.question,
+        session.kind,
+        session.capabilities,
+    )
+
+    session.status = SessionStatus.IDLE
+    session.thinking = False
+    session.activity = None
+    session.question = "stale question"
+    session.kind = None
+    session.capabilities = frozenset()
+    state = MagicMock()
+    state.sessions = {session.key: session}
+    provider._runtime_changed(account, state, sid)
+    callback_fields = (
+        session.status,
+        session.thinking,
+        session.activity,
+        session.question,
+        session.kind,
+        session.capabilities,
+    )
+
+    session.status = SessionStatus.IDLE
+    session.thinking = False
+    session.activity = None
+    session.question = "stale question"
+    session.kind = None
+    session.capabilities = frozenset()
+    provider.sweep_liveness(account, [session])
+    sweep_fields = (
+        session.status,
+        session.thinking,
+        session.activity,
+        session.question,
+        session.kind,
+        session.capabilities,
+    )
+
+    assert projected_fields == callback_fields == sweep_fields
+
+
+async def test_owned_runtime_projection_suppresses_controls_during_outage(tmp_path):
+    sid = "019f5b2b-c830-7922-a1ce-8c9c69526c06"
+    _rollout(tmp_path, sid)
+    provider = CodexProvider()
+    account = _account(tmp_path)
+    client = MagicMock()
+    client.refresh = AsyncMock(side_effect=OSError("runtime unavailable"))
+    client.owns.return_value = True
+    client.active_turn.return_value = "turn-1"
+    client.interaction.return_value = None
+    provider._clients[account.key] = client
+
+    (unavailable,) = await provider.scan_sessions(account)
+    assert unavailable.capabilities == frozenset({Capability.TRANSCRIPT})
+
+    client.refresh = AsyncMock()
+    (recovered,) = await provider.scan_sessions(account)
+    assert Capability.INJECT in recovered.capabilities
+    assert Capability.STEER in recovered.capabilities
+    assert Capability.INTERRUPT in recovered.capabilities
+
+
+def test_watch_health_edges_reproject_stored_runtime_sessions(tmp_path):
+    provider = CodexProvider()
+    account = _account(tmp_path)
+    client = MagicMock()
+    client.owns.return_value = True
+    client.active_turn.return_value = "turn-1"
+    client.interaction.return_value = None
+    provider._clients[account.key] = client
+    session = Session(
+        key=f"{account.key}:thread-1",
+        account_key=account.key,
+        session_id="thread-1",
+        status=SessionStatus.LIVE,
+        kind="appServer",
+        capabilities=frozenset(
+            {
+                Capability.TRANSCRIPT,
+                Capability.INJECT,
+                Capability.STEER,
+                Capability.INTERRUPT,
+            }
+        ),
+    )
+    state = MagicMock()
+    state.sessions = {session.key: session}
+
+    provider._refresh_ok[account.key] = False
+    provider._reproject_runtime_sessions(account, state, client)
+    assert session.capabilities == frozenset({Capability.TRANSCRIPT})
+
+    provider._refresh_ok[account.key] = True
+    provider._reproject_runtime_sessions(account, state, client)
+    assert Capability.INJECT in session.capabilities
+    assert Capability.STEER in session.capabilities
+    assert Capability.INTERRUPT in session.capabilities
+
+
+async def test_runtime_projection_is_withdrawn_when_ownership_disappears(tmp_path):
+    sid = "019f5b2b-c830-7922-a1ce-8c9c69526c06"
+    _rollout(tmp_path, sid)
+    provider = CodexProvider()
+    account = _account(tmp_path)
+    client = MagicMock()
+    client.refresh = AsyncMock()
+    client.owns.return_value = True
+    client.active_turn.return_value = "turn-1"
+    client.interaction.return_value = None
+    provider._clients[account.key] = client
+    (session,) = await provider.scan_sessions(account)
+    assert session.kind == "appServer"
+
+    client.owns.return_value = False
+    session.question = "stale runtime question"
+    state = MagicMock()
+    state.sessions = {session.key: session}
+    provider._runtime_changed(account, state, sid)
+
+    assert session.kind is None
+    assert session.question is None
+    assert Capability.INJECT not in session.capabilities
+    assert Capability.STEER not in session.capabilities
+    assert Capability.INTERRUPT not in session.capabilities
+
+    session.kind = "appServer"
+    session.capabilities = frozenset({Capability.TRANSCRIPT, Capability.INJECT})
+    provider.sweep_liveness(account, [session])
+    assert session.kind is None
+    assert session.capabilities == frozenset({Capability.TRANSCRIPT})
+
+
+def test_transcriptless_runtime_projection_is_withdrawn_during_sweep(tmp_path):
+    provider = CodexProvider()
+    account = _account(tmp_path)
+    client = MagicMock()
+    client.owns.return_value = False
+    provider._clients[account.key] = client
+    session = Session(
+        key=f"{account.key}:thread-1",
+        account_key=account.key,
+        session_id="thread-1",
+        status=SessionStatus.LIVE,
+        thinking=True,
+        activity="Working",
+        question="stale runtime question",
+        kind="appServer",
+        capabilities=frozenset(
+            {
+                Capability.TRANSCRIPT,
+                Capability.INJECT,
+                Capability.STEER,
+                Capability.INTERRUPT,
+            }
+        ),
+    )
+
+    changed = provider.sweep_liveness(account, [session])
+
+    assert changed == [session]
+    assert session.status is SessionStatus.IDLE
+    assert session.thinking is False
+    assert session.activity is None
+    assert session.question is None
+    assert session.kind is None
+    assert session.capabilities == frozenset()
+
+
 async def test_codex_incremental_tail_and_truncation_recovery(tmp_path):
     sid = "019f5b2b-c830-7922-a1ce-8c9c69526c06"
     path = _rollout(tmp_path, sid)

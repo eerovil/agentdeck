@@ -9,7 +9,7 @@ from pathlib import Path
 import httpx
 
 from agentdeck.config import AppConfig
-from agentdeck.models import Account, Session, SessionStatus
+from agentdeck.models import Account, Capability, Session, SessionStatus
 from agentdeck.providers.claude_code.provider import ClaudeCodeProvider
 from agentdeck.providers.claude_code.worker import DeliverResult
 from agentdeck.providers.claude_code.worker_client import ClaudeWorkerClient
@@ -142,6 +142,12 @@ class _FakeWorkerClient:
 
     def live(self, sid):
         return self._live and sid in self._owned
+
+    def owned_session_ids(self):
+        return set(self._owned)
+
+    def cwd_for(self, sid):
+        return None
 
     async def deliver(
         self,
@@ -293,6 +299,95 @@ async def test_owned_worker_liveness_stays_visible_without_cli_registry():
     assert session.status is SessionStatus.LIVE
     assert session.thinking is False
     assert session.show_when_idle is True
+
+
+async def test_owned_worker_projection_matches_scan_and_sweep(tmp_path):
+    account = Account("claude_code:main", "claude_code", "main", tmp_path)
+    transcript_dir = tmp_path / "projects" / "project"
+    transcript_dir.mkdir(parents=True)
+    transcript = transcript_dir / "sid-1.jsonl"
+    transcript.write_text(
+        json.dumps(
+            {
+                "type": "assistant",
+                "sessionId": "sid-1",
+                "cwd": str(tmp_path),
+                "message": {"role": "assistant", "content": "Working on it"},
+            }
+        )
+        + "\n"
+    )
+
+    for available in (True, False):
+        provider = ClaudeCodeProvider()
+        fake = _FakeWorkerClient()
+        fake.available = available
+        provider._workers[account.key] = fake
+
+        (session,) = await provider.scan_sessions(account)
+        projected_fields = (
+            session.status,
+            session.thinking,
+            session.activity,
+            session.show_when_idle,
+            session.capabilities,
+        )
+
+        session.status = SessionStatus.IDLE
+        session.thinking = False
+        session.activity = None
+        session.show_when_idle = False
+        session.capabilities = frozenset(
+            {
+                Capability.TRANSCRIPT,
+                Capability.INJECT,
+                Capability.STEER,
+                Capability.INTERRUPT,
+            }
+        )
+        provider.sweep_liveness(account, [session])
+        sweep_fields = (
+            session.status,
+            session.thinking,
+            session.activity,
+            session.show_when_idle,
+            session.capabilities,
+        )
+
+        assert projected_fields == sweep_fields
+
+
+async def test_owned_worker_projection_is_withdrawn_when_ownership_disappears():
+    provider = ClaudeCodeProvider()
+    fake = _FakeWorkerClient()
+    provider._workers["claude_code:main"] = fake
+    session = Session(
+        key="claude_code:main:sid-1",
+        account_key="claude_code:main",
+        session_id="sid-1",
+        status=SessionStatus.LIVE,
+        thinking=True,
+        activity="Working",
+        show_when_idle=True,
+        capabilities=frozenset(
+            {
+                Capability.TRANSCRIPT,
+                Capability.INJECT,
+                Capability.STEER,
+                Capability.INTERRUPT,
+            }
+        ),
+    )
+
+    fake._owned.clear()
+    changed = provider.sweep_liveness(_account(), [session])
+
+    assert changed == [session]
+    assert session.status is SessionStatus.IDLE
+    assert session.thinking is False
+    assert session.activity is None
+    assert session.show_when_idle is False
+    assert session.capabilities == frozenset({Capability.TRANSCRIPT})
 
 
 async def test_provider_wait_and_result_complete_claude_delegation(tmp_path):

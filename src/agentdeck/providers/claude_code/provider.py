@@ -247,6 +247,34 @@ class ClaudeCodeProvider(SessionProvider):
         client = self._workers.get(account.key)
         return bool(client and client.available)
 
+    def _project_owned_worker(
+        self,
+        account: Account,
+        session: Session,
+        *,
+        transcript_path: Path | None,
+        last_activity: datetime | None,
+    ) -> bool:
+        """Overlay one owned worker's runtime state onto discovered metadata."""
+        workers = self._workers.get(account.key)
+        if workers is None or not workers.owns(session.session_id):
+            return False
+        active = workers.turn_active(session.session_id)
+        session.status = (
+            SessionStatus.LIVE if workers.live(session.session_id) else SessionStatus.IDLE
+        )
+        session.thinking = active
+        session.activity = self._activity(True, transcript_path, last_activity) if active else None
+        session.show_when_idle = True
+        capabilities = set(session.capabilities)
+        capabilities.difference_update({Capability.INJECT, Capability.STEER, Capability.INTERRUPT})
+        if workers.available:
+            capabilities.add(Capability.INJECT)
+            if active:
+                capabilities.update({Capability.STEER, Capability.INTERRUPT})
+        session.capabilities = frozenset(capabilities)
+        return True
+
     @staticmethod
     def _delegation_permission_mode(sandbox: str | None) -> str | None:
         # Claude has no Codex-style filesystem sandbox. Plan mode is its native
@@ -583,64 +611,45 @@ class ClaudeCodeProvider(SessionProvider):
             if deep_link is not None:
                 caps.add(Capability.DEEPLINK)
 
-            # Deck-owned worker sessions can be driven: send a message any time
-            # (deliver steers/queues/revives), and stop/steer while a turn runs.
-            # Headless workers don't appear in the CLI registry, so the worker's
-            # own turn state — not registry liveness — decides LIVE here.
-            owned = workers is not None and workers.owns(sid)
-            show_when_idle = False
-            if owned:
-                show_when_idle = True
-                status = SessionStatus.LIVE if workers.live(sid) else SessionStatus.IDLE
-                thinking = workers.turn_active(sid)
-                # Only offer control actions while the runtime is actually
-                # reachable. `_owned` is a last-known snapshot, so inject/steer/
-                # interrupt granted from it while the runtime is unreachable would
-                # target a worker we can no longer talk to; suppress them until the
-                # snapshot is re-ingested on reconnect.
-                if workers.available:
-                    caps.add(Capability.INJECT)
-                    if workers.turn_active(sid):
-                        caps.update({Capability.STEER, Capability.INTERRUPT})
-                        # Headless workers aren't in the CLI registry, so is_live
-                        # was False and activity stayed None; recompute against the
-                        # real turn state so the UI shows a live activity label.
-                        activity = self._activity(True, tpath, last_activity) or activity
-
             wtype = worker_type(kref is not None, deep_link is not None)
 
-            sessions.append(
-                Session(
-                    key=f"{account.key}:{sid}",
-                    account_key=account.key,
-                    session_id=sid,
-                    status=status,
-                    thinking=thinking,
-                    activity=activity,
-                    cwd=cwd,
-                    title=title,
-                    initial_prompt=first_user,
-                    last_prompt=last_prompt,
-                    last_text=last_text,
-                    last_role=last_role,
-                    question=question,
-                    kind=entry.kind if entry else None,
-                    worker_type=wtype,
-                    is_delegated=wtype != "you",
-                    issue_url=issue_url,
-                    issue_status=issue_status,
-                    issue_status_kind=issue_status_kind,
-                    pid=entry.pid if (entry and is_live) else None,
-                    proc_start=entry.proc_start if entry else None,
-                    started_at=entry.started_at if entry else None,
-                    last_activity=last_activity,
-                    context_tokens=context_tokens,
-                    deep_link=deep_link,
-                    deep_link_label="open in claude.ai" if deep_link else None,
-                    show_when_idle=show_when_idle,
-                    capabilities=frozenset(caps),
-                )
+            session = Session(
+                key=f"{account.key}:{sid}",
+                account_key=account.key,
+                session_id=sid,
+                status=status,
+                thinking=thinking,
+                activity=activity,
+                cwd=cwd,
+                title=title,
+                initial_prompt=first_user,
+                last_prompt=last_prompt,
+                last_text=last_text,
+                last_role=last_role,
+                question=question,
+                kind=entry.kind if entry else None,
+                worker_type=wtype,
+                is_delegated=wtype != "you",
+                issue_url=issue_url,
+                issue_status=issue_status,
+                issue_status_kind=issue_status_kind,
+                pid=entry.pid if (entry and is_live) else None,
+                proc_start=entry.proc_start if entry else None,
+                started_at=entry.started_at if entry else None,
+                last_activity=last_activity,
+                context_tokens=context_tokens,
+                deep_link=deep_link,
+                deep_link_label="open in claude.ai" if deep_link else None,
+                show_when_idle=False,
+                capabilities=frozenset(caps),
             )
+            self._project_owned_worker(
+                account,
+                session,
+                transcript_path=tpath,
+                last_activity=last_activity,
+            )
+            sessions.append(session)
 
         # Subagent pass: Task/Agent-tool subagents (isSidechain) nest under their
         # parent session as compact child rows instead of being invisible. Only
@@ -708,6 +717,7 @@ class ClaudeCodeProvider(SessionProvider):
             last_role_now = s.last_role
             context_now = s.context_tokens
             last_ev_now = None
+            tp = None
             if live_now:
                 tp = self._transcript_path(account, s)
                 activity_now = self._activity(True, tp, _mtime(tp) if tp else None)
@@ -733,53 +743,65 @@ class ClaudeCodeProvider(SessionProvider):
                 # Idle: no fresh read this sweep — keep whatever the last full scan
                 # surfaced rather than recomputing from stale text.
                 question_now = s.question
-            thinking_now = workers.turn_active(s.session_id) if owned else activity_now is not None
+            thinking_now = activity_now is not None
             pid_now = entry.pid if (entry and live_now) else None
             deep_link_now = (
                 registry_mod.session_deep_link(entry.pid) if (entry and live_now) else None
             )
-            capabilities_now = set(s.capabilities)
-            if owned and workers.available:
-                capabilities_now.add(Capability.INJECT)
-                if thinking_now:
-                    capabilities_now.update({Capability.STEER, Capability.INTERRUPT})
-                else:
-                    capabilities_now.difference_update(
-                        {Capability.STEER, Capability.INTERRUPT}
-                    )
-            elif owned:
-                # Runtime unreachable: strip control actions granted from the stale
-                # snapshot until it reconnects (mirrors scan_sessions).
-                capabilities_now.difference_update(
-                    {Capability.INJECT, Capability.STEER, Capability.INTERRUPT}
-                )
-            if (
-                status_now != s.status
-                or thinking_now != s.thinking
-                or activity_now != s.activity
-                or last_prompt_now != s.last_prompt
-                or last_text_now != s.last_text
-                or last_role_now != s.last_role
-                or question_now != s.question
-                or context_now != s.context_tokens
-                or pid_now != s.pid
-                or deep_link_now != s.deep_link
-                or frozenset(capabilities_now) != s.capabilities
-                or (owned and not s.show_when_idle)
-            ):
-                s.status = status_now
-                s.thinking = thinking_now
-                s.activity = activity_now
-                s.last_prompt = last_prompt_now
-                s.last_text = last_text_now
-                s.last_role = last_role_now
-                s.question = question_now
-                s.context_tokens = context_now
-                s.pid = pid_now
-                s.deep_link = deep_link_now
-                s.show_when_idle = owned or s.show_when_idle
-                s.capabilities = frozenset(capabilities_now)
-                s.kind = entry.kind if entry else s.kind
+            before = (
+                s.status,
+                s.thinking,
+                s.activity,
+                s.last_prompt,
+                s.last_text,
+                s.last_role,
+                s.question,
+                s.context_tokens,
+                s.pid,
+                s.deep_link,
+                s.show_when_idle,
+                s.capabilities,
+                s.kind,
+            )
+            s.status = status_now
+            s.thinking = thinking_now
+            s.activity = activity_now
+            s.last_prompt = last_prompt_now
+            s.last_text = last_text_now
+            s.last_role = last_role_now
+            s.question = question_now
+            s.context_tokens = context_now
+            s.pid = pid_now
+            s.deep_link = deep_link_now
+            s.show_when_idle = False
+            capabilities = set(s.capabilities)
+            capabilities.difference_update(
+                {Capability.INJECT, Capability.STEER, Capability.INTERRUPT}
+            )
+            s.capabilities = frozenset(capabilities)
+            s.kind = entry.kind if entry else s.kind
+            self._project_owned_worker(
+                account,
+                s,
+                transcript_path=tp,
+                last_activity=_mtime(tp) if tp is not None else s.last_activity,
+            )
+            after = (
+                s.status,
+                s.thinking,
+                s.activity,
+                s.last_prompt,
+                s.last_text,
+                s.last_role,
+                s.question,
+                s.context_tokens,
+                s.pid,
+                s.deep_link,
+                s.show_when_idle,
+                s.capabilities,
+                s.kind,
+            )
+            if after != before:
                 changed.append(s)
         return changed
 
