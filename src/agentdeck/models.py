@@ -147,6 +147,7 @@ class InjectResult:
     accepted: bool
     reason: str | None = None
     session_id: str | None = None
+    transcript_expected: bool = True
 
 
 @dataclass(frozen=True)

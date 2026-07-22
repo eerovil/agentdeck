@@ -14,7 +14,7 @@ from agentdeck.action_context import current_client_action_id
 from agentdeck.app import create_app
 from agentdeck.config import AccountConfig, AppConfig, HistoryConfig, InjectConfig
 from agentdeck.db import Db
-from agentdeck.inject import InjectionService, InjectionStatus, QueuedMessage
+from agentdeck.inject import InjectionService, QueuedMessage
 from agentdeck.models import (
     Account,
     Capability,
@@ -24,6 +24,8 @@ from agentdeck.models import (
     PendingInteraction,
     Session,
     SessionStatus,
+    TokenTotals,
+    TranscriptDetail,
     TranscriptEvent,
 )
 from agentdeck.providers.codex import WRITABLE_ROOTS_CONFIG_OVERRIDE
@@ -203,8 +205,8 @@ async def test_injection_service_queues_one_session_fifo(tmp_path):
             break
     assert provider.messages == ["first", "second"]
     assert [item.state for item in service.status(session.key).items] == [
-        "complete",
-        "complete",
+        "accepted",
+        "accepted",
     ]
     await service.stop()
 
@@ -242,6 +244,86 @@ async def test_injection_service_keeps_each_queued_action_id(tmp_path):
     await service.stop()
 
 
+async def test_transcript_observation_during_send_is_not_regressed_to_accepted(tmp_path):
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class Provider:
+        async def inject(self, account, session, message, *, timeout_s):
+            started.set()
+            await release.wait()
+            return InjectResult(True)
+
+    service = InjectionService(InjectConfig(enabled=True))
+    account = Account("codex:test", "codex", "test", tmp_path)
+    session = Session(
+        "codex:test:sid",
+        account.key,
+        "sid",
+        SessionStatus.IDLE,
+        capabilities=frozenset({Capability.INJECT}),
+    )
+    await service.start(account, session, Provider(), "fast transcript")
+    await asyncio.wait_for(started.wait(), timeout=1)
+    item = service.status(session.key).items[0]
+
+    event = TranscriptEvent(
+        seq=8,
+        role="user",
+        text="fast transcript",
+        ts=item.created_at + timedelta(milliseconds=1),
+    )
+    assert service.observe_transcript(session.key, [event]) == {8: item}
+    release.set()
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if not service.can_queue(session.key):
+            break
+
+    assert item.state == "observed"
+    await service.stop()
+
+
+async def test_transcript_observation_is_not_regressed_by_late_rejection(tmp_path):
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class Provider:
+        async def inject(self, account, session, message, *, timeout_s):
+            started.set()
+            await release.wait()
+            return InjectResult(False, "provider timed out")
+
+    service = InjectionService(InjectConfig(enabled=True))
+    account = Account("codex:test", "codex", "test", tmp_path)
+    session = Session(
+        "codex:test:sid",
+        account.key,
+        "sid",
+        SessionStatus.IDLE,
+        capabilities=frozenset({Capability.INJECT}),
+    )
+    await service.start(account, session, Provider(), "already durable")
+    await asyncio.wait_for(started.wait(), timeout=1)
+    item = service.status(session.key).items[0]
+    event = TranscriptEvent(
+        seq=1,
+        role="user",
+        text="already durable",
+        ts=item.created_at + timedelta(milliseconds=1),
+    )
+    assert service.observe_transcript(session.key, [event]) == {1: item}
+    release.set()
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if not service.can_queue(session.key):
+            break
+
+    assert item.state == "observed"
+    assert item.reason is None
+    await service.stop()
+
+
 async def test_injection_keeps_image_until_durable_transcript_event(tmp_path):
     durable = asyncio.Event()
     provider_started = asyncio.Event()
@@ -264,6 +346,7 @@ async def test_injection_keeps_image_until_durable_transcript_event(tmp_path):
                         seq=6,
                         role="user",
                         text="inspect",
+                        ts=datetime.now(UTC),
                         image_media_types=("image/png",),
                     )
                 ],
@@ -295,7 +378,7 @@ async def test_injection_keeps_image_until_durable_transcript_event(tmp_path):
         if not image.exists():
             break
     assert not image.exists()
-    assert service.status(session.key).items[0].state == "complete"
+    assert service.status(session.key).items[0].state == "observed"
     await service.stop()
 
 
@@ -344,12 +427,13 @@ async def test_queued_message_remains_visible_after_navigation(tmp_path, monkeyp
     await app.state.injector.stop()
 
 
-def test_pending_message_dedup_only_matches_new_transcript_turns():
-    from agentdeck.web.render import pending_injection_messages
-
+def test_transcript_observation_matches_pending_turns_once_in_fifo_order():
     queued_at = datetime.now(UTC)
-    item = QueuedMessage(1, "testing", created_at=queued_at)
-    status = InjectionStatus("queued", items=(item,))
+    first = QueuedMessage(1, "testing", state="accepted", created_at=queued_at)
+    second = QueuedMessage(2, "testing", state="accepted", created_at=queued_at)
+    queued = QueuedMessage(3, "testing", state="queued", created_at=queued_at)
+    service = InjectionService(InjectConfig(enabled=True))
+    service._items["codex:test:sid"] = [first, second, queued]
     old_same_text = TranscriptEvent(
         seq=1,
         role="user",
@@ -363,8 +447,261 @@ def test_pending_message_dedup_only_matches_new_transcript_turns():
         ts=queued_at + timedelta(seconds=1),
     )
 
-    assert pending_injection_messages(status, [old_same_text]) == [item]
-    assert pending_injection_messages(status, [old_same_text, new_same_text]) == []
+    assert service.observe_transcript("codex:test:sid", [old_same_text]) == {}
+    assert service.observe_transcript("codex:test:sid", [new_same_text]) == {2: first}
+    assert [item.state for item in (first, second, queued)] == [
+        "observed",
+        "accepted",
+        "queued",
+    ]
+
+    # Replaying the same transcript window is idempotent and preserves identity.
+    assert service.observe_transcript("codex:test:sid", [new_same_text]) == {2: first}
+    after_rotation = QueuedMessage(
+        4,
+        "after rotation",
+        state="accepted",
+        created_at=queued_at,
+    )
+    service._items["codex:test:sid"].append(after_rotation)
+    rotated_seq = TranscriptEvent(
+        seq=2,
+        role="user",
+        text="after rotation",
+        ts=queued_at + timedelta(seconds=2),
+    )
+    assert service.observe_transcript("codex:test:sid", [rotated_seq]) == {
+        2: after_rotation
+    }
+    next_same_text = TranscriptEvent(
+        seq=3,
+        role="user",
+        text="testing",
+        ts=queued_at + timedelta(seconds=3),
+    )
+    assert service.observe_transcript("codex:test:sid", [next_same_text]) == {3: second}
+    assert queued.state == "queued"
+
+
+def test_transcript_observation_includes_attachment_signature(tmp_path):
+    queued_at = datetime.now(UTC)
+    png = QueuedMessage(
+        1,
+        "inspect",
+        images=(tmp_path / "one.png",),
+        state="accepted",
+        created_at=queued_at,
+    )
+    webp = QueuedMessage(
+        2,
+        "inspect",
+        images=(tmp_path / "two.webp",),
+        state="accepted",
+        created_at=queued_at,
+    )
+    service = InjectionService(InjectConfig(enabled=True))
+    service._items["codex:test:sid"] = [png, webp]
+
+    wrong_type = TranscriptEvent(
+        seq=4,
+        role="user",
+        text="inspect",
+        ts=queued_at + timedelta(seconds=1),
+        image_media_types=("image/jpeg",),
+    )
+    assert service.observe_transcript("codex:test:sid", [wrong_type]) == {}
+
+    events = [
+        TranscriptEvent(
+            seq=5,
+            role="user",
+            text="inspect",
+            ts=queued_at + timedelta(seconds=2),
+            image_media_types=("image/png",),
+        ),
+        TranscriptEvent(
+            seq=6,
+            role="user",
+            text="inspect",
+            ts=queued_at + timedelta(seconds=3),
+            image_media_types=("image/webp",),
+        ),
+    ]
+    assert service.observe_transcript("codex:test:sid", events) == {5: png, 6: webp}
+
+
+def test_transcript_observation_uses_provider_timestamp_precision():
+    created_at = datetime(2026, 7, 22, 10, 0, 0, 987654, tzinfo=UTC)
+    item = QueuedMessage(
+        1,
+        "same millisecond",
+        state="accepted",
+        created_at=created_at,
+        after_seq=10,
+    )
+    service = InjectionService(InjectConfig(enabled=True))
+    service._items["codex:test:sid"] = [item]
+    provider_event = TranscriptEvent(
+        seq=11,
+        role="user",
+        text="same millisecond",
+        ts=created_at.replace(microsecond=987000),
+    )
+
+    older_same_millisecond = TranscriptEvent(
+        seq=10,
+        role="user",
+        text="same millisecond",
+        ts=provider_event.ts,
+    )
+    assert service.observe_transcript("codex:test:sid", [older_same_millisecond]) == {}
+    assert service.observe_transcript("codex:test:sid", [provider_event]) == {11: item}
+
+
+async def test_delivery_without_transcript_reaches_terminal_state(tmp_path):
+    class Provider:
+        async def inject(self, account, session, message, *, timeout_s):
+            return InjectResult(True, transcript_expected=False)
+
+    service = InjectionService(InjectConfig(enabled=True))
+    account = Account("codex:test", "codex", "test", tmp_path)
+    session = Session(
+        "codex:test:sid",
+        account.key,
+        "sid",
+        SessionStatus.IDLE,
+        capabilities=frozenset({Capability.INJECT}),
+    )
+    await service.start(account, session, Provider(), "/control")
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if not service.can_queue(session.key):
+            break
+
+    assert service.status(session.key).items[0].state == "complete"
+    await service.stop()
+
+
+async def test_session_page_observes_before_rendering_pending_messages(tmp_path, monkeypatch):
+    app = _web_app(tmp_path)
+    queued_at = datetime.now(UTC)
+    item = QueuedMessage(
+        17,
+        "render once",
+        client_action_id="action-17",
+        state="accepted",
+        created_at=queued_at,
+    )
+    app.state.injector._items["codex:test:sid"] = [item]
+    app.state.injector._snapshot("codex:test:sid")
+
+    async def fake_load_transcript(account, session, *, before_seq=None):
+        return TranscriptDetail(
+            events=[
+                TranscriptEvent(
+                    seq=9,
+                    role="user",
+                    text="render once",
+                    ts=queued_at + timedelta(seconds=1),
+                )
+            ],
+            tokens=TokenTotals(),
+            model=None,
+            todos=[],
+            total_events=1,
+            earliest_seq=1,
+        )
+
+    from agentdeck.providers import PROVIDERS
+
+    monkeypatch.setattr(PROVIDERS["codex"], "load_transcript", fake_load_transcript)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/sessions/codex:test:sid")
+
+    assert response.status_code == 200
+    assert 'data-observed-queue-id="17"' in response.text
+    assert 'data-observed-action-id="action-17"' in response.text
+    assert "data-pending-message" not in response.text
+
+
+async def test_session_sse_observes_before_rendering_transcript_event(tmp_path, monkeypatch):
+    from agentdeck.providers import PROVIDERS
+    from agentdeck.web.routes_sse import _session_stream
+
+    app = _web_app(tmp_path)
+    queued_at = datetime.now(UTC)
+    item = QueuedMessage(
+        18,
+        "stream once",
+        client_action_id="action-18",
+        state="accepted",
+        created_at=queued_at,
+    )
+    app.state.injector._items["codex:test:sid"] = [item]
+    app.state.injector._snapshot("codex:test:sid")
+    event = TranscriptEvent(
+        seq=10,
+        role="user",
+        text="stream once",
+        ts=queued_at + timedelta(seconds=1),
+    )
+
+    async def fake_cursor(account, session):
+        return (100, event.seq)
+
+    async def fake_read(account, session, after_seq=0):
+        assert after_seq == 9
+        return [event]
+
+    async def fake_last_event(account, session):
+        return None
+
+    provider = PROVIDERS["codex"]
+    monkeypatch.setattr(provider, "transcript_cursor", fake_cursor)
+    monkeypatch.setattr(provider, "read_transcript", fake_read)
+    monkeypatch.setattr(provider, "last_event", fake_last_event)
+
+    class FakeRequest:
+        def __init__(self, application):
+            self.app = application
+
+        async def is_disconnected(self):
+            return False
+
+    stream = _session_stream(FakeRequest(app), "codex:test:sid", after_seq=9)
+    try:
+        chunks = [await asyncio.wait_for(stream.__anext__(), timeout=2) for _ in range(6)]
+    finally:
+        await stream.aclose()
+
+    transcript = chunks[-1]
+    assert "event: transcript" in transcript
+    assert "id: 10" in transcript
+    assert 'data-observed-queue-id="18"' in transcript
+    assert 'data-observed-action-id="action-18"' in transcript
+
+
+async def test_session_sse_honors_native_eventsource_resume_header(monkeypatch):
+    from agentdeck.web import routes_sse
+
+    seen = []
+
+    async def fake_stream(request, session_key, *, after_seq=None):
+        seen.append((session_key, after_seq))
+        yield "event: transcript\ndata: resumed\n\n"
+
+    class FakeRequest:
+        headers = {"last-event-id": "42"}
+
+    monkeypatch.setattr(routes_sse, "_session_stream", fake_stream)
+    response = await routes_sse.session_events(
+        FakeRequest(), "codex:test:sid", after_seq=9
+    )
+    await response.body_iterator.__anext__()
+
+    assert seen == [("codex:test:sid", 42)]
 
 
 async def test_start_session_passes_first_prompt_on_stdin(tmp_path):
@@ -548,11 +885,12 @@ async def test_inject_route_validates_images_and_cleans_up(tmp_path, monkeypatch
     async def fake_tail_transcript(account, session, byte_offset, seq):
         return (
             [
-                TranscriptEvent(
-                    seq=seq + 1,
-                    role="user",
-                    text="inspect",
-                    image_media_types=("image/png",),
+                    TranscriptEvent(
+                        seq=seq + 1,
+                        role="user",
+                        text="inspect",
+                        ts=datetime.now(UTC),
+                        image_media_types=("image/png",),
                 )
             ],
             byte_offset + 1,
@@ -638,12 +976,36 @@ async def test_steer_image_cleanup_waits_for_turn(tmp_path, monkeypatch):
             "/sessions/codex:test:sid/steer",
             data={"message": "look now"},
             files={"images": ("screen.png", png, "image/png")},
-            headers={"origin": "http://test"},
+            headers={
+                "origin": "http://test",
+                "x-agentdeck-action-id": "action-steer-1",
+            },
         )
         assert response.status_code == 200
         await asyncio.wait_for(cleanup_started.wait(), timeout=1)
         saved = received[0]
         assert saved.exists()
+        tracked = app.state.injector.status("codex:test:sid").items[-1]
+        assert tracked.client_action_id == "action-steer-1"
+        assert tracked.state == "accepted"
+        pending_image = await client.get(
+            f"/sessions/codex:test:sid/pending-images/{tracked.id}/0"
+        )
+        assert pending_image.status_code == 200
+        observed = app.state.injector.observe_transcript(
+            "codex:test:sid",
+            [
+                TranscriptEvent(
+                    seq=11,
+                    role="user",
+                    text="look now",
+                    ts=tracked.created_at + timedelta(milliseconds=1),
+                    image_media_types=("image/png",),
+                )
+            ],
+        )
+        assert observed == {11: tracked}
+        assert tracked.state == "observed"
         turn_done.set()
         for _ in range(20):
             await asyncio.sleep(0)
@@ -1944,8 +2306,10 @@ async def test_browser_action_timing_covers_htmx_response_and_sse_reconciliation
                     queueMicrotask(() => { if (this.onopen) this.onopen(new Event('open')); });
                   }
                   close() { this.readyState = FakeEventSource.CLOSED; }
-                  emit(name, data) {
-                    this.dispatchEvent(new MessageEvent(name, {data: data}));
+                  emit(name, data, lastEventId) {
+                    this.dispatchEvent(new MessageEvent(name, {
+                      data: data, lastEventId: lastEventId || ''
+                    }));
                   }
                 }
                 window.EventSource = FakeEventSource;
@@ -1987,18 +2351,35 @@ async def test_browser_action_timing_covers_htmx_response_and_sse_reconciliation
 
             await page.route("http://agentdeck.test/**", serve)
             await page.goto("http://agentdeck.test/sessions/codex:test:sid")
+            action = "send" if width == 1200 else "steer"
+            await page.evaluate(
+                "action => document.querySelector('.inject-form').dataset.agentdeckAction = action",
+                action,
+            )
             await page.locator("#inject-message").fill("measured send")
             await page.locator("#composer-controls button", has_text="Send").click()
             await page.wait_for_function(
                 "document.querySelector('.optimistic-message .message-state')?.textContent "
                 "=== 'Sending'"
             )
+            if width == 320:
+                # Exercise the reverse race: the durable SSE event arrives while
+                # the POST is still in flight, then its OOB pending row arrives.
+                await page.evaluate(
+                    """() => {
+                      const source = window.__eventSources[0];
+                      const actionId = window.AgentDeckActionTiming.snapshot()[0].id;
+                      source.emit('transcript',
+                        '<div class="ev user" data-observed-action-id="' + actionId + '">' +
+                        '<div class="ev-text">measured send</div></div>', '42');
+                    }"""
+                )
             await page.wait_for_function(
                 "window.AgentDeckActionTiming && "
                 "window.AgentDeckActionTiming.snapshot()[0]?.marks.response !== undefined"
             )
             await page.evaluate(
-                """() => {
+                """(emitTranscript) => {
                   const source = window.__eventSources[0];
                   const actionId = window.AgentDeckActionTiming.snapshot()[0].id;
                   if (!document.querySelector('[data-pending-message]')) {
@@ -2010,22 +2391,35 @@ async def test_browser_action_timing_covers_htmx_response_and_sse_reconciliation
                     );
                   }
                   source.emit('composer-controls', '<button type="submit">Send</button>');
-                  source.emit('transcript',
-                    '<div class="ev user"><div class="ev-text">measured send</div></div>');
-                }"""
+                  if (emitTranscript) {
+                    source.emit('transcript',
+                      '<div class="ev user" data-observed-action-id="' + actionId + '">' +
+                      '<div class="ev-text">measured send</div></div>', '42');
+                  }
+                }""",
+                width == 1200,
             )
             await page.wait_for_function(
                 "window.AgentDeckActionTiming.snapshot()[0]?.marks.first_transcript !== undefined"
             )
+            await page.wait_for_function(
+                "document.querySelectorAll('[data-pending-message]').length === 0"
+            )
+            await page.evaluate("window.htmx.reconnectSSE(document.body)")
+            await page.wait_for_function("window.__eventSources.length === 2")
             record = await page.evaluate("window.AgentDeckActionTiming.snapshot()[0]")
-            summary = await page.evaluate("window.AgentDeckActionTiming.summary().send")
+            summary = await page.evaluate(
+                "action => window.AgentDeckActionTiming.summary()[action]", action
+            )
             measured.append(
                 {
                     "width": width,
+                    "action": action,
                     "record": record,
                     "action_id": captured["action_id"],
                     "body": captured["body"],
                     "summary": summary,
+                    "resume_url": await page.evaluate("window.__eventSources[1].url"),
                     "overflow": await page.evaluate(
                         "document.documentElement.scrollWidth > "
                         "document.documentElement.clientWidth"
@@ -2038,7 +2432,8 @@ async def test_browser_action_timing_covers_htmx_response_and_sse_reconciliation
     for item in measured:
         record = item["record"]
         assert record["id"] == item["action_id"]
-        assert record["action"] == "send"
+        assert record["action"] == item["action"]
+        assert item["resume_url"].endswith("?after_seq=42")
         assert record["serverTiming"] == (
             "form;dur=2.0, queue;dur=3.0, total;dur=55.0"
         )

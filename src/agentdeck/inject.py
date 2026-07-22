@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .action_context import client_action_context
 from .config import InjectConfig
-from .models import Account, Capability, InjectResult, Session
+from .models import Account, Capability, InjectResult, Session, TranscriptEvent
 from .providers.base import SessionProvider
 from .web.uploads import cleanup_image_files
 
@@ -37,6 +37,20 @@ class QueuedMessage:
     state: str = "queued"
     reason: str | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    observed_seq: int | None = None
+    observed_at: datetime | None = None
+    after_seq: int | None = None
+
+    @property
+    def image_media_types(self) -> tuple[str, ...]:
+        by_suffix = {
+            ".gif": "image/gif",
+            ".jpeg": "image/jpeg",
+            ".jpg": "image/jpeg",
+            ".png": "image/png",
+            ".webp": "image/webp",
+        }
+        return tuple(by_suffix.get(image.suffix.lower(), "") for image in self.images)
 
 
 @dataclass(frozen=True)
@@ -77,9 +91,113 @@ class InjectionService:
     def status(self, session_key: str) -> InjectionStatus | None:
         return self._status.get(session_key)
 
+    def observe_transcript(
+        self, session_key: str, events: list[TranscriptEvent]
+    ) -> dict[int, QueuedMessage]:
+        """Link durable user events to app-queued turns exactly once.
+
+        Provider acceptance only means the send was handed off. The transcript
+        is authoritative for when its optimistic row can disappear.
+        """
+        items = self._items.get(session_key, [])
+        observed_by_identity = {
+            (
+                item.observed_seq,
+                item.observed_at,
+                item.text,
+                item.image_media_types,
+            ): item
+            for item in items
+            if item.state == "observed"
+            and item.observed_seq is not None
+            and item.observed_at is not None
+        }
+        links: dict[int, QueuedMessage] = {}
+        changed = False
+        for event in events:
+            if event.role != "user" or event.ts is None:
+                continue
+            event_ts = (
+                event.ts
+                if event.ts.tzinfo is not None
+                else event.ts.replace(tzinfo=UTC)
+            )
+            identity = (event.seq, event_ts, event.text, event.image_media_types)
+            already_observed = observed_by_identity.get(identity)
+            if already_observed is not None:
+                links[event.seq] = already_observed
+                continue
+            match = next(
+                (
+                    item
+                    for item in items
+                    if item.state in ("running", "accepted")
+                    and item.text == event.text
+                    and item.image_media_types == event.image_media_types
+                    and (item.after_seq is None or event.seq > item.after_seq)
+                    and event_ts
+                    >= item.created_at.replace(
+                        microsecond=(item.created_at.microsecond // 1000) * 1000
+                    )
+                ),
+                None,
+            )
+            if match is None:
+                continue
+            match.state = "observed"
+            match.observed_seq = event.seq
+            match.observed_at = event_ts
+            links[event.seq] = match
+            observed_by_identity[identity] = match
+            changed = True
+        if changed:
+            self._snapshot(session_key)
+        return links
+
     def can_queue(self, session_key: str) -> bool:
         task = self._tasks.get(session_key)
         return task is not None and not task.done()
+
+    def begin_delivery(
+        self,
+        session_key: str,
+        message: str,
+        images: list[Path] | None = None,
+        *,
+        client_action_id: str | None = None,
+        after_seq: int | None = None,
+    ) -> QueuedMessage:
+        """Track a provider delivery performed outside the FIFO injection loop."""
+        item = QueuedMessage(
+            self._next_id,
+            message,
+            tuple(images or []),
+            client_action_id=client_action_id,
+            state="running",
+            after_seq=after_seq,
+        )
+        self._next_id += 1
+        self._items.setdefault(session_key, []).append(item)
+        self._snapshot(session_key)
+        return item
+
+    def finish_delivery(
+        self, session_key: str, item: QueuedMessage, result: InjectResult
+    ) -> None:
+        """Record handoff outcome without regressing an already observed item."""
+        if item.state == "observed":
+            item.reason = None
+            self._snapshot(session_key)
+            return
+        if result.accepted:
+            if not result.transcript_expected:
+                item.state = "complete"
+            elif item.state != "observed":
+                item.state = "accepted"
+        else:
+            item.state = "failed"
+        item.reason = result.reason
+        self._snapshot(session_key)
 
     def new_status(self, account_key: str) -> InjectionStatus | None:
         return self._new_status.get(account_key)
@@ -168,14 +286,14 @@ class InjectionService:
                 item = next((queued for queued in items if queued.state == "queued"), None)
                 if item is None:
                     break
+                transcript_offset = transcript_seq = 0
+                cursor = getattr(provider, "transcript_cursor", None)
+                if cursor is not None:
+                    transcript_offset, transcript_seq = await cursor(account, session)
+                item.after_seq = transcript_seq
                 item.state = "running"
                 self._snapshot(session.key)
                 try:
-                    transcript_offset = transcript_seq = 0
-                    if item.images:
-                        transcript_offset, transcript_seq = await provider.transcript_cursor(
-                            account, session
-                        )
                     kwargs = {"images": list(item.images)} if item.images else {}
                     action_context = (
                         client_action_context(item.client_action_id)
@@ -201,9 +319,8 @@ class InjectionService:
                         )
                 finally:
                     cleanup_image_files(item.images)
-                item.state = "complete" if result.accepted else "failed"
-                item.reason = result.reason
-                if not result.accepted:
+                self.finish_delivery(session.key, item, result)
+                if not result.accepted and item.state != "observed":
                     for pending in items:
                         if pending.state == "queued":
                             pending.state = "failed"
@@ -211,7 +328,6 @@ class InjectionService:
                             cleanup_image_files(pending.images)
                     self._snapshot(session.key)
                     break
-                self._snapshot(session.key)
         except asyncio.CancelledError:
             for item in self._items.get(session.key, []):
                 if item.state in ("queued", "running"):
@@ -246,12 +362,8 @@ class InjectionService:
             events, byte_offset, seq = await provider.tail_transcript(
                 account, session, byte_offset, seq
             )
-            if any(
-                event.role == "user"
-                and event.text == item.text
-                and len(event.image_media_types) == len(item.images)
-                for event in events
-            ):
+            self.observe_transcript(session.key, events)
+            if item.state == "observed":
                 return
             if asyncio.get_running_loop().time() >= deadline:
                 log.warning(

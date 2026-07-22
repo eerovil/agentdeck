@@ -139,6 +139,9 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
     accounts = get_accounts(request)
     state = get_state(request)
     detail = await provider.load_transcript(account, session)
+    observed_messages = request.app.state.injector.observe_transcript(
+        session.key, detail.events
+    )
     from datetime import UTC, datetime
 
     from ..models import Capability, SessionStatus, detailed_activity_label
@@ -179,6 +182,9 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
         {
             "session": effective_session,
             "detail": detail,
+            "transcript_after_seq": max(
+                (event.seq for event in detail.events), default=0
+            ),
             # Desktop keeps the live session list beside the selected chat.
             "sessions": _detail_top,
             "children_of": _detail_children,
@@ -188,8 +194,9 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
             "queue_summaries": session_queue_summaries(
                 state.visible_sessions(), request.app.state.injector
             ),
+            "observed_messages": observed_messages,
             "pending_messages": pending_injection_messages(
-                request.app.state.injector.status(session.key), detail.events
+                request.app.state.injector.status(session.key)
             ),
             # the initial activity marker; the SSE stream refines it within ~1.5s
             "activity_label": label,

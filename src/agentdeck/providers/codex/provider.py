@@ -626,7 +626,15 @@ class CodexProvider(SessionProvider):
                     False,
                     "/compact is available only for AgentDeck-owned Codex chats",
                 )
-            return await client.compact(session.session_id)
+            result = await client.compact(session.session_id)
+            if not result.accepted:
+                return result
+            return InjectResult(
+                True,
+                result.reason,
+                result.session_id,
+                transcript_expected=False,
+            )
         if client is not None and client.owns(session.session_id):
             return await client.queue_turn(session.session_id, message, images=images)
         path = self._transcript_path(account, session)

@@ -129,6 +129,17 @@ This extension adds support for Server Sent Events to htmx.  See /www/extensions
             return
           }
           swap(elt, event.data)
+          if (sseEventName === 'transcript' && event.lastEventId) {
+            var connectAttribute = sourceElement.hasAttribute('sse-connect')
+              ? 'sse-connect' : 'data-sse-connect'
+            var currentURL = new URL(
+              sourceElement.getAttribute(connectAttribute), document.baseURI
+            )
+            currentURL.searchParams.set('after_seq', event.lastEventId)
+            sourceElement.setAttribute(
+              connectAttribute, currentURL.pathname + currentURL.search
+            )
+          }
           api.triggerEvent(elt, 'htmx:sseMessage', event)
         }
 

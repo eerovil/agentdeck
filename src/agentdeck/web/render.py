@@ -338,7 +338,11 @@ def session_queue_summaries(sessions, injector: InjectionService) -> dict[str, d
         status = injector.status(session.key)
         if status is None:
             continue
-        pending = [item for item in status.items if item.state in ("queued", "running")]
+        pending = [
+            item
+            for item in status.items
+            if item.state in ("queued", "running", "accepted")
+        ]
         if pending:
             summaries[session.key] = {
                 "count": len(pending),
@@ -347,32 +351,15 @@ def session_queue_summaries(sessions, injector: InjectionService) -> dict[str, d
     return summaries
 
 
-def pending_injection_messages(status, events) -> list:
-    """Pending app-level turns that are not in the provider transcript yet."""
+def pending_injection_messages(status) -> list:
+    """App-level turns not yet linked to a durable transcript event."""
     if status is None:
         return []
-    transcript_users = [event for event in events if event.role == "user" and event.text]
-    matched_events: set[int] = set()
-    pending = []
-    for item in status.items:
-        if item.state not in ("queued", "running"):
-            continue
-        match = next(
-            (
-                index
-                for index, event in enumerate(transcript_users)
-                if index not in matched_events
-                and event.text == item.text
-                and event.ts is not None
-                and event.ts >= item.created_at
-            ),
-            None,
-        )
-        if match is not None:
-            matched_events.add(match)
-            continue
-        pending.append(item)
-    return pending
+    return [
+        item
+        for item in status.items
+        if item.state in ("queued", "running", "accepted")
+    ]
 
 
 def render_session_list(
@@ -398,10 +385,22 @@ def render_session_list(
 
 
 def render_transcript_events(
-    templates: Jinja2Templates, events, *, session_key: str | None = None
+    templates: Jinja2Templates,
+    events,
+    *,
+    session_key: str | None = None,
+    observed_messages: dict | None = None,
 ) -> str:
     tmpl = templates.get_template("partials/transcript_event.html")
-    return "".join(tmpl.render(e=e, session_key=session_key) for e in events)
+    observed_messages = observed_messages or {}
+    return "".join(
+        tmpl.render(
+            e=e,
+            session_key=session_key,
+            observed_message=observed_messages.get(e.seq),
+        )
+        for e in events
+    )
 
 
 def render_session_status(templates: Jinja2Templates, session) -> str:

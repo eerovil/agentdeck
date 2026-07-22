@@ -8,7 +8,7 @@
 
 {# One SSE connection for the whole page: status + transcript + the topbar usage
    bars all ride /events/sessions/<key>, so a session page holds a single socket. #}
-{% block body_sse %}sse-connect="/events/sessions/{{ session.key }}"{% endblock %}
+{% block body_sse %}sse-connect="/events/sessions/{{ session.key }}?after_seq={{ transcript_after_seq }}"{% endblock %}
 {% block limit_bars %}{% include "partials/limit_bars.html" %}{% endblock %}
 
 {% block content %}
@@ -80,7 +80,7 @@
     {% include "partials/load_earlier.html" %}
     {% endif %}
     {% set session_key = session.key %}
-    {% for e in detail.events %}{% include "partials/transcript_event.html" %}{% endfor %}
+    {% for e in detail.events %}{% set observed_message = observed_messages.get(e.seq) %}{% include "partials/transcript_event.html" %}{% endfor %}
     {% for item in pending_messages %}{% include "partials/pending_message.html" %}{% endfor %}
   </div>
 

@@ -14,6 +14,8 @@
     var initialDone = false;
     var initialCancelled = false;
     var scrollGeneration = 0;
+    var observedQueueIds = new Set();
+    var observedActionIds = new Set();
 
     function scrollRoot() {
       if (detail && getComputedStyle(detail).overflowY === 'auto') return detail;
@@ -92,29 +94,36 @@
     else window.addEventListener('load', initialScroll, { once: true });
 
     function reconcilePendingMessages() {
+      transcript.querySelectorAll('[data-observed-queue-id], [data-observed-action-id]')
+        .forEach(function (durable) {
+          var queueId = durable.dataset.observedQueueId;
+          var actionId = durable.dataset.observedActionId;
+          if (queueId) observedQueueIds.add(queueId);
+          if (actionId && !observedActionIds.has(actionId)) {
+            observedActionIds.add(actionId);
+            if (window.AgentDeckActionTiming) {
+              window.AgentDeckActionTiming.mark(actionId, 'first_transcript');
+            }
+          }
+        });
+
       var actionRows = new Map();
       transcript.querySelectorAll('[data-pending-message]').forEach(function (pending) {
+        var pendingQueueId = pending.dataset.queueId;
         var pendingActionId = pending.dataset.clientActionId;
+        if ((pendingQueueId && observedQueueIds.has(pendingQueueId)) ||
+            (pendingActionId && observedActionIds.has(pendingActionId))) {
+          if (pendingActionId && window.AgentDeckActionTiming) {
+            window.AgentDeckActionTiming.mark(pendingActionId, 'first_transcript');
+          }
+          pending.remove();
+          return;
+        }
         if (pendingActionId && actionRows.has(pendingActionId)) {
           pending.remove();
           return;
         }
         if (pendingActionId) actionRows.set(pendingActionId, pending);
-        var text = pending.querySelector('.ev-text');
-        var next = pending.nextElementSibling;
-        while (text && next) {
-          var nextText = next.matches('.ev.user:not([data-pending-message])') &&
-            next.querySelector('.ev-text');
-          if (nextText && nextText.textContent === text.textContent) {
-            var actionId = pending.dataset.clientActionId;
-            if (actionId && window.AgentDeckActionTiming) {
-              window.AgentDeckActionTiming.mark(actionId, 'first_transcript');
-            }
-            pending.remove();
-            break;
-          }
-          next = next.nextElementSibling;
-        }
       });
     }
 
@@ -167,6 +176,7 @@
       scrollGeneration += 1;
       scheduleToBottom(scrollGeneration);
     });
+    reconcilePendingMessages();
 
     if (window.visualViewport) {
       window.visualViewport.addEventListener('resize', function () {

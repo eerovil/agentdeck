@@ -1576,7 +1576,10 @@ async def test_session_bottom_follow_stops_on_manual_scroll_and_resumes_near_end
           <aside class="session-sidebar"></aside>
           <section class="session-detail">
             <div class="transcript">{filler}
-              <div class="ev user pending-message" data-pending-message>
+              <div class="ev user pending-message" data-pending-message data-queue-id="1">
+                <div class="ev-text">queued message</div>
+              </div>
+              <div class="ev user pending-message" data-pending-message data-queue-id="2">
                 <div class="ev-text">queued message</div>
               </div>
             </div>
@@ -1632,7 +1635,7 @@ async def test_session_bottom_follow_stops_on_manual_scroll_and_resumes_near_end
                     bubbles: true, detail: {successful: true, elt: form}
                   }));
                   appendTranscript(
-                    '<div class="ev user" style="min-height:80px">' +
+                    '<div class="ev user" data-observed-queue-id="1" style="min-height:80px">' +
                     '<div class="ev-text">queued message</div></div>'
                   );
                   swap(status);
@@ -1647,6 +1650,9 @@ async def test_session_bottom_follow_stops_on_manual_scroll_and_resumes_near_end
                   const pendingAfterReconcile = document.querySelectorAll(
                     '[data-pending-message]'
                   ).length;
+                  const remainingQueueId = document.querySelector(
+                    '[data-pending-message]'
+                  )?.dataset.queueId;
 
                   root.scrollTo(0, root.scrollHeight - root.clientHeight - 20);
                   await settle();
@@ -1659,6 +1665,7 @@ async def test_session_bottom_follow_stops_on_manual_scroll_and_resumes_near_end
                     readingPosition,
                     positionWhileReading,
                     pendingAfterReconcile,
+                    remainingQueueId,
                     resumedGap: bottomGap(),
                   };
                 }"""
@@ -1670,7 +1677,8 @@ async def test_session_bottom_follow_stops_on_manual_scroll_and_resumes_near_end
     for result in results:
         assert result["initialGap"] <= 1
         assert result["positionWhileReading"] == result["readingPosition"]
-        assert result["pendingAfterReconcile"] == 0
+        assert result["pendingAfterReconcile"] == 1
+        assert result["remainingQueueId"] == "2"
         assert result["resumedGap"] <= 1
 
 
@@ -1985,6 +1993,26 @@ def test_transcript_user_message_renders_attached_images(tmp_path):
     )
     assert 'class="ev user"' in image_only
     assert 'class="ev-image"' in image_only
+
+
+def test_transcript_user_message_renders_observed_pending_identity(tmp_path):
+    from agentdeck.inject import QueuedMessage
+    from agentdeck.models import TranscriptEvent
+    from agentdeck.web.render import render_transcript_events
+
+    app = _app_with_state(tmp_path)
+    event = TranscriptEvent(seq=7, role="user", text="same text")
+    item = QueuedMessage(41, "same text", client_action_id="action-41")
+
+    html = render_transcript_events(
+        app.state.templates,
+        [event],
+        session_key="claude_code:test:sid1",
+        observed_messages={7: item},
+    )
+
+    assert 'data-observed-queue-id="41"' in html
+    assert 'data-observed-action-id="action-41"' in html
 
 
 async def test_transcript_image_is_served_outside_the_html_response(tmp_path):
@@ -2989,7 +3017,7 @@ async def test_session_detail_renders_transcript(tmp_path):
     # usage bars paint server-side in the topbar (no separate /events socket)
     assert "42%" in r.text
     # the page binds its single SSE connection to the per-session stream
-    assert 'sse-connect="/events/sessions/claude_code:test:sid1"' in r.text
+    assert 'sse-connect="/events/sessions/claude_code:test:sid1?after_seq=2"' in r.text
 
 
 def test_pr_reference_text_uses_conversation_not_system_or_tool_traffic():

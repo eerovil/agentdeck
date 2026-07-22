@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 from agentdeck.config import AccountConfig
-from agentdeck.models import Account, Capability, Session, SessionStatus
+from agentdeck.models import Account, Capability, InjectResult, Session, SessionStatus
 from agentdeck.providers import PROVIDERS
 from agentdeck.providers.codex import provider as provider_mod
 from agentdeck.providers.codex import transcripts
@@ -1313,7 +1313,7 @@ async def test_codex_compact_command_uses_owned_runtime(tmp_path):
         status=SessionStatus.IDLE,
     )
     client = MagicMock()
-    client.compact = AsyncMock()
+    client.compact = AsyncMock(return_value=InjectResult(True))
     client.queue_turn = AsyncMock()
     client.owns.return_value = True
     provider._clients[account.key] = client
@@ -1325,7 +1325,8 @@ async def test_codex_compact_command_uses_owned_runtime(tmp_path):
         timeout_s=30,
     )
 
-    assert result is client.compact.return_value
+    assert result.accepted
+    assert not result.transcript_expected
     client.compact.assert_awaited_once_with("thread-1")
     client.queue_turn.assert_not_awaited()
 

@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 from starlette.datastructures import FormData
 
-from ..models import Capability
+from ..models import Capability, InjectResult
 from ..providers import PROVIDERS
 from .action_timing import bind_action, timing_span
 from .deps import (
@@ -122,7 +122,8 @@ async def pending_message_image(
         (
             queued
             for queued in status.items
-            if queued.id == item_id and queued.state in ("queued", "running")
+            if queued.id == item_id
+            and queued.state in ("queued", "running", "accepted")
         ),
         None,
     ) if status else None
@@ -259,23 +260,40 @@ async def inject_status(request: Request, session_key: str) -> HTMLResponse:
 async def steer_turn(request: Request, session_key: str) -> HTMLResponse:
     _require_same_origin(request)
     account, session, provider = resolve_session(request, session_key)
-    bind_action(request, session_key=session.key, provider=account.provider_id)
+    client_action_id = bind_action(
+        request, session_key=session.key, provider=account.provider_id
+    )
     config = get_config(request).inject
     if not config.enabled or Capability.STEER not in session.capabilities:
         raise HTTPException(status_code=403, detail="active-turn steering unavailable")
     message, images, _ = await _turn_form(request)
+    injector = get_injector(request)
+    tracked = None
     try:
+        _, after_seq = await provider.transcript_cursor(account, session)
+        tracked = injector.begin_delivery(
+            session.key,
+            message,
+            images,
+            client_action_id=client_action_id,
+            after_seq=after_seq,
+        )
         kwargs = {"images": images} if images else {}
         with timing_span(request, "runtime"):
             result = await provider.steer(account, session, message, **kwargs)
-    except BaseException:
+    except BaseException as exc:
+        if tracked is not None:
+            injector.finish_delivery(
+                session.key, tracked, InjectResult(False, str(exc) or "steering failed")
+            )
         cleanup_image_files(images)
         raise
+    injector.finish_delivery(session.key, tracked, result)
     if not result.accepted:
         cleanup_image_files(images)
         raise HTTPException(status_code=409, detail=result.reason)
     if images:
-        get_injector(request).defer_cleanup(
+        injector.defer_cleanup(
             account,
             provider,
             session.session_id,

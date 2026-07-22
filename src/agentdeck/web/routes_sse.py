@@ -68,10 +68,11 @@ def _usage_sig(accounts, state) -> tuple:
     return tuple(out)
 
 
-def format_sse(event: str, html: str) -> str:
+def format_sse(event: str, html: str, *, event_id: int | None = None) -> str:
     # SSE data may not contain raw newlines; prefix every line with "data: ".
     body = "".join(f"data: {line}\n" for line in html.splitlines()) or "data: \n"
-    return f"event: {event}\n{body}\n"
+    identity = f"id: {event_id}\n" if event_id is not None else ""
+    return f"event: {event}\n{identity}{body}\n"
 
 
 async def _stream(request: Request) -> AsyncIterator[str]:
@@ -143,7 +144,9 @@ async def events(request: Request) -> StreamingResponse:
     )
 
 
-async def _session_stream(request: Request, session_key: str) -> AsyncIterator[str]:
+async def _session_stream(
+    request: Request, session_key: str, *, after_seq: int | None = None
+) -> AsyncIterator[str]:
     """Per-session live tail: appends new transcript events, and pushes a status
     fragment whenever the session flips LIVE↔IDLE *or* its thinking state
     changes. "Thinking" is driven directly off the tail here (transcript written
@@ -158,6 +161,11 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
     loop = asyncio.get_event_loop()
 
     offset, seq = await provider.transcript_cursor(account, session)
+    backfill = []
+    if after_seq is not None:
+        read_after = after_seq if seq >= after_seq else 0
+        events = await provider.read_transcript(account, session, after_seq=read_after)
+        backfill = [event for event in events if event.seq <= seq]
     last_ev = await provider.last_event(account, session)
     # Anchor the write-clock to the transcript's real age, so a page opened
     # mid-turn starts from the true last-write time (not "never wrote").
@@ -203,6 +211,20 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
             "assistant-session-done",
             render_session_done(templates, request.app.state.assistant, session_key),
         )
+        if backfill:
+            observed_messages = injector.observe_transcript(session_key, backfill)
+            yield format_sse(
+                "transcript",
+                render_transcript_events(
+                    templates,
+                    backfill,
+                    session_key=session_key,
+                    observed_messages=observed_messages,
+                ),
+                event_id=backfill[-1].seq,
+            )
+            last_activity_t = loop.time()
+            last_ev = backfill[-1]
         # The pending-interaction widget is server-rendered on page load and kept
         # live here — pushed ONLY when the interaction actually changes (a new
         # question, or the current one answered/cancelled). Never re-pushing an
@@ -220,9 +242,16 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
                 account, session, offset, seq
             )
             if new_events:
+                observed_messages = injector.observe_transcript(session_key, new_events)
                 yield format_sse(
                     "transcript",
-                    render_transcript_events(templates, new_events, session_key=session_key),
+                    render_transcript_events(
+                        templates,
+                        new_events,
+                        session_key=session_key,
+                        observed_messages=observed_messages,
+                    ),
+                    event_id=new_events[-1].seq,
                 )
                 last_activity_t = loop.time()
                 last_ev = new_events[-1]
@@ -314,9 +343,17 @@ async def _session_stream(request: Request, session_key: str) -> AsyncIterator[s
 
 
 @router.get("/events/sessions/{session_key}")
-async def session_events(request: Request, session_key: str) -> StreamingResponse:
+async def session_events(
+    request: Request, session_key: str, after_seq: int | None = None
+) -> StreamingResponse:
+    last_event_id = request.headers.get("last-event-id")
+    if last_event_id is not None:
+        try:
+            after_seq = int(last_event_id)
+        except ValueError:
+            pass
     return StreamingResponse(
-        _session_stream(request, session_key),
+        _session_stream(request, session_key, after_seq=after_seq),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
