@@ -200,11 +200,11 @@ class ClaudeCodeProvider(SessionProvider):
     )
 
     def __init__(self) -> None:
-        # (title, last_prompt, first_user, cwd, last_text) cache keyed by path,
-        # invalidated by mtime, so idle transcripts aren't re-parsed every scan.
+        # TranscriptMeta cache keyed by path, invalidated by mtime, so idle
+        # transcripts aren't re-parsed every scan.
         self._meta_cache: dict[
             str,
-            tuple[float, tuple[str | None, ...]],
+            tuple[float, transcripts_mod.TranscriptMeta],
         ] = {}
         # last-renderable-event cache (mtime-keyed) — the liveness sweep reads it
         # every few seconds per live session, so idle ones must stay a cache hit.
@@ -431,8 +431,7 @@ class ClaudeCodeProvider(SessionProvider):
         if path is None:
             return None
         meta = await asyncio.to_thread(transcripts_mod.transcript_meta, path)
-        last_text, last_role = meta[4], meta[5]
-        return last_text if last_role == "agent" else None
+        return meta.last_text if meta.last_role == "agent" else None
 
     def pending_interaction(
         self, account: Account, session: Session
@@ -465,11 +464,11 @@ class ClaudeCodeProvider(SessionProvider):
             key, interaction_id, answers=dict(answers), decision=decision
         )
 
-    def _cached_meta(self, path: Path) -> tuple[str | None, ...]:
+    def _cached_meta(self, path: Path) -> transcripts_mod.TranscriptMeta:
         try:
             mtime = path.stat().st_mtime
         except OSError:
-            return (None, None, None, None, None, None)
+            return transcripts_mod.TranscriptMeta()
         hit = self._meta_cache.get(str(path))
         if hit is not None and hit[0] == mtime:
             return hit[1]
@@ -550,7 +549,7 @@ class ClaudeCodeProvider(SessionProvider):
             tpath = transcripts.get(sid)
             if tpath is None:
                 continue
-            first_user = self._cached_meta(tpath)[2]
+            first_user = self._cached_meta(tpath).first_prompt
             kref = kanban_mod.parse_ref(first_user)
             if kref is not None:
                 krefs.append(kref)
@@ -572,9 +571,13 @@ class ClaudeCodeProvider(SessionProvider):
             # transcript when the registry/history don't have them.
             ai_title = last_prompt = first_user = tcwd = last_text = last_role = None
             if tpath is not None:
-                ai_title, last_prompt, first_user, tcwd, last_text, last_role = self._cached_meta(
-                    tpath
-                )
+                meta = self._cached_meta(tpath)
+                ai_title = meta.title
+                last_prompt = meta.last_prompt
+                first_user = meta.first_prompt
+                tcwd = meta.cwd
+                last_text = meta.last_text
+                last_role = meta.last_role
 
             cwd: Path | None = None
             if entry and entry.cwd:
@@ -688,7 +691,8 @@ class ClaudeCodeProvider(SessionProvider):
                 continue  # only nest under a shown parent; never shadow a real session
             last_activity = _mtime(sub_path)
             age = (now - last_activity).total_seconds() if last_activity else 1e9
-            ai_title, _sp, _sf, _tcwd, sub_text, sub_role = self._cached_meta(sub_path)
+            sub_meta = self._cached_meta(sub_path)
+            ai_title, sub_text, sub_role = sub_meta.title, sub_meta.last_text, sub_meta.last_role
             # transcript_meta drops isSidechain user lines, so read the subagent's
             # own first prompt (the Task description) for a human-readable title.
             task = _subagent_task(sub_path)
@@ -752,10 +756,10 @@ class ClaudeCodeProvider(SessionProvider):
                 if tp is not None:
                     # keep the list's messages as fresh as the detail tail — this
                     # is the mtime-cached meta, so idle transcripts cost nothing.
-                    _at, lp, _fu, _cwd, lt, lr = self._cached_meta(tp)
-                    last_prompt_now = lp or s.last_prompt
-                    last_text_now = lt or s.last_text
-                    last_role_now = lr or s.last_role
+                    tmeta = self._cached_meta(tp)
+                    last_prompt_now = tmeta.last_prompt or s.last_prompt
+                    last_text_now = tmeta.last_text or s.last_text
+                    last_role_now = tmeta.last_role or s.last_role
                     last_ev_now = self._cached_last_event(tp)  # cache hit (_activity read it)
                     context_now = self._cached_context_tokens(tp)
             if last_ev_now is not None and last_ev_now.question:

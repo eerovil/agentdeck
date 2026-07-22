@@ -21,6 +21,7 @@ from ...images import SUPPORTED_IMAGE_MEDIA_TYPES
 from ...models import TokenTotals, TranscriptEvent
 from ..transcript_reader import (
     LineParser,
+    TranscriptMeta,
     TranscriptRead,
     TranscriptReader,
     parse_ts,
@@ -467,18 +468,15 @@ def _assistant_text(obj: dict) -> str | None:
     return None
 
 
-def transcript_meta(
-    path: Path, *, head: int = 65536, tail: int = 32768
-) -> tuple[str | None, str | None, str | None, str | None, str | None, str | None]:
-    """Cheap extraction without parsing the whole file → (ai_title, last_prompt,
-    first_user_text, cwd, last_agent_text, last_role). Claude Code writes an
-    ``ai-title`` line (a concise session summary), ``last-prompt`` lines, and a
-    ``cwd`` field on every entry; we read the head (ai-title/first prompt/cwd
-    live there) and the tail (latest last-prompt + latest assistant reply),
-    latest occurrence winning. ``last_role`` ("user"/"agent") is who sent the
-    most recent *text* message, so the card can order the two lines correctly.
-    ``cwd`` is shown for idle sessions too — the live-process registry is gone
-    once a session is idle."""
+def transcript_meta(path: Path, *, head: int = 65536, tail: int = 32768) -> TranscriptMeta:
+    """Cheap head/tail session metadata as a shared ``TranscriptMeta``. Claude
+    Code writes an ``ai-title`` line (a concise session summary), ``last-prompt``
+    lines, and a ``cwd`` field on every entry; we read the head (ai-title/first
+    prompt/cwd live there) and the tail (latest last-prompt + latest assistant
+    reply), latest occurrence winning. ``last_role`` ("user"/"agent") is who sent
+    the most recent *text* message, so the card can order the two lines
+    correctly. ``cwd`` is shown for idle sessions too — the live-process registry
+    is gone once a session is idle."""
     ai_title: str | None = None
     last_prompt: str | None = None
     first_user: str | None = None
@@ -495,7 +493,7 @@ def transcript_meta(
                 f.seek(max(head, size - tail))
                 tail_bytes = f.read()
     except OSError:
-        return (None, None, None, None, None, None)
+        return TranscriptMeta()
 
     def scan(blob: bytes, skip_first_partial: bool) -> None:
         nonlocal ai_title, last_prompt, first_user, cwd, last_text, last_role, compacted
@@ -561,7 +559,14 @@ def transcript_meta(
     scan(head_bytes, skip_first_partial=False)
     if tail_bytes:
         scan(tail_bytes, skip_first_partial=True)
-    return (ai_title, last_prompt, first_user, cwd, last_text, last_role)
+    return TranscriptMeta(
+        title=ai_title,
+        last_prompt=last_prompt,
+        first_prompt=first_user,
+        cwd=cwd,
+        last_text=last_text,
+        last_role=last_role,
+    )
 
 
 def token_totals(events: list[TranscriptEvent]) -> TokenTotals:
