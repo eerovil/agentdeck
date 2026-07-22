@@ -313,7 +313,7 @@ class TranscriptEvent:  # normalized transcript line (parsed from v0.2)
     question: str | None = None  # AskUserQuestion prompt, when this line asks one
     answer: str | None = None  # your reply to an AskUserQuestion (from its tool_result)
     model: str | None = None
-    usage: dict | None = None  # raw usage block passthrough
+    tokens: TokenTotals | None = None  # normalized token usage for this line
     ts: datetime | None = None
     subagent: str | None = None  # set when from <uuid>/subagents/
     queued: bool = False  # user message typed while the agent was busy (enqueued)

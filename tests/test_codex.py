@@ -739,8 +739,8 @@ async def test_codex_transcript_parsing_and_token_totals(tmp_path):
     assert detail.tokens.total == 210
     assert detail.model == "gpt-5.6-sol"
     assert detail.skipped == 0
-    usage_events = [event for event in detail.events if event.usage]
-    assert usage_events[-1].usage["cached_input_tokens"] == 30
+    token_events = [event for event in detail.events if event.tokens]
+    assert token_events[-1].tokens.cache_read_tokens == 30
     assert (await provider.last_event(_account(tmp_path), session)).text == (
         "Implemented and tested"
     )

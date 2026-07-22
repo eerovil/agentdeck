@@ -28,7 +28,10 @@ from ..transcript_reader import (
     read_line,
 )
 from ..transcript_reader import (
-    # re-exported so callers keep using transcripts.transcript_cursor
+    # re-exported so callers keep using transcripts.<name>
+    token_totals as token_totals,
+)
+from ..transcript_reader import (
     transcript_cursor as transcript_cursor,
 )
 
@@ -511,10 +514,11 @@ def _event_from_line(seq: int, data: dict) -> TranscriptEvent | None:
         usage = _usage_from_event(payload)
         if usage is None:
             return None
-        # Usage is a standalone Codex event. Keep it in the neutral stream so
-        # callers can inspect the raw block; the template hides contentless
-        # bookkeeping events.
-        return TranscriptEvent(seq=seq, role="system", usage=usage, ts=timestamp)
+        # Usage is a standalone Codex event. Keep it in the neutral stream so its
+        # normalized tokens are summed; the template hides contentless events.
+        return TranscriptEvent(
+            seq=seq, role="system", tokens=_usage_totals(usage), ts=timestamp
+        )
 
     if outer_type != "response_item":
         return None
@@ -906,20 +910,3 @@ def last_turn_complete(path: Path, *, tail: int = _META_TAIL) -> bool:
         if event_type in ("task_started", "task_complete", "turn_aborted"):
             boundary = event_type
     return boundary == "task_complete"
-
-
-def token_totals(events: list[TranscriptEvent]) -> TokenTotals:
-    input_tokens = output_tokens = cached_tokens = 0
-    for event in events:
-        usage = event.usage
-        totals = _usage_totals(usage)
-        if totals is None:
-            continue
-        input_tokens += totals.input_tokens
-        output_tokens += totals.output_tokens
-        cached_tokens += totals.cache_read_tokens
-    return TokenTotals(
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        cache_read_tokens=cached_tokens,
-    )

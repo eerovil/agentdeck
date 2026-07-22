@@ -28,6 +28,9 @@ from ..transcript_reader import (
     read_line,
 )
 from ..transcript_reader import (
+    token_totals as token_totals,
+)
+from ..transcript_reader import (
     transcript_cursor as transcript_cursor,
 )
 
@@ -262,6 +265,21 @@ def _is_noise_user(obj: dict) -> bool:
     return bool(obj.get("isMeta") or obj.get("isCompactSummary")) or _is_slash_command_line(obj)
 
 
+def _usage_totals(usage: object) -> TokenTotals | None:
+    """Normalize a Claude ``message.usage`` block into TokenTotals, or None."""
+    if not isinstance(usage, dict):
+        return None
+    inp = int(usage.get("input_tokens", 0) or 0)
+    out = int(usage.get("output_tokens", 0) or 0)
+    cread = int(usage.get("cache_read_input_tokens", 0) or 0)
+    ccreate = int(usage.get("cache_creation_input_tokens", 0) or 0)
+    if not (inp or out or cread or ccreate):
+        return None
+    return TokenTotals(
+        input_tokens=inp, output_tokens=out, cache_read_tokens=cread, cache_creation_tokens=ccreate
+    )
+
+
 def _event_from_line(seq: int, data: dict) -> TranscriptEvent | None:
     ltype = data.get("type")
     if ltype == "queue-operation":
@@ -304,7 +322,7 @@ def _event_from_line(seq: int, data: dict) -> TranscriptEvent | None:
         question=question,
         answer=answer,
         model=model if isinstance(model, str) else None,
-        usage=usage if isinstance(usage, dict) else None,
+        tokens=_usage_totals(usage),
         ts=_parse_ts(data.get("timestamp")),
         image_media_types=image_media_types,
     )
@@ -566,21 +584,6 @@ def transcript_meta(path: Path, *, head: int = 65536, tail: int = 32768) -> Tran
         cwd=cwd,
         last_text=last_text,
         last_role=last_role,
-    )
-
-
-def token_totals(events: list[TranscriptEvent]) -> TokenTotals:
-    inp = out = cread = ccreate = 0
-    for ev in events:
-        u = ev.usage
-        if not u:
-            continue
-        inp += int(u.get("input_tokens", 0) or 0)
-        out += int(u.get("output_tokens", 0) or 0)
-        cread += int(u.get("cache_read_input_tokens", 0) or 0)
-        ccreate += int(u.get("cache_creation_input_tokens", 0) or 0)
-    return TokenTotals(
-        input_tokens=inp, output_tokens=out, cache_read_tokens=cread, cache_creation_tokens=ccreate
     )
 
 

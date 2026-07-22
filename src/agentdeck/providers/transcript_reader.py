@@ -165,6 +165,27 @@ def read_line(path: Path, seq: int) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def token_totals(events: list[TranscriptEvent]) -> TokenTotals:
+    """Sum the per-line normalized token usage over a transcript's events. Each
+    provider's LineParser normalizes its own wire usage onto ``event.tokens``, so
+    this fieldwise sum is provider-neutral."""
+    input_tokens = output_tokens = cache_read = cache_creation = 0
+    for event in events:
+        totals = event.tokens
+        if totals is None:
+            continue
+        input_tokens += totals.input_tokens
+        output_tokens += totals.output_tokens
+        cache_read += totals.cache_read_tokens
+        cache_creation += totals.cache_creation_tokens
+    return TokenTotals(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read,
+        cache_creation_tokens=cache_creation,
+    )
+
+
 def _read_tail(path: Path, tail: int) -> tuple[bytes, bool]:
     """Read the last ``tail`` bytes → (blob, seeked). ``seeked`` is True when the
     read started mid-file, so its first (partial) line must be dropped."""
