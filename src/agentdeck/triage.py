@@ -300,3 +300,73 @@ def verdict_card(session_key: str, verdict: Verdict) -> AssistantInsight | None:
         else "The agent's final message suggests it needs you."
     )
     return AssistantInsight(session_key, kind, verdict.summary, detail)
+
+
+# Deckhand's transient attention insight uses its own kind vocabulary; translate
+# it to the pill states. The durable verdict already speaks the pill vocabulary
+# (blocked/finished — constrained by parse_verdict), so it needs no map.
+_INSIGHT_PILL = {"waiting": "waiting", "stalled": "blocked", "finished": "finished"}
+
+
+@dataclass(frozen=True)
+class DeckhandStatus:
+    """The resolved Deckhand Status pill for one Session (CONTEXT.md)."""
+
+    state: str  # waiting|blocked|finished|done|merged|unknown — the dh-<state> CSS suffix
+    label: str  # pill text
+    title: str  # tooltip
+
+
+def resolve_deckhand_status(
+    session: Session,
+    *,
+    verdict: Verdict | None,
+    dismissed: bool,
+    dismissed_headline: str | None,
+    merged: bool,
+    live_insight: AssistantInsight | None,
+) -> DeckhandStatus | None:
+    """The single Deckhand Status pill for one session row, or None for no pill.
+
+    The four sources layer low precedence → high, last write winning: a durable
+    ``verdict`` (blocked/finished) is the base; an operator dismissal makes it
+    ``done``; a merged PR makes it ``merged`` (so shipped beats finished/done);
+    the live attention view (the only source of ``waiting``/structured cards)
+    re-asserts last, so a fresh blocked/waiting is never hidden by shipped/done.
+
+    The final pill precedence over that layered status and the Session's own
+    facts: a background chat carries no pill; an explicit ``done`` beats a pending
+    question (the dismissal is kept current by the message signature); a pending
+    question is otherwise always ``waiting`` (read straight off the session, so a
+    stale view can't drop it); else the layered status, but a non-live one is
+    hidden mid-turn since it judged an earlier turn; a resting unclassified chat
+    is ``unknown``; a working chat with nothing live shows no pill.
+    """
+    if session.is_delegated:
+        return None
+    state = headline = None
+    live = False
+    if verdict is not None:
+        state, headline, live = verdict.status, verdict.summary, False
+    if dismissed:
+        state, headline, live = "done", dismissed_headline or "Marked done", False
+    if merged:
+        state, headline, live = "merged", "Its PR was merged.", False
+    if live_insight is not None:
+        mapped = _INSIGHT_PILL.get(live_insight.kind)
+        if mapped:
+            state, headline, live = mapped, live_insight.headline, True
+
+    if state == "done" and not session.thinking:
+        return DeckhandStatus("done", "done", "Deckhand: " + headline)
+    if session.is_waiting:
+        return DeckhandStatus(
+            "waiting", "waiting", "Deckhand: the agent asked you a question"
+        )
+    if state is not None and (live or not session.thinking):
+        return DeckhandStatus(state, state, "Deckhand: " + headline)
+    if not session.thinking:
+        return DeckhandStatus(
+            "unknown", "?", "Deckhand has not classified this chat yet"
+        )
+    return None

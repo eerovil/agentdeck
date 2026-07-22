@@ -253,3 +253,64 @@ def test_tracking_summary_phrasing():
     assert tracking_summary(0) == "Nothing needs your attention right now."
     assert tracking_summary(1) == "1 agent needs your attention."
     assert tracking_summary(3) == "3 agents need your attention."
+
+
+def test_resolve_deckhand_status_precedence():
+    from agentdeck.triage import (
+        AssistantInsight,
+        DeckhandStatus,
+        Verdict,
+        resolve_deckhand_status,
+    )
+
+    def resolve(session, **kw):
+        kw.setdefault("verdict", None)
+        kw.setdefault("dismissed", False)
+        kw.setdefault("dismissed_headline", None)
+        kw.setdefault("merged", False)
+        kw.setdefault("live_insight", None)
+        return resolve_deckhand_status(session, **kw)
+
+    def live(kind, headline):
+        return AssistantInsight("codex:test:thread-1", kind, headline, "d")
+
+    finished = Verdict("finished", "Finished the work", "")
+
+    # A background/delegated chat never carries a pill.
+    assert resolve(_session(is_delegated=True), verdict=finished) is None
+    # A pending question -> waiting, read straight off the session.
+    p = resolve(_session(question="Which option?"))
+    assert (p.state, p.label) == ("waiting", "waiting")
+    # Resting dismissal -> done with a "Deckhand: <headline>" tooltip.
+    p = resolve(_session(), dismissed=True, dismissed_headline="Shipped")
+    assert p.state == "done" and p.title == "Deckhand: Shipped"
+    # Dismissed with no captured headline -> "Marked done".
+    assert resolve(_session(), dismissed=True).title == "Deckhand: Marked done"
+    # A merged pill renders on a resting chat.
+    assert resolve(_session(), merged=True).state == "merged"
+    # An explicit done beats a pending question.
+    assert resolve(
+        _session(question="Which?"), dismissed=True, dismissed_headline="Shipped"
+    ).state == "done"
+    # But automatic merged stays below a pending question.
+    assert resolve(_session(question="Which?"), merged=True).state == "waiting"
+    # A live insight shows even while the chat is thinking (stalled -> blocked).
+    assert resolve(_session(thinking=True), live_insight=live("stalled", "Hung")).state == "blocked"
+    # A non-live (stored) verdict is suppressed mid-turn.
+    assert resolve(_session(thinking=True), verdict=finished) is None
+    # Resting but unclassified -> "?".
+    p = resolve(_session())
+    assert (p.state, p.label) == ("unknown", "?")
+    # Actively working and unclassified -> no pill.
+    assert resolve(_session(thinking=True)) is None
+
+    # Layer precedence (low -> high: verdict < done < merged < live).
+    assert resolve(_session(), verdict=finished, merged=True).state == "merged"
+    assert resolve(_session(), verdict=finished, dismissed=True).state == "done"
+    assert resolve(_session(), dismissed=True, merged=True).state == "merged"
+    # A fresh waiting insight overrides merged — real attention is never masked.
+    waiting = resolve(_session(), merged=True, live_insight=live("waiting", "Asked"))
+    assert waiting.state == "waiting"
+    # A live insight with an unmapped kind does not override the lower layer.
+    assert resolve(_session(), merged=True, live_insight=live("chatter", "x")).state == "merged"
+    assert isinstance(resolve(_session(), merged=True), DeckhandStatus)

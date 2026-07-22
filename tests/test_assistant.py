@@ -451,3 +451,32 @@ async def test_no_push_when_disabled(tmp_path):
     _commit(svc, AssistantInsight("s:1", "waiting", "h", "d"))
     await _drain(svc)
     assert push.sent == []
+
+
+def test_deckhand_statuses_gathers_and_resolves(tmp_path):
+    from unittest.mock import AsyncMock
+
+    from agentdeck.models import Session, SessionStatus
+    from agentdeck.triage import AssistantInsight, AssistantView, Verdict
+
+    svc = _service(tmp_path, AsyncMock())
+
+    def sess(key, **kw):
+        return Session(
+            key=key, account_key="codex:test", session_id=key,
+            status=SessionStatus.IDLE, show_when_idle=True, **kw,
+        )
+
+    svc._verdicts = {"v": ("sig", Verdict("finished", "All shipped", ""))}
+    svc.view = AssistantView(
+        state="ready", insights=(AssistantInsight("i", "waiting", "Asked", "d"),)
+    )
+    statuses = svc.deckhand_statuses(
+        [sess("v"), sess("i"), sess("none"), sess("q", question="Which?")]
+    )
+    assert statuses["v"].state == "finished"  # durable verdict, resting
+    assert statuses["i"].state == "waiting"  # live attention view
+    assert statuses["none"].state == "unknown"  # resting, unclassified
+    assert statuses["q"].state == "waiting"  # pending question off the session
+    # A working, unclassified session yields no pill (absent key).
+    assert "w" not in svc.deckhand_statuses([sess("w", thinking=True)])

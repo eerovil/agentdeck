@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,12 +30,15 @@ from .state import AppState
 from .triage import (
     AssistantInsight,
     AssistantView,
+    DeckhandStatus,
     Verdict,
     all_pulls_terminal,
     card_priority,
     classification_prompt,
+    has_merged_pr,
     needs_llm,
     parse_verdict,
+    resolve_deckhand_status,
     structured_trigger,
     tracking_summary,
     verdict_card,
@@ -713,6 +716,38 @@ class AssistantService:
         of the transient attention view. Unlike ``view.insights`` these survive a
         run that produces no cards, so a per-session status pill stays stable."""
         return {key: verdict for key, (_sig, verdict) in self._verdicts.items()}
+
+    def deckhand_statuses(
+        self, sessions: Iterable[Session]
+    ) -> dict[str, DeckhandStatus]:
+        """One resolved Deckhand Status per given session; absent key = no pill.
+
+        Gathers the four status sources once — durable verdicts, operator
+        dismissals, merged-PR state, and the live attention view — and resolves
+        the final pill through ``triage.resolve_deckhand_status``, the single home
+        for the precedence the web layer used to reconstruct from these internals.
+        """
+        verdicts = self.session_verdicts()
+        handled = self.handled_keys()
+        live_by_key = {insight.session_key: insight for insight in self.view.insights}
+        statuses: dict[str, DeckhandStatus] = {}
+        for session in sessions:
+            key = session.key
+            handled_insight = self.handled_insight(key) if key in handled else None
+            context = self.contexts.get(key)
+            status = resolve_deckhand_status(
+                session,
+                verdict=verdicts.get(key),
+                dismissed=key in handled,
+                dismissed_headline=(
+                    handled_insight.headline if handled_insight is not None else None
+                ),
+                merged=context is not None and has_merged_pr(context),
+                live_insight=live_by_key.get(key),
+            )
+            if status is not None:
+                statuses[key] = status
+        return statuses
 
     # --- loop ----------------------------------------------------------
 
