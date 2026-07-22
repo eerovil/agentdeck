@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import AppConfig, AssistantConfig
+from .deckhand import deckhand_account, most_recent_first
 from .deckhand_runner import run_codex_json
 from .models import Account, Session, TranscriptEvent
 from .providers import PROVIDERS
@@ -149,12 +150,7 @@ class TitleService:
         self._last_run = 0.0
 
     def _model_account(self) -> Account | None:
-        codex = [account for account in self.accounts if account.provider_id == "codex"]
-        if self.config.account_key:
-            return next(
-                (account for account in codex if account.key == self.config.account_key), None
-            )
-        return codex[0] if codex else None
+        return deckhand_account(self.accounts, self.config.account_key)
 
     async def start(self) -> None:
         if self.config.enabled and self._model_account() is not None and self._task is None:
@@ -192,13 +188,7 @@ class TitleService:
             if record is not None and session.thinking:
                 continue
             pending.append((session, signature))
-        pending.sort(
-            key=lambda item: -(
-                (item[0].last_activity or item[0].started_at).timestamp()
-                if (item[0].last_activity or item[0].started_at)
-                else 0.0
-            )
-        )
+        pending.sort(key=lambda item: most_recent_first(item[0]))
         return pending
 
     async def _candidate(self, session: Session, signature: str) -> _Candidate | None:

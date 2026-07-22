@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import AppConfig, AssistantConfig
+from .deckhand import deckhand_account, most_recent_first
 from .deckhand_runner import run_codex_json
 from .git_context import GitContext, GitContextResolver
 from .models import Account, Capability, PendingInteraction, Session
@@ -216,12 +217,7 @@ class AssistantService:
     # --- lifecycle -----------------------------------------------------
 
     def _account(self) -> Account | None:
-        codex = [account for account in self.accounts if account.provider_id == "codex"]
-        if self.config.account_key:
-            return next(
-                (account for account in codex if account.key == self.config.account_key), None
-            )
-        return codex[0] if codex else None
+        return deckhand_account(self.accounts, self.config.account_key)
 
     async def start(self) -> None:
         if self.config.enabled and self._task is None:
@@ -278,13 +274,7 @@ class AssistantService:
         blocking = [s for s in visible if s.question or self._interaction(s) is not None]
         blocking_keys = {s.key for s in blocking}
         remaining = [s for s in visible if s.key not in blocking_keys]
-        remaining.sort(
-            key=lambda s: -(
-                (s.last_activity or s.started_at).timestamp()
-                if (s.last_activity or s.started_at)
-                else 0.0
-            )
-        )
+        remaining.sort(key=most_recent_first)
         selected = blocking + remaining[: max(0, self.config.max_sessions - len(blocking))]
         self.analysis_session_count = len(selected)
         self.total_session_count = len(visible)
