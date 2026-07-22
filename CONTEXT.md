@@ -121,6 +121,19 @@ The number of top-level Sessions currently doing effective work, with descendant
 through its top-level parent.
 _Avoid_: Active process count, worker count
 
+## Transcripts
+
+**Transcript Reader**:
+The shared incremental machinery that turns a provider transcript file into ordered normalized
+events with resumable cursors, bounded tail probes, and skip-counted malformed lines, independent
+of any provider's line format.
+_Avoid_: parser when the shared machinery is meant, tailer
+
+**Line Parser**:
+A Provider's adapter that interprets one raw transcript line into at most one normalized event,
+owning all knowledge of that provider's wire format.
+_Avoid_: transcript parser, event mapper
+
 ## Control and ownership
 
 **AgentDeck Ownership**:

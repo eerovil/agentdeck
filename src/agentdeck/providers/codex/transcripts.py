@@ -13,14 +13,31 @@ import binascii
 import json
 import logging
 import re
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 from ...images import SUPPORTED_IMAGE_MEDIA_TYPES
 from ...models import TokenTotals, TranscriptEvent
+from ..transcript_reader import (
+    LineParser,
+    TranscriptMeta,
+    TranscriptRead,
+    TranscriptReader,
+    parse_objects,
+    parse_ts,
+    read_line,
+)
+from ..transcript_reader import (
+    # re-exported so callers keep using transcripts.transcript_cursor
+    transcript_cursor as transcript_cursor,
+)
 
 log = logging.getLogger(__name__)
+
+# Local aliases keep the many existing private-name call sites unchanged while
+# the shared machinery lives in ``transcript_reader``.
+_parse_ts = parse_ts
+_objects = parse_objects
 
 _MAX_TOOL_OUTPUT = 4000
 _MAX_TOOL_DETAIL = 8000
@@ -43,56 +60,6 @@ _DELEGATION_SESSION_RE = re.compile(
     r"(?=$|\r?\n|\\n)",
     re.MULTILINE,
 )
-
-
-@dataclass
-class TranscriptRead:
-    events: list[TranscriptEvent]
-    byte_offset: int
-    seq: int
-    skipped: int
-
-
-@dataclass(frozen=True)
-class TranscriptMeta:
-    session_id: str | None = None
-    cwd: str | None = None
-    started_at: datetime | None = None
-    title: str | None = None
-    first_prompt: str | None = None
-    last_prompt: str | None = None
-    last_text: str | None = None
-    # The agent's canonical final message from the last `task_complete` event.
-    # Unlike last_text (the last assistant *item*), this is what Codex reports as
-    # the turn result, so it is immune to intermediate/approval-path noise.
-    last_agent_message: str | None = None
-    last_role: str | None = None
-    model: str | None = None
-    kind: str | None = None
-    tokens: TokenTotals | None = None
-    context_tokens: int | None = None
-    is_approval_review: bool = False
-    # Codex helper rollouts (spawned agents and guardian/auto-review runs) reuse
-    # the parent session_id. They are separate files and must never represent
-    # the parent conversation in AgentDeck.
-    is_subagent: bool = False
-    is_spawned_subagent: bool = False
-    task_active: bool = False
-    task_started_at: datetime | None = None
-    agent_id: str | None = None
-    agent_nickname: str | None = None
-    agent_role: str | None = None
-    task_finished_at: datetime | None = None
-    task_status: str | None = None
-
-
-def _parse_ts(value: object) -> datetime | None:
-    if not isinstance(value, str):
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
 
 
 def _safe_int(value: object) -> int:
@@ -177,12 +144,7 @@ def transcript_image(path: Path, seq: int, image_index: int) -> tuple[str, bytes
     """Decode one bounded image from an exact rollout line."""
     if seq < 1 or image_index < 0:
         return None
-    try:
-        with path.open("rb") as handle:
-            raw = next((line for number, line in enumerate(handle, 1) if number == seq), None)
-        data = json.loads(raw) if raw is not None else None
-    except (OSError, TypeError, ValueError):
-        return None
+    data = read_line(path, seq)
     payload = data.get("payload") if isinstance(data, dict) else None
     content = payload.get("content") if isinstance(payload, dict) else None
     images = _image_sources(content)
@@ -642,59 +604,22 @@ def _event_from_line(seq: int, data: dict) -> TranscriptEvent | None:
     return None
 
 
+class _CodexLineParser(LineParser):
+    def event_from_line(self, seq: int, obj: dict) -> TranscriptEvent | None:
+        return _event_from_line(seq, obj)
+
+    def is_probe_event(self, event: TranscriptEvent) -> bool:
+        # Usage-only heartbeat events carry no open-turn signal; the latest
+        # conversational/tool line is the one that decides busy-vs-waiting.
+        return bool(event.text or event.tool_name or event.question)
+
+
+_READER = TranscriptReader(_CodexLineParser())
+
+
 def read_events(path: Path, *, byte_offset: int = 0, seq: int = 0) -> TranscriptRead:
     """Read complete lines after a byte cursor; leave a partial tail pending."""
-    events: list[TranscriptEvent] = []
-    skipped = 0
-    try:
-        size = path.stat().st_size
-        if byte_offset > size:
-            byte_offset = 0
-            seq = 0
-        with path.open("rb") as handle:
-            handle.seek(byte_offset)
-            data = handle.read()
-    except OSError:
-        return TranscriptRead(events, byte_offset, seq, skipped)
-    last_newline = data.rfind(b"\n")
-    if last_newline == -1:
-        return TranscriptRead(events, byte_offset, seq, skipped)
-    complete = data[: last_newline + 1]
-    for raw in complete.splitlines():
-        seq += 1
-        line = raw.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-        except ValueError:
-            skipped += 1
-            continue
-        if not isinstance(obj, dict):
-            skipped += 1
-            continue
-        event = _event_from_line(seq, obj)
-        if event is not None:
-            events.append(event)
-    if skipped:
-        log.debug("%s: skipped %d malformed Codex transcript lines", path.name, skipped)
-    return TranscriptRead(events, byte_offset + len(complete), seq, skipped)
-
-
-def transcript_cursor(path: Path, *, chunk_size: int = 256 * 1024) -> tuple[int, int]:
-    """End cursor with bounded memory, counting only newline-terminated lines."""
-    offset = seq = position = 0
-    try:
-        with path.open("rb") as handle:
-            while chunk := handle.read(chunk_size):
-                seq += chunk.count(b"\n")
-                last_newline = chunk.rfind(b"\n")
-                if last_newline != -1:
-                    offset = position + last_newline + 1
-                position += len(chunk)
-    except OSError:
-        return (0, 0)
-    return (offset, seq)
+    return _READER.read_events(path, byte_offset=byte_offset, seq=seq)
 
 
 def _bounded_parts(path: Path, head: int, tail: int) -> tuple[bytes, bytes]:
@@ -946,45 +871,14 @@ def transcript_meta(
 
 def last_event(path: Path, *, tail: int = _META_TAIL) -> TranscriptEvent | None:
     """Most recent conversational/tool event from a bounded complete-line tail."""
-    try:
-        size = path.stat().st_size
-        with path.open("rb") as handle:
-            if size > tail:
-                handle.seek(size - tail)
-            blob = handle.read(tail)
-    except OSError:
-        return None
-    skip_first = size > tail
-    found = None
-    for obj in _objects(blob, skip_first_partial=skip_first, require_final_newline=True):
-        event = _event_from_line(0, obj)
-        if event is not None and (event.text or event.tool_name or event.question):
-            found = event
-    return found
+    return _READER.last_event(path, tail=tail)
 
 
 def recent_conversation(
     path: Path, *, limit: int = 4, tail: int = 1024 * 1024
 ) -> list[TranscriptEvent]:
     """Recent conversational messages from a bounded complete-line rollout tail."""
-    try:
-        size = path.stat().st_size
-        with path.open("rb") as handle:
-            if size > tail:
-                handle.seek(size - tail)
-            blob = handle.read(tail)
-    except OSError:
-        return []
-    events = []
-    for obj in _objects(
-        blob,
-        skip_first_partial=size > tail,
-        require_final_newline=True,
-    ):
-        event = _event_from_line(0, obj)
-        if event is not None and event.role in ("user", "assistant") and event.text:
-            events.append(event)
-    return events[-limit:]
+    return _READER.recent_conversation(path, limit=limit, tail=tail)
 
 
 def last_turn_complete(path: Path, *, tail: int = _META_TAIL) -> bool:
