@@ -244,6 +244,7 @@ def _is_noise_user(text: str | None) -> bool:
             "<environment_context>",
             "<recommended_plugins>",
             "<subagent_notification>",
+            "<turn_aborted>",
             "# agents.md instructions for ",
             "<instructions>",
         )
@@ -386,6 +387,18 @@ def _subagent_notification(text: str | None) -> tuple[str | None, str, str | Non
         )
     status = str(status_value).replace("_", " ") if status_value is not None else "updated"
     return agent_id if isinstance(agent_id, str) else None, status, None
+
+
+def _turn_aborted_detail(text: str | None) -> str | None:
+    """Decode Codex's interrupted-turn wrapper without exposing protocol tags."""
+    if not text:
+        return None
+    wrapped = text.strip()
+    prefix = "<turn_aborted>"
+    suffix = "</turn_aborted>"
+    if not (wrapped.startswith(prefix) and wrapped.endswith(suffix)):
+        return None
+    return wrapped.removeprefix(prefix).removesuffix(suffix).strip() or None
 
 
 def _one_line(value: str | None, limit: int = _MAX_TOOL_SUMMARY) -> str | None:
@@ -543,6 +556,18 @@ def _event_from_line(seq: int, data: dict) -> TranscriptEvent | None:
                 ts=timestamp,
                 subagent_status=status,
                 subagent_id=agent_id,
+            )
+        turn_aborted = _turn_aborted_detail(text) if native_role == "user" else None
+        if turn_aborted is not None:
+            return TranscriptEvent(
+                seq=seq,
+                role="system",
+                tool_name="turn_aborted",
+                tool_display_name="Turn aborted",
+                tool_summary="Interrupted by user",
+                tool_detail=turn_aborted,
+                ts=timestamp,
+                turn_continues=False,
             )
         role = "system" if native_role in ("developer", "system") else native_role
         if role not in ("user", "assistant", "system"):
