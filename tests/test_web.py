@@ -328,7 +328,7 @@ async def test_orchestration_assistant_item_can_be_marked_handled(tmp_path):
     assert "Choose one owner" in response.text
     assert "Undo" in response.text
     assert "Nothing needs your attention right now." in response.text
-    assert assistant._handled == {"claude_code:test:sid1": evidence}
+    assert assistant.dismissals.insight_signature("claude_code:test:sid1") == evidence
 
     async with _client(app) as client:
         handled_page = await client.get("/sessions/claude_code:test:sid1")
@@ -356,7 +356,7 @@ async def test_orchestration_assistant_item_can_be_marked_handled(tmp_path):
     assert restored.status_code == 200
     assert 'class="assistant-insight-link"' in restored.text
     assert 'aria-label="Most recently completed Deckhand item"' not in restored.text
-    assert assistant._handled == {}
+    assert assistant.dismissals.insight_keys() == []
 
     async with _client(app) as client:
         restored_page = await client.get("/sessions/claude_code:test:sid1")
@@ -587,12 +587,11 @@ async def test_session_card_shows_deckhand_status_pill(tmp_path):
         "claude_code:test:subagent": ("sig", Verdict("blocked", "Subagent internal step", "")),
     }
     # A manually dismissed chat resolves to a non-attention "done" pill.
-    assistant._handled = {"claude_code:test:done": "sig"}
-    assistant._handled_insights = {
-        "claude_code:test:done": AssistantInsight(
-            "claude_code:test:done", "finished", "All shipped and verified", "d"
-        ),
-    }
+    assistant.dismissals.dismiss_insight(
+        "claude_code:test:done",
+        "sig",
+        AssistantInsight("claude_code:test:done", "finished", "All shipped and verified", "d"),
+    )
     # A merged PR resolves to a non-attention "merged" pill, derived from PR status.
     assistant.contexts = {
         "claude_code:test:merged": GitContext(
@@ -659,12 +658,11 @@ async def test_hide_done_toggle_hides_done_rows_and_persists(tmp_path):
                 thinking=False,
             )
         )
-    assistant._handled = {"claude_code:test:done": "sig"}
-    assistant._handled_insights = {
-        "claude_code:test:done": AssistantInsight(
-            "claude_code:test:done", "finished", "All shipped", "d"
-        ),
-    }
+    assistant.dismissals.dismiss_insight(
+        "claude_code:test:done",
+        "sig",
+        AssistantInsight("claude_code:test:done", "finished", "All shipped", "d"),
+    )
     async with _client(app) as c:
         r = await c.get("/")
     assert 'class="dh-pill dh-done"' in r.text
@@ -3610,7 +3608,8 @@ async def test_waiting_insight_dismissal_uses_message_key_and_survives_refresh(t
         resp = await client.post("/assistant/handle", data={"session_key": key})
     assert resp.status_code == 200
     # Routed to the message-signature store, not the evidence-signature one.
-    assert key in assistant._waiting_done and key not in assistant._handled
+    assert assistant.dismissals.is_waiting_dismissed(key)
+    assert assistant.dismissals.insight_signature(key) is None
     assert assistant.is_handled(key)
 
     # Evidence churn alone does not revert it.

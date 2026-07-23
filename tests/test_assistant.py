@@ -136,15 +136,16 @@ async def test_delegated_agent_is_removed_from_old_handled_state(tmp_path):
     session = _finished(tmp_path, is_delegated=True)
     state.update_session(session)
     assistant = _service(tmp_path, AsyncMock(), state=state)
-    assistant._handled[session.key] = "old-evidence"
-    assistant._handled_insights[session.key] = AssistantInsight(
-        session.key, "stalled", "Old delegated card", "Old detail"
+    assistant.dismissals.dismiss_insight(
+        session.key,
+        "old-evidence",
+        AssistantInsight(session.key, "stalled", "Old delegated card", "Old detail"),
     )
 
     await assistant.refresh()
 
     assert assistant.handled_items == ()
-    assert session.key not in assistant._handled
+    assert not assistant.dismissals.is_dismissed(session.key)
 
 
 async def test_finished_agent_with_pr_review_shows_a_finished_card(tmp_path):
@@ -306,7 +307,7 @@ async def test_handle_hides_card_until_evidence_changes(tmp_path):
     state.update_session(_finished(tmp_path, last_text="New problem appeared."))
     await assistant.refresh()  # evidence changed -> resurfaces
     assert len(assistant.view.insights) == 1
-    assert "codex:test:thread-1" not in assistant._handled
+    assert not assistant.dismissals.is_dismissed("codex:test:thread-1")
 
 
 async def test_unhandle_restores_card_immediately(tmp_path):

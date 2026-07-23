@@ -22,6 +22,7 @@ from typing import Any
 from .config import AppConfig, AssistantConfig
 from .deckhand import deckhand_account, most_recent_first
 from .deckhand_runner import run_codex_json
+from .dismissals import Dismissals
 from .git_context import GitContext, GitContextResolver
 from .models import Account, Capability, PendingInteraction, Session
 from .providers import PROVIDERS
@@ -50,9 +51,6 @@ _SCHEMA_PATH = Path(__file__).with_name("assistant_output.schema.json")
 _MAX_SIGNATURE_CHARS = 600
 # A session marked active but silent this long is treated as possibly hung.
 _HANG_AFTER_S = 600.0
-# Sentinel ``kind`` distinguishing a question-waiting dismissal (keyed on the
-# message signature) from an insight dismissal in the shared handled DB table.
-_WAITING_DONE_KIND = "__waiting_done__"
 
 
 @dataclass(frozen=True)
@@ -128,25 +126,9 @@ class AssistantService:
         self._force = True
         checkpoint = state.db.load_assistant_checkpoint() if state.db else None
         self._restore_checkpoint(checkpoint)
-        handled = state.db.load_assistant_handled() if state.db else {}
-        self._handled = {
-            session_key: record[0]
-            for session_key, record in handled.items()
-            if record[1] != _WAITING_DONE_KIND
-        }
-        self._handled_insights = {
-            session_key: AssistantInsight(session_key, kind, headline, detail or "")
-            for session_key, (_, kind, headline, detail) in handled.items()
-            if kind is not None and kind != _WAITING_DONE_KIND and headline is not None
-        }
-        # session_key -> message signature captured when a plain question-waiting
-        # chat was marked done. Kept apart from insight dismissals because it
-        # reverts on a NEW MESSAGE (message signature), not on any evidence change.
-        self._waiting_done = {
-            session_key: record[0]
-            for session_key, record in handled.items()
-            if record[1] == _WAITING_DONE_KIND
-        }
+        # Operator dismissals (insight + question-waiting) and their persistence,
+        # behind one store — see dismissals.py.
+        self.dismissals = Dismissals.load(state.db)
 
     # --- persistence ---------------------------------------------------
 
@@ -402,12 +384,9 @@ class AssistantService:
         live_keys = {
             session.key for session in self.state.sessions.values() if not session.is_delegated
         }
-        delegated_handled = set(self._handled) - live_keys
+        delegated_handled = set(self.dismissals.insight_keys()) - live_keys
         for session_key in delegated_handled & self.state.delegated_session_keys:
-            self._handled.pop(session_key, None)
-            self._handled_insights.pop(session_key, None)
-            if self.state.db:
-                self.state.db.delete_assistant_handled(session_key)
+            self.dismissals.drop_insight(session_key)
         self.contexts = {k: v for k, v in self.contexts.items() if k in live_keys}
         self.contexts.update(resolved)
         self._verdicts = {k: v for k, v in self._verdicts.items() if k in live_keys}
@@ -472,28 +451,11 @@ class AssistantService:
                 if card is not None:
                     cards.append(card)
 
-        # Drop insight dismissals whose session's evidence changed. A key absent
-        # from this run's signatures is left alone (not seen, not changed).
-        for key in list(self._handled):
-            new_sig = signatures.get(key)
-            if new_sig is not None and new_sig != self._handled[key]:
-                self._handled.pop(key, None)
-                self._handled_insights.pop(key, None)
-                if self.state.db:
-                    self.state.db.delete_assistant_handled(key)
-        # Drop question-waiting dismissals once the message changes (new turn) or
-        # the question is answered/gone — the revert-on-new-message rule.
-        for key in list(self._waiting_done):
-            session = self.state.sessions.get(key)
-            current = (
-                self._message_signature(session)
-                if session is not None and session.question
-                else None
-            )
-            if current != self._waiting_done[key]:
-                self._waiting_done.pop(key, None)
-                if self.state.db:
-                    self.state.db.delete_assistant_handled(key)
+        # Drop dismissals whose session identity moved (insight → evidence
+        # signature; waiting → message signature / question gone).
+        self.dismissals.prune_stale(
+            signatures, self.state.sessions.get, self._message_signature
+        )
         cards = self._apply_handled(cards, signatures)
         cards = self._dedupe_and_order(cards)
         view = AssistantView(
@@ -514,22 +476,15 @@ class AssistantService:
             # A question-waiting dismissal hides the re-created waiting card too,
             # so the next refresh can't resurface it (stale entries were already
             # pruned above, so anything left here is still valid).
-            if card.session_key in self._waiting_done:
+            if self.dismissals.is_waiting_dismissed(card.session_key):
                 continue
-            handled_sig = self._handled.get(card.session_key)
+            handled_sig = self.dismissals.insight_signature(card.session_key)
             current = signatures.get(card.session_key)
             if handled_sig is not None and handled_sig == current:
-                self._handled_insights[card.session_key] = card
-                if self.state.db:
-                    self.state.db.record_assistant_handled(
-                        card.session_key, handled_sig, card.kind, card.headline, card.detail
-                    )
+                self.dismissals.refresh_insight(card.session_key, card)
                 continue
             if handled_sig is not None:
-                self._handled.pop(card.session_key, None)
-                self._handled_insights.pop(card.session_key, None)
-                if self.state.db:
-                    self.state.db.delete_assistant_handled(card.session_key)
+                self.dismissals.drop_insight(card.session_key)
             visible.append(card)
         return visible
 
@@ -612,12 +567,9 @@ class AssistantService:
         # Deckhand also raised a waiting card; drop that card so the panel clears
         # (and _apply_handled keeps the next refresh from resurfacing it).
         if session is not None and session.is_waiting:
-            msig = self._message_signature(session)
-            self._waiting_done[session_key] = msig
-            if self.state.db:
-                self.state.db.record_assistant_handled(
-                    session_key, msig, _WAITING_DONE_KIND, "Marked done", session.question
-                )
+            self.dismissals.dismiss_waiting(
+                session_key, self._message_signature(session), session.question
+            )
             insights = tuple(
                 i for i in self.view.insights if i.session_key != session_key
             )
@@ -635,12 +587,7 @@ class AssistantService:
         signature = self._signatures.get(session_key)
         if insight is None or signature is None:
             return False
-        self._handled[session_key] = signature
-        self._handled_insights[session_key] = insight
-        if self.state.db:
-            self.state.db.record_assistant_handled(
-                session_key, signature, insight.kind, insight.headline, insight.detail
-            )
+        self.dismissals.dismiss_insight(session_key, signature, insight)
         insights = tuple(i for i in self.view.insights if i.session_key != session_key)
         self.view = replace(
             self.view, summary=tracking_summary(len(insights)), insights=insights
@@ -650,19 +597,16 @@ class AssistantService:
         return True
 
     def unhandle(self, session_key: str) -> bool:
-        waiting_done = self._waiting_done.pop(session_key, None) is not None
-        if session_key not in self._handled and not waiting_done:
+        if not self.dismissals.is_dismissed(session_key):
             return False
-        if self.state.db:
-            self.state.db.delete_assistant_handled(session_key)
-        if session_key in self._handled:
-            handled_sig = self._handled.pop(session_key)
-            insight = self._handled_insights.pop(session_key, None)
+        dismissal = self.dismissals.restore(session_key)
+        if dismissal is not None:  # an insight dismissal (waiting carries none)
+            insight = dismissal.insight
             # Restore the card immediately when its evidence is still current, so
             # the undo is visible without waiting for the next triage tick.
             current = self._signatures.get(session_key)
             already_shown = any(i.session_key == session_key for i in self.view.insights)
-            if insight is not None and current == handled_sig and not already_shown:
+            if insight is not None and current == dismissal.signature and not already_shown:
                 insights = self.view.insights + (insight,)
                 self.view = replace(
                     self.view, summary=tracking_summary(len(insights)), insights=insights
@@ -675,21 +619,20 @@ class AssistantService:
     @property
     def handled_items(self) -> tuple[AssistantHandledItem, ...]:
         """Most recent handled card; older entries stay persisted as an undo stack."""
-        for session_key in reversed(self._handled):
-            insight = self._handled_insights.get(session_key)
-            session = self.state.sessions.get(session_key)
-            headline = (
-                insight.headline
-                if insight is not None
-                else (session.display_title if session else "Handled item")
-            )
-            return (AssistantHandledItem(session_key, headline),)
-        return ()
+        latest = self.dismissals.latest_insight()
+        if latest is None:
+            return ()
+        session_key, insight = latest
+        session = self.state.sessions.get(session_key)
+        headline = (
+            insight.headline
+            if insight is not None
+            else (session.display_title if session else "Handled item")
+        )
+        return (AssistantHandledItem(session_key, headline),)
 
     def handled_insight(self, session_key: str) -> AssistantInsight | None:
-        if session_key not in self._handled:
-            return None
-        return self._handled_insights.get(session_key)
+        return self.dismissals.insight(session_key)
 
     def is_handled(self, session_key: str) -> bool:
         """Whether ``session_key`` currently reads as dismissed (signature still
@@ -698,22 +641,11 @@ class AssistantService:
 
     def _handled_keys(self) -> frozenset[str]:
         """Sessions currently dismissed by the operator — they render a ``done``
-        pill. A dismissal is valid only while its capture-time signature still
-        holds, so it auto-reverts here (before the periodic refresh even prunes
-        it): insight dismissals key on the evidence signature, question-waiting
-        dismissals on the message signature (revert on a new message). A key not
-        seen in the last triage keeps its dismissal (absent, not changed)."""
-        keys = {
-            key
-            for key, sig in self._handled.items()
-            if self._signatures.get(key, sig) == sig
-        }
-        for key, msig in self._waiting_done.items():
-            session = self.state.sessions.get(key)
-            current = self._message_signature(session) if session is not None else msig
-            if current == msig:
-                keys.add(key)
-        return frozenset(keys)
+        pill. Validity is re-checked here (before the periodic prune even runs)
+        against current identities, so a stale dismissal auto-reverts."""
+        return self.dismissals.active_keys(
+            self._signatures, self.state.sessions.get, self._message_signature
+        )
 
     def _session_verdicts(self) -> dict[str, Verdict]:
         """Durable per-session classifier verdict (blocked/finished), independent
