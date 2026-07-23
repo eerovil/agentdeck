@@ -2887,3 +2887,96 @@ def test_queued_message_is_pending_predicate():
     assert not _state("observed").is_pending
     assert not _state("complete").is_pending
     assert not _state("failed").is_pending
+
+
+def _steer_session(account):
+    return Session(
+        "codex:test:sid", account.key, "sid", SessionStatus.LIVE,
+        capabilities=frozenset({Capability.STEER}),
+    )
+
+
+async def test_deliver_now_tracks_and_steers(tmp_path):
+    class Provider:
+        async def transcript_cursor(self, account, session):
+            return (0, 3)
+
+        async def steer(self, account, session, message, images=None):
+            return InjectResult(True, session_id="sid")
+
+    service = InjectionService(InjectConfig(enabled=True))
+    account = Account("codex:test", "codex", "test", tmp_path)
+    receipt = await service.deliver_now(account, _steer_session(account), Provider(), "go")
+
+    assert receipt.result.accepted
+    assert receipt.item is not None and receipt.item.state == "accepted"
+    assert receipt.item.after_seq == 3  # the cursor read is tracked on the row
+
+
+async def test_deliver_now_cleans_images_immediately_on_rejection(tmp_path):
+    class Provider:
+        async def transcript_cursor(self, account, session):
+            return (0, 0)
+
+        async def steer(self, account, session, message, images=None):
+            return InjectResult(False, "turn not active")
+
+    service = InjectionService(InjectConfig(enabled=True))
+    account = Account("codex:test", "codex", "test", tmp_path)
+    image = tmp_path / "s.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n")
+    receipt = await service.deliver_now(account, _steer_session(account), Provider(), "x", [image])
+
+    assert not receipt.result.accepted
+    assert not image.exists()  # rejected → cleaned now, not deferred
+
+
+async def test_deliver_now_defers_image_cleanup_until_turn_ends(tmp_path):
+    waited = asyncio.Event()
+
+    class Provider:
+        async def transcript_cursor(self, account, session):
+            return (0, 0)
+
+        async def steer(self, account, session, message, images=None):
+            return InjectResult(True)
+
+        async def wait_for_session(self, account, session_id, *, timeout_s):
+            waited.set()
+            return InjectResult(True)
+
+    service = InjectionService(InjectConfig(enabled=True, timeout_s=1))
+    account = Account("codex:test", "codex", "test", tmp_path)
+    image = tmp_path / "s.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n")
+    receipt = await service.deliver_now(account, _steer_session(account), Provider(), "x", [image])
+
+    assert receipt.result.accepted
+    assert image.exists()  # accepted → deferred, still served mid-turn
+    await asyncio.wait_for(waited.wait(), timeout=1)
+    await asyncio.sleep(0)
+    assert not image.exists()  # cleaned once the turn finished
+
+
+async def test_deliver_now_compensates_and_reraises_on_error(tmp_path):
+    class Provider:
+        async def transcript_cursor(self, account, session):
+            return (0, 0)
+
+        async def steer(self, account, session, message, images=None):
+            raise RuntimeError("boom")
+
+    service = InjectionService(InjectConfig(enabled=True))
+    account = Account("codex:test", "codex", "test", tmp_path)
+    session = _steer_session(account)
+    image = tmp_path / "s.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    raised = False
+    try:
+        await service.deliver_now(account, session, Provider(), "x", [image])
+    except RuntimeError:
+        raised = True
+    assert raised  # the error propagates to the caller
+    assert not image.exists()  # images cleaned on the exception path
+    assert service.status(session.key).items[-1].state == "failed"  # row marked failed

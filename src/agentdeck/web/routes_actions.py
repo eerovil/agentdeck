@@ -11,7 +11,7 @@ from fastapi.responses import HTMLResponse, Response
 from starlette.datastructures import FormData
 
 from ..images import media_type_for_suffix, sniff_suffix, suffix_for_media_type
-from ..models import Capability, InjectResult
+from ..models import Capability
 from ..providers import PROVIDERS
 from .action_timing import bind_action, timing_span
 from .deps import (
@@ -261,38 +261,12 @@ async def steer_turn(request: Request, session_key: str) -> HTMLResponse:
     if not config.enabled or Capability.STEER not in session.capabilities:
         raise HTTPException(status_code=403, detail="active-turn steering unavailable")
     message, images, _ = await _turn_form(request)
-    injector = get_injector(request)
-    tracked = None
-    try:
-        _, after_seq = await provider.transcript_cursor(account, session)
-        tracked = injector.begin_delivery(
-            session.key,
-            message,
-            images,
-            client_action_id=client_action_id,
-            after_seq=after_seq,
+    with timing_span(request, "runtime"):
+        receipt = await get_injector(request).deliver_now(
+            account, session, provider, message, images, client_action_id=client_action_id
         )
-        kwargs = {"images": images} if images else {}
-        with timing_span(request, "runtime"):
-            result = await provider.steer(account, session, message, **kwargs)
-    except BaseException as exc:
-        if tracked is not None:
-            injector.finish_delivery(
-                session.key, tracked, InjectResult(False, str(exc) or "steering failed")
-            )
-        cleanup_image_files(images)
-        raise
-    injector.finish_delivery(session.key, tracked, result)
-    if not result.accepted:
-        cleanup_image_files(images)
-        raise HTTPException(status_code=409, detail=result.reason)
-    if images:
-        injector.defer_cleanup(
-            account,
-            provider,
-            session.session_id,
-            images,
-        )
+    if not receipt.result.accepted:
+        raise HTTPException(status_code=409, detail=receipt.result.reason)
     return HTMLResponse(
         '<div id="steer-result" class="inject-result complete">Sent to active turn.</div>'
     )

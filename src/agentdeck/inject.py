@@ -63,6 +63,17 @@ class QueuedMessage:
 
 
 @dataclass(frozen=True)
+class InjectionReceipt:
+    """The outcome of a delivery, plus its optimistic row. ``action_state`` is the
+    resolved queued-vs-accepted signal the route forwards as the
+    ``X-AgentDeck-Action-State`` header, so no caller re-derives it."""
+
+    result: InjectResult
+    item: QueuedMessage | None
+    action_state: str = "accepted"  # "queued" | "accepted"
+
+
+@dataclass(frozen=True)
 class DelegationStatus:
     id: str
     state: str
@@ -167,7 +178,7 @@ class InjectionService:
         task = self._tasks.get(session_key)
         return task is not None and not task.done()
 
-    def begin_delivery(
+    def _begin_delivery(
         self,
         session_key: str,
         message: str,
@@ -190,7 +201,7 @@ class InjectionService:
         self._snapshot(session_key)
         return item
 
-    def finish_delivery(
+    def _finish_delivery(
         self, session_key: str, item: QueuedMessage, result: InjectResult
     ) -> None:
         """Record handoff outcome without regressing an already observed item."""
@@ -207,6 +218,52 @@ class InjectionService:
             item.state = "failed"
         item.reason = result.reason
         self._snapshot(session_key)
+
+    async def deliver_now(
+        self,
+        account: Account,
+        session: Session,
+        provider: SessionProvider,
+        message: str,
+        images: list[Path] | None = None,
+        *,
+        client_action_id: str | None = None,
+    ) -> InjectionReceipt:
+        """Deliver one message to the active turn NOW, bypassing the FIFO loop.
+
+        Steering a live turn is synchronous and must not queue, so unlike
+        ``start`` this runs no background task. It owns the whole choreography the
+        steer route used to hand-assemble: cursor read, optimistic-row tracking,
+        the provider ``steer`` call, and image lifecycle — steer *defers* upload
+        cleanup until the turn ends (a mid-turn image stays served), the opposite
+        of ``_run``'s immediate cleanup.
+        """
+        images = images or []
+        item: QueuedMessage | None = None
+        try:
+            _, after_seq = await provider.transcript_cursor(account, session)
+            item = self._begin_delivery(
+                session.key,
+                message,
+                images,
+                client_action_id=client_action_id,
+                after_seq=after_seq,
+            )
+            kwargs = {"images": images} if images else {}
+            result = await provider.steer(account, session, message, **kwargs)
+        except BaseException as exc:  # noqa: BLE001 -- re-raised after compensation
+            if item is not None:
+                self._finish_delivery(
+                    session.key, item, InjectResult(False, str(exc) or "steering failed")
+                )
+            cleanup_image_files(images)
+            raise
+        self._finish_delivery(session.key, item, result)
+        if not result.accepted:
+            cleanup_image_files(images)
+        elif images:
+            self._defer_cleanup(account, provider, session.session_id, images)
+        return InjectionReceipt(result=result, item=item)
 
     def new_status(self, account_key: str) -> InjectionStatus | None:
         return self._new_status.get(account_key)
@@ -328,7 +385,7 @@ class InjectionService:
                         )
                 finally:
                     cleanup_image_files(item.images)
-                self.finish_delivery(session.key, item, result)
+                self._finish_delivery(session.key, item, result)
                 if not result.accepted and item.state != "observed":
                     for pending in items:
                         if pending.state == "queued":
@@ -439,7 +496,7 @@ class InjectionService:
                 **kwargs,
             )
             if images and result.accepted and result.session_id:
-                self.defer_cleanup(account, provider, result.session_id, images)
+                self._defer_cleanup(account, provider, result.session_id, images)
                 cleanup_now = False
             self._new_status[account.key] = InjectionStatus(
                 "complete" if result.accepted else "failed",
@@ -459,7 +516,7 @@ class InjectionService:
                 cleanup_image_files(images)
             self._new_tasks.pop(account.key, None)
 
-    def defer_cleanup(
+    def _defer_cleanup(
         self,
         account: Account,
         provider: SessionProvider,
