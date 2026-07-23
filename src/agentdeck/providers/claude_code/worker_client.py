@@ -108,7 +108,7 @@ class ClaudeWorkerClient:
     def owned_session_ids(self) -> list[str]:
         return list(self._owned)
 
-    def key_for(self, session_id: str) -> str | None:
+    def _key_for(self, session_id: str) -> str | None:
         entry = self._owned.get(session_id)
         return entry["key"] if entry else None
 
@@ -137,6 +137,9 @@ class ClaudeWorkerClient:
         permission_mode: str | None = None,
         delivery_id: str | None = None,
     ) -> InjectResult:
+        """Spawn primitive — addressed by the internal worker ``key`` because the
+        session id does not exist until the runtime assigns one. Only
+        ``start_session`` mints a key and calls this; follow-ups use ``send``."""
         return await self._post(
             "deliver",
             {
@@ -151,23 +154,43 @@ class ClaudeWorkerClient:
             },
         )
 
+    async def send(
+        self,
+        session_id: str,
+        message: str,
+        *,
+        images: list[str] | None = None,
+        delivery_id: str | None = None,
+    ) -> InjectResult:
+        """Deliver a follow-up to an already-owned worker, addressed by session id."""
+        key = self._key_for(session_id)
+        if key is None:
+            return InjectResult(False, "this session is not a deck-owned worker")
+        return await self.deliver(key, message, images=images, delivery_id=delivery_id)
+
     def pending_interaction(self, session_id: str) -> dict | None:
         """The raw `can_use_tool` control_request the owned worker is blocked on."""
         entry = self._owned.get(session_id)
         pending = entry.get("pending_interaction") if entry else None
         return pending if isinstance(pending, dict) else None
 
-    async def interrupt(self, key: str) -> InjectResult:
+    async def interrupt(self, session_id: str) -> InjectResult:
+        key = self._key_for(session_id)
+        if key is None:
+            return InjectResult(False, "this session is not a deck-owned worker")
         return await self._post("interrupt", {"key": key})
 
     async def answer(
         self,
-        key: str,
+        session_id: str,
         interaction_id: str,
         *,
         answers: dict[str, list[str]],
         decision: str | None,
     ) -> InjectResult:
+        key = self._key_for(session_id)
+        if key is None:
+            return InjectResult(False, "this session is not a deck-owned worker")
         return await self._post(
             "answer",
             {

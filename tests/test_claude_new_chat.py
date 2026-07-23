@@ -67,7 +67,7 @@ async def test_client_maps_sessions_and_delivers():
 
     client = _client_against(app)
     assert await client.probe() is True
-    assert client.owns("sid-1") and client.key_for("sid-1") == "chat-abc"
+    assert client.owns("sid-1") and client._key_for("sid-1") == "chat-abc"
     assert client.turn_active("sid-1") is True
 
     result = await client.deliver("chat-abc", "hi")
@@ -136,7 +136,7 @@ class _FakeWorkerClient:
     def owns(self, sid):
         return sid in self._owned
 
-    def key_for(self, sid):
+    def _key_for(self, sid):
         return self._owned.get(sid)
 
     def turn_active(self, sid):
@@ -185,16 +185,36 @@ class _FakeWorkerClient:
             return InjectResult(False, self.conflict_reason)
         return InjectResult(True, session_id="sid-new")
 
+    async def send(self, session_id, message, *, images=None, delivery_id=None):
+        from agentdeck.models import InjectResult
+
+        key = self._key_for(session_id)
+        if key is None:
+            return InjectResult(False, "this session is not a deck-owned worker")
+        return await self.deliver(key, message, images=images, delivery_id=delivery_id)
+
     async def wait_for_turn(self, session_id, *, timeout_s):
         from agentdeck.models import InjectResult
 
         self.calls.append(("wait", session_id, timeout_s))
         return InjectResult(True, session_id=session_id)
 
-    async def interrupt(self, key):
+    async def interrupt(self, session_id):
         from agentdeck.models import InjectResult
 
+        key = self._key_for(session_id)
+        if key is None:
+            return InjectResult(False, "this session is not a deck-owned worker")
         self.calls.append(("interrupt", key))
+        return InjectResult(True)
+
+    async def answer(self, session_id, interaction_id, *, answers, decision):
+        from agentdeck.models import InjectResult
+
+        key = self._key_for(session_id)
+        if key is None:
+            return InjectResult(False, "this session is not a deck-owned worker")
+        self.calls.append(("answer", key, interaction_id, answers, decision))
         return InjectResult(True)
 
 
@@ -606,3 +626,15 @@ def test_runtime_availability_change_reprojects_cached_capabilities():
             }
         )
         assert events.get_nowait() == ("sessions", None)
+
+
+async def test_client_write_methods_reject_an_unowned_session():
+    # The client resolves session_id -> key internally; an unowned session gets
+    # the standard miss result with no runtime round-trip (parity with Codex).
+    app = _runtime_app()
+    client = _client_against(app)
+    miss = "this session is not a deck-owned worker"
+    assert (await client.send("ghost", "hi")).reason == miss
+    assert (await client.interrupt("ghost")).reason == miss
+    assert (await client.answer("ghost", "iid", answers={}, decision=None)).reason == miss
+    await client.stop()

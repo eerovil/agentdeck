@@ -374,15 +374,12 @@ class ClaudeCodeProvider(SessionProvider):
         client = self._workers.get(account.key)
         if client is None:
             return InjectResult(False, "Claude workers are not enabled on the runtime service")
-        key = client.key_for(session.session_id)
-        if key is None:
-            return InjectResult(False, "this session is not a deck-owned worker")
         # A retried dashboard send carries the same client-action id (the injector
         # wraps this call in client_action_context). Pass it as the delivery id so
         # a retry dedups at the deliver layer instead of writing the message twice.
         client_action_id = current_client_action_id()
-        result = await client.deliver(
-            key,
+        result = await client.send(
+            session.session_id,
             message,
             images=[str(path) for path in images or []],
             delivery_id=client_action_id,
@@ -416,10 +413,7 @@ class ClaudeCodeProvider(SessionProvider):
         client = self._workers.get(account.key)
         if client is None:
             return InjectResult(False, "Claude workers are not enabled on the runtime service")
-        key = client.key_for(session.session_id)
-        if key is None:
-            return InjectResult(False, "this session is not a deck-owned worker")
-        return await client.interrupt(key)
+        return await client.interrupt(session.session_id)
 
     async def wait_for_session(
         self,
@@ -464,11 +458,8 @@ class ClaudeCodeProvider(SessionProvider):
         interaction = self._actionable_interaction(account, session.session_id)
         if interaction is None or interaction.id != interaction_id:
             return InjectResult(False, "interaction is no longer pending")
-        key = client.key_for(session.session_id)
-        if key is None:
-            return InjectResult(False, "this session is not a deck-owned worker")
         return await client.answer(
-            key, interaction_id, answers=dict(answers), decision=decision
+            session.session_id, interaction_id, answers=dict(answers), decision=decision
         )
 
     def _cached_meta(self, path: Path) -> transcripts_mod.TranscriptMeta:
