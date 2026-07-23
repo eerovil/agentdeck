@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from shlex import quote
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -66,11 +67,23 @@ def _account_provider(request: Request, account_key: str):
     return account, PROVIDERS[account.provider_id]
 
 
-def _render_new_status(request: Request, account_key: str, status) -> HTMLResponse:
+def _render_new_status(
+    request: Request,
+    account_key: str,
+    status,
+    *,
+    result_id: str = "new-session-result",
+    status_url: str = "/partials/new-session-status",
+) -> HTMLResponse:
     return get_templates(request).TemplateResponse(
         request,
         "partials/new_session_status.html",
-        {"account_key": account_key, "new_status": status},
+        {
+            "account_key": account_key,
+            "new_status": status,
+            "result_id": result_id,
+            "status_url": status_url,
+        },
     )
 
 
@@ -413,14 +426,76 @@ async def new_session(request: Request) -> HTMLResponse:
     return response
 
 
-@router.get("/partials/new-session-status", response_class=HTMLResponse)
-async def new_session_status(request: Request, account_key: str) -> HTMLResponse:
+@router.post("/sessions/{session_key}/continue", response_class=HTMLResponse)
+async def continue_session(request: Request, session_key: str) -> HTMLResponse:
+    """Start a new-account chat whose first turn fetches this transcript."""
+    _require_same_origin(request)
+    _, source_session, _ = resolve_session(request, session_key)
+    if Capability.TRANSCRIPT not in source_session.capabilities:
+        raise HTTPException(status_code=404, detail="transcript unavailable")
+    if source_session.cwd is None:
+        raise HTTPException(status_code=422, detail="working directory unavailable")
+    content_type = request.headers.get("content-type", "").lower()
+    if not content_type.startswith(
+        ("application/x-www-form-urlencoded", "multipart/form-data")
+    ):
+        raise HTTPException(status_code=415, detail="form content type required")
+    form = await request.form()
+    account_key = form.get("account_key")
+    if not isinstance(account_key, str):
+        raise HTTPException(status_code=422, detail="target account required")
+    if account_key == source_session.account_key:
+        raise HTTPException(status_code=422, detail="choose another account")
+    account, provider = _account_provider(request, account_key)
+    transcript_url = str(
+        request.url_for("session_transcript", session_key=source_session.key)
+    )
+    message = (
+        "Continue the work from this AgentDeck chat in the new session:\n"
+        f"{transcript_url}\n\n"
+        "Before taking any substantive action, fetch and read the complete transcript "
+        "with:\n"
+        f"curl --fail --silent --show-error {quote(transcript_url)}\n\n"
+        "Treat it as the prior conversation context and continue from where it ended."
+    )
+    client_action_id = bind_action(request, provider=account.provider_id)
+    with timing_span(request, "queue"):
+        result = await get_injector(request).start_new(
+            account,
+            provider,
+            source_session.cwd,
+            message,
+            client_action_id=client_action_id,
+        )
+    if not result.accepted:
+        status_code = 409 if "already starting" in (result.reason or "") else 422
+        raise HTTPException(status_code=status_code, detail=result.reason)
+    response = _render_new_status(
+        request,
+        account.key,
+        get_injector(request).new_status(account.key),
+        result_id="continue-session-result",
+        status_url="/partials/continue-session-status",
+    )
+    response.status_code = 202
+    return response
+
+
+async def _new_session_status_response(
+    request: Request,
+    account_key: str,
+    *,
+    result_id: str = "new-session-result",
+    status_url: str = "/partials/new-session-status",
+) -> HTMLResponse:
     account, provider = _account_provider(request, account_key)
     status = get_injector(request).new_status(account_key)
     response = _render_new_status(
         request,
         account_key,
         status,
+        result_id=result_id,
+        status_url=status_url,
     )
     if status is not None and status.state == "complete" and status.session_key:
         # The periodic scan loop may not have discovered the freshly started
@@ -440,3 +515,18 @@ async def new_session_status(request: Request, account_key: str) -> HTMLResponse
                 )
         response.headers["HX-Redirect"] = f"/sessions/{status.session_key}"
     return response
+
+
+@router.get("/partials/new-session-status", response_class=HTMLResponse)
+async def new_session_status(request: Request, account_key: str) -> HTMLResponse:
+    return await _new_session_status_response(request, account_key)
+
+
+@router.get("/partials/continue-session-status", response_class=HTMLResponse)
+async def continue_session_status(request: Request, account_key: str) -> HTMLResponse:
+    return await _new_session_status_response(
+        request,
+        account_key,
+        result_id="continue-session-result",
+        status_url="/partials/continue-session-status",
+    )

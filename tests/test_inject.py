@@ -835,6 +835,266 @@ def _web_app(tmp_path, *, enabled=True):
     return app
 
 
+def _continue_app(tmp_path):
+    config = AppConfig(
+        history=HistoryConfig(enabled=False),
+        inject=InjectConfig(enabled=True, max_message_chars=1000),
+        accounts=[
+            AccountConfig(provider="codex", label="test", config_dir=str(tmp_path)),
+            AccountConfig(
+                provider="claude_code",
+                label="alt",
+                config_dir=str(tmp_path / "claude-alt"),
+            ),
+        ],
+    )
+    app = create_app(config)
+    app.state.app_state.update_session(
+        Session(
+            "codex:test:sid",
+            "codex:test",
+            "sid",
+            SessionStatus.IDLE,
+            cwd=tmp_path,
+            capabilities=frozenset({Capability.TRANSCRIPT, Capability.INJECT}),
+        )
+    )
+    return app
+
+
+async def test_session_transcript_json_exposes_complete_normalized_history(
+    tmp_path, monkeypatch
+):
+    app = _web_app(tmp_path)
+    events = [
+        TranscriptEvent(seq=1, role="user", text="Original request"),
+        TranscriptEvent(
+            seq=2,
+            role="assistant",
+            text="Working on it",
+            image_media_types=("image/png",),
+        ),
+        TranscriptEvent(
+            seq=3,
+            role="tool",
+            tool_name="exec",
+            tool_summary="cmd: pytest",
+            tool_detail="pytest -q",
+        ),
+    ]
+
+    async def fake_read(account, session, after_seq=0):
+        assert account.key == "codex:test"
+        assert session.key == "codex:test:sid"
+        assert after_seq == 0
+        return events
+
+    from agentdeck.providers import PROVIDERS
+
+    monkeypatch.setattr(PROVIDERS["codex"], "read_transcript", fake_read)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/sessions/codex:test:sid/transcript.json")
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-cache"
+    assert response.json() == {
+        "session_key": "codex:test:sid",
+        "account_key": "codex:test",
+        "working_directory": str(tmp_path),
+        "session_url": "http://test/sessions/codex:test:sid",
+        "events": [
+            {
+                **json.loads(json.dumps(event, default=lambda value: value.__dict__)),
+                "image_urls": (
+                    ["http://test/sessions/codex:test:sid/transcript-images/2/0"]
+                    if event.seq == 2
+                    else []
+                ),
+            }
+            for event in events
+        ],
+    }
+    await app.state.injector.stop()
+
+
+async def test_continue_chat_starts_cross_provider_with_transcript_fetch_prompt(
+    tmp_path, monkeypatch
+):
+    app = _continue_app(tmp_path)
+    received = {}
+    destination_key = "claude_code:alt:new-sid"
+
+    async def fake_start(account, cwd, message, *, timeout_s):
+        received.update(account=account, cwd=cwd, message=message)
+        return InjectResult(True, session_id="new-sid")
+
+    async def fake_scan(account):
+        return [
+            Session(
+                destination_key,
+                account.key,
+                "new-sid",
+                SessionStatus.IDLE,
+                cwd=tmp_path,
+                capabilities=frozenset({Capability.TRANSCRIPT, Capability.INJECT}),
+            )
+        ]
+
+    from agentdeck.providers import PROVIDERS
+
+    target_provider = PROVIDERS["claude_code"]
+    monkeypatch.setattr(target_provider, "can_start_session", lambda account: True)
+    monkeypatch.setattr(target_provider, "start_session", fake_start)
+    monkeypatch.setattr(target_provider, "scan_sessions", fake_scan)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        detail = await client.get("/sessions/codex:test:sid")
+        assert detail.status_code == 200
+        assert 'hx-post="/sessions/codex:test:sid/continue"' in detail.text
+        assert '<option value="claude_code:alt">alt · claude code</option>' in detail.text
+        assert '<option value="codex:test">' not in detail.text.split(
+            '<div class="continue-chat">', 1
+        )[1].split("</div>", 1)[0]
+        assert "Continue in new chat" in detail.text
+
+        response = await client.post(
+            "/sessions/codex:test:sid/continue",
+            data={"account_key": "claude_code:alt"},
+            headers={"origin": "http://test"},
+        )
+        assert response.status_code == 202
+        assert 'id="continue-session-result"' in response.text
+        assert 'hx-get="/partials/continue-session-status?' in response.text
+        for _ in range(10):
+            await asyncio.sleep(0)
+            status = app.state.injector.new_status("claude_code:alt")
+            if status and status.state == "complete":
+                break
+
+        assert received["account"].key == "claude_code:alt"
+        assert received["cwd"] == tmp_path
+        transcript_url = "http://test/sessions/codex:test:sid/transcript.json"
+        assert transcript_url in received["message"]
+        assert f"curl --fail --silent --show-error {transcript_url}" in received["message"]
+        assert "Before taking any substantive action" in received["message"]
+
+        same_account = await client.post(
+            "/sessions/codex:test:sid/continue",
+            data={"account_key": "codex:test"},
+            headers={"origin": "http://test"},
+        )
+        assert same_account.status_code == 422
+        assert same_account.json()["detail"] == "choose another account"
+
+        status_response = await client.get(
+            "/partials/continue-session-status?account_key=claude_code:alt"
+        )
+        assert status_response.headers["hx-redirect"] == f"/sessions/{destination_key}"
+        assert app.state.app_state.sessions.get(destination_key) is not None
+    await app.state.injector.stop()
+
+
+async def test_continue_chat_control_respects_new_chat_kill_switch(
+    tmp_path, monkeypatch
+):
+    app = _continue_app(tmp_path)
+    app.state.config.inject.enabled = False
+    from agentdeck.providers import PROVIDERS
+
+    monkeypatch.setattr(
+        PROVIDERS["claude_code"], "can_start_session", lambda account: True
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        detail = await client.get("/sessions/codex:test:sid")
+
+    assert 'class="continue-chat"' not in detail.text
+    await app.state.injector.stop()
+
+
+async def test_continue_chat_control_fits_desktop_and_mobile(tmp_path, monkeypatch):
+    app = _continue_app(tmp_path)
+    from agentdeck.providers import PROVIDERS
+
+    monkeypatch.setattr(
+        PROVIDERS["claude_code"], "can_start_session", lambda account: True
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        detail = await client.get("/sessions/codex:test:sid")
+
+    static_dir = Path(__file__).parents[1] / "src/agentdeck/web/static"
+    stylesheet = (static_dir / "app.css").read_text()
+    stack_script = (static_dir / "mobile_session_stack.js").read_text()
+    layouts = []
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        for width in (1200, 320):
+            context = await browser.new_context(
+                viewport={"width": width, "height": 800}, service_workers="block"
+            )
+            page = await context.new_page()
+
+            async def serve(route, request):
+                path = request.url.split("?", 1)[0].removeprefix(
+                    "http://agentdeck.test"
+                )
+                if path == "/sessions/codex:test:sid":
+                    await route.fulfill(
+                        status=200, content_type="text/html", body=detail.text
+                    )
+                elif path == "/static/mobile_session_stack.js":
+                    await route.fulfill(
+                        status=200, content_type="text/javascript", body=stack_script
+                    )
+                elif path == "/static/app.css":
+                    await route.fulfill(
+                        status=200, content_type="text/css", body=stylesheet
+                    )
+                else:
+                    await route.fulfill(status=204, body="")
+
+            await page.route("http://agentdeck.test/**", serve)
+            await page.goto("http://agentdeck.test/sessions/codex:test:sid")
+            if width < 1000:
+                await page.wait_for_function(
+                    "document.body.classList.contains('mobile-session-stack-ready')"
+                )
+            control = page.locator(".continue-chat")
+            box = await control.bounding_box()
+            layouts.append(
+                {
+                    "control": await control.is_visible(),
+                    "button": await control.get_by_role(
+                        "button", name="Continue in new chat"
+                    ).is_visible(),
+                    "options": await control.locator("option").all_text_contents(),
+                    "fits": bool(box and box["x"] >= 0 and box["x"] + box["width"] <= width),
+                    "overflow": await page.evaluate(
+                        "document.documentElement.scrollWidth > innerWidth"
+                    ),
+                }
+            )
+            await context.close()
+        await browser.close()
+
+    assert layouts == [
+        {
+            "control": True,
+            "button": True,
+            "options": ["alt · claude code"],
+            "fits": True,
+            "overflow": False,
+        },
+        {
+            "control": True,
+            "button": True,
+            "options": ["alt · claude code"],
+            "fits": True,
+            "overflow": False,
+        },
+    ]
+    await app.state.injector.stop()
+
+
 async def test_inject_route_accepts_and_reports_status(tmp_path, monkeypatch):
     app = _web_app(tmp_path)
     provider = app.state.injector

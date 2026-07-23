@@ -56,6 +56,23 @@
 </div>
 </div>
 
+{% if continue_chat_accounts %}
+<div class="continue-chat">
+  <form hx-post="/sessions/{{ session.key }}/continue"
+        hx-target="#continue-session-result" hx-swap="outerHTML"
+        hx-disabled-elt="find button">
+    <label for="continue-chat-account">Account</label>
+    <select id="continue-chat-account" name="account_key" required>
+      {% for account in continue_chat_accounts %}
+      <option value="{{ account.key }}">{{ account.label }} · {{ account.provider_id | replace('_', ' ') }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit">Continue in new chat</button>
+  </form>
+  <div id="continue-session-result" class="inject-result"></div>
+</div>
+{% endif %}
+
 <div id="subagent-activity" sse-swap="subagents">
   {% include "partials/subagent_activity.html" %}
 </div>
