@@ -238,6 +238,50 @@ class PendingInteraction:
     url: str | None = None
     decisions: tuple[str, ...] = ()
 
+    @classmethod
+    def from_dict(cls, data: object) -> PendingInteraction | None:
+        """Rebuild a PendingInteraction from its ``asdict`` wire form — the single
+        inverse of ``dataclasses.asdict``, so the two provider runtimes that
+        serialize this neutral shape over their sockets deserialize it the same
+        way. Tolerant of a partial/legacy dict: a missing or non-string ``id``
+        yields None."""
+        if not isinstance(data, dict) or not isinstance(data.get("id"), str):
+            return None
+        questions = tuple(
+            InteractionQuestion(
+                id=str(q.get("id")),
+                header=q.get("header") or "",
+                prompt=q.get("prompt") or "",
+                options=tuple(
+                    InteractionOption(
+                        label=o.get("label") or "",
+                        description=o.get("description") or "",
+                        value=o["value"] if isinstance(o.get("value"), str) else None,
+                    )
+                    for o in (q.get("options") or [])
+                    if isinstance(o, dict)
+                ),
+                allow_other=bool(q.get("allow_other")),
+                secret=bool(q.get("secret")),
+                multiselect=bool(q.get("multiselect")),
+            )
+            for q in (data.get("questions") or [])
+            if isinstance(q, dict)
+        )
+        return cls(
+            id=data["id"],
+            kind=data.get("kind") or "question",
+            thread_id=data.get("thread_id") or "",
+            turn_id=data["turn_id"] if isinstance(data.get("turn_id"), str) else None,
+            title=data.get("title") or "",
+            message=data["message"] if isinstance(data.get("message"), str) else None,
+            questions=questions,
+            command=data["command"] if isinstance(data.get("command"), str) else None,
+            cwd=data["cwd"] if isinstance(data.get("cwd"), str) else None,
+            url=data["url"] if isinstance(data.get("url"), str) else None,
+            decisions=tuple(str(d) for d in (data.get("decisions") or [])),
+        )
+
 
 # An open turn older than this is considered stalled (hung worker), not busy —
 # without it, a dead-but-LIVE process whose last line is a tool call would show

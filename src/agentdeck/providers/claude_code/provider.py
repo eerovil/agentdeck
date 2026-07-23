@@ -27,8 +27,6 @@ from ...models import (
     Account,
     Capability,
     InjectResult,
-    InteractionOption,
-    InteractionQuestion,
     PendingInteraction,
     Session,
     SessionStatus,
@@ -82,38 +80,9 @@ def worker_type(is_kanban: bool, has_deep_link: bool) -> str:
 def _pending_from_dict(data: object) -> PendingInteraction | None:
     """Rebuild a PendingInteraction from the neutral dict the runtime publishes in
     the worker snapshot (the runtime does the Claude wire-schema mapping — see
-    worker._normalize_interaction). A pure deserializer, symmetric to Codex's."""
-    if not isinstance(data, dict) or not isinstance(data.get("id"), str):
-        return None
-    questions = tuple(
-        InteractionQuestion(
-            id=str(q.get("id")),
-            header=q.get("header") or "",
-            prompt=q.get("prompt") or "",
-            options=tuple(
-                InteractionOption(
-                    label=o.get("label") or "", description=o.get("description") or ""
-                )
-                for o in (q.get("options") or [])
-                if isinstance(o, dict)
-            ),
-            allow_other=bool(q.get("allow_other")),
-            multiselect=bool(q.get("multiselect")),
-        )
-        for q in (data.get("questions") or [])
-        if isinstance(q, dict)
-    )
-    return PendingInteraction(
-        id=data["id"],
-        kind=data.get("kind") or "question",
-        thread_id=data.get("thread_id") or "",
-        turn_id=None,
-        title=data.get("title") or "",
-        message=data.get("message") if isinstance(data.get("message"), str) else None,
-        questions=questions,
-        command=data.get("command") if isinstance(data.get("command"), str) else None,
-        decisions=tuple(str(d) for d in (data.get("decisions") or [])),
-    )
+    worker._normalize_interaction). The model owns the schema, so this can no
+    longer silently drop cwd/url/secret/option-value the way it used to."""
+    return PendingInteraction.from_dict(data)
 
 
 def _mtime(path: Path) -> datetime | None:

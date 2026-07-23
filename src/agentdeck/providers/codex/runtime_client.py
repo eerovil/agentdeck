@@ -13,8 +13,6 @@ from ...action_context import current_client_action_id
 from ...models import (
     Account,
     InjectResult,
-    InteractionOption,
-    InteractionQuestion,
     PendingInteraction,
 )
 
@@ -32,42 +30,9 @@ def runtime_socket_path() -> Path:
 
 
 def _interaction(raw: object) -> PendingInteraction | None:
-    if not isinstance(raw, dict):
-        return None
-    try:
-        questions = tuple(
-            InteractionQuestion(
-                id=question["id"],
-                header=question["header"],
-                prompt=question["prompt"],
-                options=tuple(
-                    InteractionOption(
-                        label=option["label"],
-                        description=option.get("description", ""),
-                        value=option.get("value"),
-                    )
-                    for option in question.get("options", [])
-                ),
-                allow_other=bool(question.get("allow_other")),
-                secret=bool(question.get("secret")),
-            )
-            for question in raw.get("questions", [])
-        )
-        return PendingInteraction(
-            id=raw["id"],
-            kind=raw["kind"],
-            thread_id=raw["thread_id"],
-            turn_id=raw.get("turn_id"),
-            title=raw["title"],
-            message=raw.get("message"),
-            questions=questions,
-            command=raw.get("command"),
-            cwd=raw.get("cwd"),
-            url=raw.get("url"),
-            decisions=tuple(raw.get("decisions", [])),
-        )
-    except (KeyError, TypeError):
-        return None
+    """The runtime publishes ``asdict(PendingInteraction)`` over the socket; the
+    model owns the inverse (and honours ``multiselect``, which this used to drop)."""
+    return PendingInteraction.from_dict(raw)
 
 
 class CodexRuntimeClient:
