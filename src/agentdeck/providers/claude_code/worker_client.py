@@ -41,7 +41,7 @@ class ClaudeWorkerClient(RuntimeSocketClient):
         """Return True iff the runtime serves Claude workers for this account
         (workers enabled + account known); populates the owned map on success."""
         try:
-            response = await self._http.get(f"{self._base}/workers")
+            response = await self._client().get(f"{self._base}/workers")
         except httpx.HTTPError:
             if self.available:
                 self.available = False
@@ -59,7 +59,7 @@ class ClaudeWorkerClient(RuntimeSocketClient):
     async def refresh(self) -> bool:
         """Re-read the worker snapshot; return True if the owned map changed."""
         try:
-            response = await self._http.get(f"{self._base}/workers")
+            response = await self._client().get(f"{self._base}/workers")
             response.raise_for_status()
         except httpx.HTTPError:
             if self.available:
@@ -202,7 +202,7 @@ class ClaudeWorkerClient(RuntimeSocketClient):
         deadline = asyncio.get_running_loop().time() + timeout_s
         while True:
             try:
-                response = await self._http.get(f"{self._base}/workers")
+                response = await self._client().get(f"{self._base}/workers")
                 response.raise_for_status()
             except httpx.HTTPError as exc:
                 return InjectResult(False, f"claude worker runtime unavailable: {exc}")
@@ -217,18 +217,3 @@ class ClaudeWorkerClient(RuntimeSocketClient):
                 return InjectResult(False, "Claude turn timed out", session_id=session_id)
             await asyncio.sleep(min(0.2, remaining))
 
-    async def _post(self, action: str, payload: dict) -> InjectResult:
-        # Overridden (for now) so this extraction stays behavior-preserving:
-        # unlike the base _post, the Claude client does not yet close-on-cancel or
-        # send client_action_id, and its reads still use self._http directly.
-        try:
-            response = await self._http.post(f"{self._base}/{action}", json=payload)
-            response.raise_for_status()
-        except httpx.HTTPError as exc:
-            return InjectResult(False, f"{self._runtime_label} unavailable: {exc}")
-        data = response.json()
-        if not isinstance(data, dict):
-            return InjectResult(False, f"invalid response from {self._runtime_label}")
-        # DeliverResult -> InjectResult; refresh so the owned map reflects the spawn.
-        await self.refresh()
-        return InjectResult.from_wire(data, source=self._runtime_label)
