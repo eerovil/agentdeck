@@ -294,26 +294,45 @@ def pending_injection_messages(status) -> list:
     return [item for item in status.items if item.is_pending]
 
 
+def session_list_context(
+    accounts: list[Account],
+    presentation: SessionPresentation,
+    *,
+    injector: InjectionService,
+    assistant,
+    selected_session_key: str | None = None,
+) -> dict[str, object]:
+    """Canonical template context for the session list and its surrounding shell."""
+    return {
+        "sessions": presentation.top_level,
+        "children_of": presentation.children_of,
+        "labels": session_labels(accounts),
+        "selected_session_key": selected_session_key,
+        "deckhand_status": assistant.deckhand_statuses(presentation.visible),
+        "queue_summaries": session_queue_summaries(presentation.visible, injector),
+        "assistant": assistant,
+        "assistant_sessions": assistant.state.sessions,
+        "working_count": presentation.working_count,
+    }
+
+
 def render_session_list(
     templates: Jinja2Templates,
     accounts: list[Account],
     presentation: SessionPresentation,
     *,
     selected_session_key: str | None = None,
-    injector: InjectionService | None = None,
-    assistant=None,
+    injector: InjectionService,
+    assistant,
 ) -> str:
     return templates.get_template("partials/session_list.html").render(
-        sessions=presentation.top_level,
-        children_of=presentation.children_of,
-        labels=session_labels(accounts),
-        selected_session_key=selected_session_key,
-        deckhand_status=(
-            assistant.deckhand_statuses(presentation.visible) if assistant is not None else {}
-        ),
-        queue_summaries=(
-            session_queue_summaries(presentation.visible, injector) if injector else {}
-        ),
+        **session_list_context(
+            accounts,
+            presentation,
+            injector=injector,
+            assistant=assistant,
+            selected_session_key=selected_session_key,
+        )
     )
 
 

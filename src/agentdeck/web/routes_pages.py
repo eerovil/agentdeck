@@ -99,30 +99,24 @@ async def dashboard(request: Request) -> HTMLResponse:
     state = get_state(request)
     from .render import (
         _usage_rows,
-        session_labels,
-        session_queue_summaries,
+        session_list_context,
     )
 
     presentation = state.session_presentation()
+    session_context = session_list_context(
+        accounts,
+        presentation,
+        injector=request.app.state.injector,
+        assistant=request.app.state.assistant,
+    )
     resp = templates.TemplateResponse(
         request,
         "dashboard.html",
         {
             "rows": _usage_rows(accounts, state),
             "host": state.host_stats,
-            "sessions": presentation.top_level,
-            "children_of": presentation.children_of,
-            "labels": session_labels(accounts),
-            "queue_summaries": session_queue_summaries(
-                presentation.visible, request.app.state.injector
-            ),
+            **session_context,
             **_session_list_controls_context(request, accounts, state),
-            "assistant": request.app.state.assistant,
-            "assistant_sessions": state.sessions,
-            "deckhand_status": request.app.state.assistant.deckhand_statuses(
-                presentation.visible
-            ),
-            "working_count": presentation.working_count,
         },
     )
     # Live dashboard — always revalidate so a deploy's HTML (and the inline
@@ -152,7 +146,7 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
         pending_injection_messages,
         resolve_activity_label,
         session_labels,
-        session_queue_summaries,
+        session_list_context,
     )
 
     last_ev = detail.events[-1] if detail.events else None
@@ -177,6 +171,13 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
     labels = session_labels(accounts)
     account_label = labels.get(session.account_key)
     assistant = request.app.state.assistant
+    session_context = session_list_context(
+        accounts,
+        presentation,
+        injector=request.app.state.injector,
+        assistant=assistant,
+        selected_session_key=session.key,
+    )
     git_context = await assistant.ensure_session_context(
         session, transcript_context=_pr_reference_text(detail.events)
     )
@@ -190,14 +191,7 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
                 (event.seq for event in detail.events), default=0
             ),
             # Desktop keeps the live session list beside the selected chat.
-            "sessions": presentation.top_level,
-            "children_of": presentation.children_of,
-            "labels": labels,
-            "deckhand_status": assistant.deckhand_statuses(presentation.visible),
-            "selected_session_key": session.key,
-            "queue_summaries": session_queue_summaries(
-                presentation.visible, request.app.state.injector
-            ),
+            **session_context,
             "observed_messages": observed_messages,
             "pending_messages": pending_injection_messages(
                 request.app.state.injector.status(session.key)
@@ -217,9 +211,6 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
             "inject_max_chars": request.app.state.config.inject.max_message_chars,
             "can_interrupt": Capability.INTERRUPT in session.capabilities,
             "pending_interaction": provider.pending_interaction(account, session),
-            "assistant": assistant,
-            "assistant_sessions": state.sessions,
-            "working_count": presentation.working_count,
             "assistant_insights": assistant_insights_for_session(
                 assistant, session.key
             ),

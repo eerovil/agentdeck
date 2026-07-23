@@ -89,6 +89,36 @@ def _session_card(html: str, session_key: str) -> str:
     return html.split(f'data-session-key="{session_key}"', 1)[1].split("</a>", 1)[0]
 
 
+def test_session_list_context_owns_full_page_and_fragment_keys(tmp_path):
+    from agentdeck.web.render import session_list_context
+
+    app = _app_with_state(tmp_path)
+    state = app.state.app_state
+    presentation = state.session_presentation()
+    context = session_list_context(
+        app.state.accounts,
+        presentation,
+        injector=app.state.injector,
+        assistant=app.state.assistant,
+        selected_session_key="claude_code:test:sid1",
+    )
+
+    assert set(context) == {
+        "sessions",
+        "children_of",
+        "labels",
+        "selected_session_key",
+        "deckhand_status",
+        "queue_summaries",
+        "assistant",
+        "assistant_sessions",
+        "working_count",
+    }
+    assert context["sessions"] == presentation.top_level
+    assert context["selected_session_key"] == "claude_code:test:sid1"
+    assert context["assistant_sessions"] is state.sessions
+
+
 async def test_healthz(tmp_path):
     app = _app_with_state(tmp_path)
     async with _client(app) as c:
