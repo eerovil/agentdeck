@@ -95,19 +95,8 @@ class AppState:
 
     def replace_account_sessions(self, account_key: str, sessions: list[Session]) -> bool:
         """Replace all sessions of one account; returns True (and publishes) on change."""
-        for session in sessions:
-            if session.is_delegated and session.key not in self.delegated_session_keys:
-                self.delegated_session_keys.add(session.key)
-                if self.db is not None:
-                    self.db.record_delegated_session(session.key)
-        sessions = [
-            replace(session, is_delegated=True)
-            if session.key in self.delegated_session_keys and not session.is_delegated
-            else session
-            for session in sessions
-        ]
-        sessions = [self._with_generated_title(session) for session in sessions]
-        new = {s.key: s for s in sessions}
+        admitted = [self._admit(session) for session in sessions]
+        new = {s.key: s for s in admitted}
         old = {k: v for k, v in self.sessions.items() if v.account_key == account_key}
         if new == old:
             return False
@@ -115,22 +104,34 @@ class AppState:
             del self.sessions[k]
         self.sessions.update(new)
         if self.db is not None:
-            self.db.upsert_sessions_seen(sessions)
+            self.db.upsert_sessions_seen(admitted)
         self.bus.publish("sessions")
         return True
 
     def update_session(self, session: Session) -> None:
+        session = self._admit(session)
+        if self.sessions.get(session.key) == session:
+            return
+        self.sessions[session.key] = session
+        self.bus.publish("sessions")
+
+    def _admit(self, session: Session) -> Session:
+        """Apply the account-session admission rule and return the canonical session.
+
+        Learns and persists a newly self-flagged delegation, stamps
+        ``is_delegated=True`` on a session whose key is already persisted, and
+        attaches any generated title. Callers own change-detection and publish.
+        ``mark_delegated_session`` deliberately does NOT route through here — it
+        flags an *un*-self-flagged session unconditionally and with a different
+        persist/publish contract.
+        """
         if session.is_delegated and session.key not in self.delegated_session_keys:
             self.delegated_session_keys.add(session.key)
             if self.db is not None:
                 self.db.record_delegated_session(session.key)
         elif session.key in self.delegated_session_keys:
             session = replace(session, is_delegated=True)
-        session = self._with_generated_title(session)
-        if self.sessions.get(session.key) == session:
-            return
-        self.sessions[session.key] = session
-        self.bus.publish("sessions")
+        return self._with_generated_title(session)
 
     def _with_generated_title(self, session: Session) -> Session:
         record = self.generated_titles.get(session.key)
