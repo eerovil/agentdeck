@@ -64,13 +64,10 @@ class QueuedMessage:
 
 @dataclass(frozen=True)
 class InjectionReceipt:
-    """The outcome of a delivery, plus its optimistic row. ``action_state`` is the
-    resolved queued-vs-accepted signal the route forwards as the
-    ``X-AgentDeck-Action-State`` header, so no caller re-derives it."""
+    """The outcome of a delivery, plus its optimistic row."""
 
     result: InjectResult
     item: QueuedMessage | None
-    action_state: str = "accepted"  # "queued" | "accepted"
 
 
 @dataclass(frozen=True)
