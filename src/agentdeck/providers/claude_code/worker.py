@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import hashlib
 import json
 import logging
 import mimetypes
@@ -32,8 +31,6 @@ from ...images import SUPPORTED_IMAGE_MEDIA_TYPES
 from ...models import Account
 from . import registry
 from .delivery import (
-    DELIVERY_RECEIPT_CAP,
-    DELIVERY_RECEIPT_TTL_S,
     DeliverResult,
     DeliveryReceipts,
 )
@@ -50,6 +47,7 @@ INIT_TIMEOUT_S = 30.0
 # Published usage snapshots older than this are treated as unknown rather than
 # trusted — a stalled collector must not permanently block (or greenlight) work.
 USAGE_MAX_AGE_S = 1800.0
+
 
 class WorkerError(RuntimeError):
     """A Claude worker process could not complete a request.
@@ -449,7 +447,7 @@ class ClaudeWorkerHost:
         its original result before the HTTP response is returned, so an ambiguous retry
         cannot write the same message twice or replace a successfully spawned worker.
         """
-        fingerprint = self._delivery_fingerprint(
+        fingerprint = DeliveryReceipts.fingerprint(
             message,
             cwd=cwd,
             fresh=fresh,
@@ -459,7 +457,11 @@ class ClaudeWorkerHost:
         )
         async with self._key_lock(key):
             rec = self._records.get(key)
-            cached = self._cached_delivery(rec, delivery_id, fingerprint)
+            cached = (
+                rec.receipts.lookup(delivery_id, fingerprint, live_session_id=rec.session_id)
+                if rec is not None
+                else None
+            )
             if cached is not None:
                 return cached
             try:
@@ -471,19 +473,19 @@ class ClaudeWorkerHost:
             live = self._live.get(key)
 
             if live is not None and live.process.returncode is None and not fresh:
-                self._prepare_delivery(
-                    rec, delivery_id, fingerprint, session_id=rec.session_id
-                )
+                rec.receipts.prepare(delivery_id, fingerprint, session_id=rec.session_id)
+                self._save_state()
                 try:
                     await self._write_user_message(live, message, image_blocks)
                 except WorkerError as exc:
-                    self._forget_delivery(rec, delivery_id)
+                    if rec.receipts.forget(delivery_id, write_started=exc.write_started):
+                        self._save_state()
                     return DeliverResult(False, "rejected", reason=str(exc))
                 rec.last_delivery_at = time.time()
                 action = "steered" if live.turn_active else "queued"
                 live.turn_active = True
                 result = DeliverResult(True, action, session_id=rec.session_id)
-                self._remember_delivery(rec, delivery_id, fingerprint, result)
+                rec.receipts.finalize(delivery_id, fingerprint, result)
                 self._save_state()
                 return result
 
@@ -536,7 +538,8 @@ class ClaudeWorkerHost:
             else:
                 spawn_permission_mode = permission_mode
                 rec.permission_mode = permission_mode
-            self._prepare_delivery(rec, delivery_id, fingerprint, session_id=resume_id)
+            rec.receipts.prepare(delivery_id, fingerprint, session_id=resume_id)
+            self._save_state()
             try:
                 live = await self._spawn_and_deliver(
                     key,
@@ -576,136 +579,22 @@ class ClaudeWorkerHost:
                             return DeliverResult(
                                 True, "uncertain", session_id=rec.session_id
                             )
-                        self._forget_delivery(rec, delivery_id)
+                        if rec.receipts.forget(
+                            delivery_id, write_started=fallback_exc.write_started
+                        ):
+                            self._save_state()
                         return DeliverResult(False, "rejected", reason=str(fallback_exc))
                 else:
-                    self._forget_delivery(rec, delivery_id)
+                    if rec.receipts.forget(delivery_id, write_started=exc.write_started):
+                        self._save_state()
                     return DeliverResult(False, "rejected", reason=str(exc))
 
             rec.last_delivery_at = time.time()
             action = "revived" if resumed else "spawned"
             result = DeliverResult(True, action, session_id=rec.session_id)
-            self._remember_delivery(rec, delivery_id, fingerprint, result)
+            rec.receipts.finalize(delivery_id, fingerprint, result)
             self._save_state()
             return result
-
-    @staticmethod
-    def _delivery_fingerprint(
-        message: str,
-        *,
-        cwd: str | None,
-        fresh: bool,
-        images: list[str],
-        model: str | None,
-        permission_mode: str | None,
-    ) -> str:
-        payload = json.dumps(
-            {
-                "message": message,
-                "cwd": cwd,
-                "fresh": fresh,
-                # Uploaded images land at a fresh random path on every request
-                # (uploads.py: mkdtemp + token_hex), so the *paths* differ across a
-                # legitimate retry of the same logical delivery and would falsely
-                # trip delivery_id_conflict. Fingerprint the stable count instead.
-                "images": len(images),
-                "model": model,
-                "permission_mode": permission_mode,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        return hashlib.sha256(payload.encode()).hexdigest()
-
-    @staticmethod
-    def _cached_delivery(
-        rec: WorkerRecord | None,
-        delivery_id: str | None,
-        fingerprint: str,
-    ) -> DeliverResult | None:
-        if rec is None or not delivery_id:
-            return None
-        receipt = rec.deliveries.get(delivery_id)
-        if receipt is None:
-            return None
-        if receipt.get("fingerprint") != fingerprint:
-            return DeliverResult(False, "rejected", reason="delivery_id_conflict")
-        # A finalized receipt (carries an "action") replays its original result.
-        # A prepared-only receipt means a prior attempt persisted the receipt and
-        # then wrote — or was killed around the write — without confirming
-        # completion; at-most-once forbids writing again, so surface it as
-        # uncertain rather than re-delivering the same payload.
-        action = receipt.get("action")
-        if action:
-            return DeliverResult(True, str(action), session_id=receipt.get("session_id"))
-        # The receipt's session_id was frozen before the write (None for a fresh
-        # spawn), but rec.session_id is populated durably as soon as the CLI emits
-        # system/init — prefer it so an uncertain replay still points at the live,
-        # resumable session instead of reporting "done" with nothing to open.
-        return DeliverResult(
-            True, "uncertain", session_id=rec.session_id or receipt.get("session_id")
-        )
-
-    @staticmethod
-    def _prune_deliveries(rec: WorkerRecord) -> None:
-        """Drop receipts by age (with a high count backstop) — monotonic, not a
-        small FIFO, so a delivery ID retried after many intervening deliveries
-        still finds its record and dedups instead of silently re-executing."""
-        now = time.time()
-        for did in [
-            d
-            for d, r in rec.deliveries.items()
-            if now - float(r.get("at", 0.0)) > DELIVERY_RECEIPT_TTL_S
-        ]:
-            rec.deliveries.pop(did, None)
-        if len(rec.deliveries) > DELIVERY_RECEIPT_CAP:
-            for did in sorted(
-                rec.deliveries, key=lambda d: float(rec.deliveries[d].get("at", 0.0))
-            )[: len(rec.deliveries) - DELIVERY_RECEIPT_CAP]:
-                rec.deliveries.pop(did, None)
-
-    def _prepare_delivery(
-        self,
-        rec: WorkerRecord,
-        delivery_id: str | None,
-        fingerprint: str,
-        *,
-        session_id: str | None,
-    ) -> None:
-        """Persist a durable receipt *before* the child write, so a crash in the
-        write→confirm window replays as uncertain instead of re-delivering."""
-        if not delivery_id:
-            return
-        rec.deliveries[delivery_id] = {
-            "fingerprint": fingerprint,
-            "session_id": session_id,
-            "at": time.time(),
-        }
-        self._prune_deliveries(rec)
-        self._save_state()
-
-    def _forget_delivery(self, rec: WorkerRecord, delivery_id: str | None) -> None:
-        """Drop a prepared receipt whose write cleanly failed (nothing sent), so
-        the dispatcher may retry the same delivery ID."""
-        if delivery_id and rec.deliveries.pop(delivery_id, None) is not None:
-            self._save_state()
-
-    @staticmethod
-    def _remember_delivery(
-        rec: WorkerRecord,
-        delivery_id: str | None,
-        fingerprint: str,
-        result: DeliverResult,
-    ) -> None:
-        if not delivery_id:
-            return
-        rec.deliveries[delivery_id] = {
-            "fingerprint": fingerprint,
-            "action": result.action,
-            "session_id": result.session_id,
-            "at": time.time(),
-        }
-        ClaudeWorkerHost._prune_deliveries(rec)
 
     async def interrupt(self, key: str) -> DeliverResult:
         live = self._live.get(key)
