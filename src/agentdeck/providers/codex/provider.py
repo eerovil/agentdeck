@@ -28,6 +28,7 @@ from ...models import (
     runtime_control_capabilities,
     turn_stalled,
 )
+from .._filecache import FileCache, mtime_sig, size_mtime_sig
 from ..base import ModelChoice, SessionProvider
 from . import transcripts as transcripts_mod
 from .inject import (
@@ -110,11 +111,9 @@ class CodexProvider(SessionProvider):
     )
 
     def __init__(self) -> None:
-        self._meta_cache: dict[str, tuple[float, transcripts_mod.TranscriptMeta]] = {}
-        self._last_ev_cache: dict[
-            str, tuple[tuple[int, int], TranscriptEvent | None]
-        ] = {}
-        self._delegation_cache: dict[str, tuple[int, int, frozenset[str]]] = {}
+        self._meta_cache: FileCache[transcripts_mod.TranscriptMeta] = FileCache(mtime_sig)
+        self._last_ev_cache: FileCache[TranscriptEvent | None] = FileCache(size_mtime_sig)
+        self._delegation_cache: FileCache[frozenset[str]] = FileCache(size_mtime_sig)
         self._paths: dict[tuple[str, str], Path] = {}
         self._clients: dict[str, CodexRuntimeClient] = {}
         self._states = {}
@@ -316,42 +315,17 @@ class CodexProvider(SessionProvider):
         )
 
     def _cached_meta(self, path: Path) -> transcripts_mod.TranscriptMeta:
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            return transcripts_mod.TranscriptMeta()
-        hit = self._meta_cache.get(str(path))
-        if hit is not None and hit[0] == mtime:
-            return hit[1]
-        meta = transcripts_mod.transcript_meta(path)
-        self._meta_cache[str(path)] = (mtime, meta)
-        return meta
+        return self._meta_cache.get(
+            path, transcripts_mod.transcript_meta, transcripts_mod.TranscriptMeta()
+        )
 
     def _cached_last_event(self, path: Path) -> TranscriptEvent | None:
-        try:
-            stat = path.stat()
-        except OSError:
-            return None
-        signature = (stat.st_size, stat.st_mtime_ns)
-        hit = self._last_ev_cache.get(str(path))
-        if hit is not None and hit[0] == signature:
-            return hit[1]
-        event = transcripts_mod.last_event(path)
-        self._last_ev_cache[str(path)] = (signature, event)
-        return event
+        return self._last_ev_cache.get(path, transcripts_mod.last_event, None)
 
     def _cached_delegated_session_keys(self, path: Path) -> frozenset[str]:
-        try:
-            stat = path.stat()
-        except OSError:
-            return frozenset()
-        signature = (stat.st_size, stat.st_mtime_ns)
-        hit = self._delegation_cache.get(str(path))
-        if hit is not None and hit[:2] == signature:
-            return hit[2]
-        keys = transcripts_mod.delegated_session_keys(path)
-        self._delegation_cache[str(path)] = (*signature, keys)
-        return keys
+        return self._delegation_cache.get(
+            path, transcripts_mod.delegated_session_keys, frozenset()
+        )
 
     def _transcript_path(self, account: Account, session: Session) -> Path | None:
         path = self._paths.get((account.key, session.session_id))

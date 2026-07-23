@@ -41,6 +41,7 @@ from ...models import (
     runtime_control_capabilities,
     turn_stalled,
 )
+from .._filecache import FileCache, mtime_sig, size_mtime_sig
 from ..base import ModelChoice, SessionProvider
 from . import history as history_mod
 from . import kanban as kanban_mod
@@ -202,20 +203,13 @@ class ClaudeCodeProvider(SessionProvider):
     )
 
     def __init__(self) -> None:
-        # TranscriptMeta cache keyed by path, invalidated by mtime, so idle
-        # transcripts aren't re-parsed every scan.
-        self._meta_cache: dict[
-            str,
-            tuple[float, transcripts_mod.TranscriptMeta],
-        ] = {}
-        # last-renderable-event cache (mtime-keyed) — the liveness sweep reads it
-        # every few seconds per live session, so idle ones must stay a cache hit.
-        self._last_ev_cache: dict[
-            str, tuple[tuple[int, int], TranscriptEvent | None]
-        ] = {}
-        # Context-window occupancy (mtime-keyed), read from the transcript tail —
-        # same cheap-cache treatment as meta/last-event so idle sessions cost nothing.
-        self._ctx_cache: dict[str, tuple[float, int | None]] = {}
+        # Cheap transcript reads memoized by file signature so idle transcripts
+        # aren't re-parsed every scan. Meta/context invalidate on mtime; last-event
+        # (read by the liveness sweep every few seconds per live session) needs the
+        # finer (size, mtime_ns) signature to catch a same-second rewrite.
+        self._meta_cache: FileCache[transcripts_mod.TranscriptMeta] = FileCache(mtime_sig)
+        self._last_ev_cache: FileCache[TranscriptEvent | None] = FileCache(size_mtime_sig)
+        self._ctx_cache: FileCache[int | None] = FileCache(mtime_sig)
         # Resolves kanban dispatch prompts to real GitHub issue titles.
         self._kanban = kanban_mod.KanbanTitleCache()
         # Deck-owned worker clients (one per account). Each tracks runtime
@@ -478,41 +472,15 @@ class ClaudeCodeProvider(SessionProvider):
         )
 
     def _cached_meta(self, path: Path) -> transcripts_mod.TranscriptMeta:
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            return transcripts_mod.TranscriptMeta()
-        hit = self._meta_cache.get(str(path))
-        if hit is not None and hit[0] == mtime:
-            return hit[1]
-        meta = transcripts_mod.transcript_meta(path)
-        self._meta_cache[str(path)] = (mtime, meta)
-        return meta
+        return self._meta_cache.get(
+            path, transcripts_mod.transcript_meta, transcripts_mod.TranscriptMeta()
+        )
 
     def _cached_last_event(self, path: Path) -> TranscriptEvent | None:
-        try:
-            stat = path.stat()
-        except OSError:
-            return None
-        signature = (stat.st_size, stat.st_mtime_ns)
-        hit = self._last_ev_cache.get(str(path))
-        if hit is not None and hit[0] == signature:
-            return hit[1]
-        ev = transcripts_mod.last_event(path)
-        self._last_ev_cache[str(path)] = (signature, ev)
-        return ev
+        return self._last_ev_cache.get(path, transcripts_mod.last_event, None)
 
     def _cached_context_tokens(self, path: Path) -> int | None:
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            return None
-        hit = self._ctx_cache.get(str(path))
-        if hit is not None and hit[0] == mtime:
-            return hit[1]
-        ctx = transcripts_mod.last_context_tokens(path)
-        self._ctx_cache[str(path)] = (mtime, ctx)
-        return ctx
+        return self._ctx_cache.get(path, transcripts_mod.last_context_tokens, None)
 
     def _turn_state(
         self,
