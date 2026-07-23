@@ -3057,7 +3057,7 @@ async def test_mobile_chat_layers_over_live_list_and_back_and_swipe_are_instant(
 
 
 async def test_subagent_count_renders_on_card_and_detail_header(tmp_path):
-    app = _app_with_state(tmp_path)
+    app = _app_with_state(tmp_path, with_transcript=True)
     session = app.state.app_state.sessions["claude_code:test:sid1"]
     session.subagent_count = 2
     session.subagents = (
@@ -3094,6 +3094,11 @@ async def test_subagent_count_renders_on_card_and_detail_header(tmp_path):
     assert "Inventory the Storm migration surface" in detail.text
     assert "Banach" in detail.text
     assert "Found one status-normalization bug." in detail.text
+    assert (
+        detail.text.index("an answer here")
+        < detail.text.index('id="tool-activity"')
+        < detail.text.index('id="subagent-activity"')
+    )
     assert 'data-working="1"' in _session_card(dashboard.text, session.key)
     assert '<span class="status-tag thinking">thinking</span>' in detail.text
     assert "1 working" in dashboard.text
