@@ -79,7 +79,7 @@ def create_app(config: AppConfig) -> FastAPI:
     collector = Collector(config, state)
     injector = InjectionService(
         config.inject,
-        on_change=lambda _session_key: state.bus.publish("sessions"),
+        on_change=lambda _session_key: state.sessions_changed(),
         on_delegation_started=state.mark_delegated_session,
     )
     push = PushService(config.push, db)

@@ -91,6 +91,20 @@ class AppState:
             db.load_generated_titles() if db else {}
         )
 
+    # --- invalidations -------------------------------------------------
+
+    def sessions_changed(self) -> None:
+        """Announce that consumers should render the current session state."""
+        self.bus.publish("sessions")
+
+    def usage_changed(self) -> None:
+        """Announce that consumers should render the current usage state."""
+        self.bus.publish("usage")
+
+    def assistant_changed(self) -> None:
+        """Announce that consumers should render the current Deckhand state."""
+        self.bus.publish("assistant")
+
     # --- sessions -----------------------------------------------------
 
     def replace_account_sessions(self, account_key: str, sessions: list[Session]) -> bool:
@@ -105,7 +119,7 @@ class AppState:
         self.sessions.update(new)
         if self.db is not None:
             self.db.upsert_sessions_seen(admitted)
-        self.bus.publish("sessions")
+        self.sessions_changed()
         return True
 
     def update_session(self, session: Session) -> None:
@@ -113,7 +127,7 @@ class AppState:
         if self.sessions.get(session.key) == session:
             return
         self.sessions[session.key] = session
-        self.bus.publish("sessions")
+        self.sessions_changed()
 
     def _admit(self, session: Session) -> Session:
         """Apply the account-session admission rule and return the canonical session.
@@ -158,7 +172,7 @@ class AppState:
             updated = self._with_generated_title(session)
             if updated != session:
                 self.sessions[session_key] = updated
-                self.bus.publish("sessions")
+                self.sessions_changed()
 
     def mark_delegated_session(
         self, session_key: str, parent_session_id: str | None = None
@@ -179,7 +193,7 @@ class AppState:
         session = self.sessions.get(session_key)
         if session is not None and not session.is_delegated:
             self.sessions[session_key] = replace(session, is_delegated=True)
-        self.bus.publish("sessions")
+        self.sessions_changed()
 
     def apply_session_changes(
         self,
@@ -204,7 +218,7 @@ class AppState:
             if session != before:
                 changed.append(session)
         if changed:
-            self.bus.publish("sessions")
+            self.sessions_changed()
         return changed
 
     def _sort_key(self, s: Session) -> tuple[int, int, float]:
@@ -412,16 +426,16 @@ class AppState:
 
     def set_host_stats(self, snapshot: HostStats) -> None:
         self.host_stats = snapshot
-        self.bus.publish("usage")
+        self.usage_changed()
 
     def set_usage(self, snapshot: UsageSnapshot) -> None:
         self.usage[snapshot.account_key] = snapshot
         if self.db is not None:
             self.db.record_usage(snapshot)
-        self.bus.publish("usage")
+        self.usage_changed()
 
     def mark_usage_stale(self, account_key: str) -> None:
         snap = self.usage.get(account_key)
         if snap is not None and not snap.stale:
             self.usage[account_key] = replace(snap, stale=True)
-            self.bus.publish("usage")
+            self.usage_changed()

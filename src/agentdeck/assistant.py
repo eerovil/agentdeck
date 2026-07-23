@@ -423,7 +423,7 @@ class AssistantService:
         degraded = False
         if pending:
             self.view = replace(self.view, state="analyzing")
-            self.state.bus.publish("assistant")
+            self.state.assistant_changed()
             gate = asyncio.Semaphore(self.CLASSIFY_CONCURRENCY)
 
             async def _classify_bounded(session):
@@ -513,7 +513,7 @@ class AssistantService:
                 "Updated" if not view.error else "Some agents could not be read"
             )
         if changed or manual:
-            self.state.bus.publish("assistant")
+            self.state.assistant_changed()
 
     def _notify_new_insights(self, old: AssistantView, new: AssistantView) -> None:
         """Web-push each attention item that just appeared (issue #7/#13).
@@ -570,7 +570,7 @@ class AssistantService:
                 self.view = replace(
                     self.view, summary=tracking_summary(len(insights)), insights=insights
                 )
-            self.state.bus.publish("assistant")
+            self.state.assistant_changed()
             return True
         # A non-question Deckhand card (blocked/finished): dismiss on the evidence
         # signature, auto-restored when the session's evidence changes.
@@ -586,7 +586,7 @@ class AssistantService:
             self.view, summary=tracking_summary(len(insights)), insights=insights
         )
         self._save_checkpoint()
-        self.state.bus.publish("assistant")
+        self.state.assistant_changed()
         return True
 
     def unhandle(self, session_key: str) -> bool:
@@ -606,7 +606,7 @@ class AssistantService:
                 )
             self._save_checkpoint()
         self.request_refresh()
-        self.state.bus.publish("assistant")
+        self.state.assistant_changed()
         return True
 
     @property

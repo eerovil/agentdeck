@@ -18,6 +18,20 @@ def _session(
     )
 
 
+def test_named_invalidations_own_event_topics():
+    state = AppState()
+
+    with state.bus.subscribe("sessions", "usage", "assistant") as events:
+        state.sessions_changed()
+        state.usage_changed()
+        state.assistant_changed()
+
+    assert events.get_nowait() == ("sessions", None)
+    assert events.get_nowait() == ("usage", None)
+    assert events.get_nowait() == ("assistant", None)
+    assert events.get_nowait() is None
+
+
 class _FakeDb:
     """Records the writes AppState admission performs, with empty loads."""
 
