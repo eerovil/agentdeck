@@ -101,6 +101,27 @@
     var scheme = url.match(/^([a-z][a-z0-9+.-]*):/i);
     return !scheme || /^(?:https?|mailto)$/i.test(scheme[1]);
   }
+  function mdPreviewHref(url, sessionKey) {
+    var prefix = 'agentdeck-preview:';
+    if (!sessionKey) return null;
+    var explicit = url.slice(0, prefix.length).toLowerCase() === prefix;
+    var scheme = url.match(/^([a-z][a-z0-9+.-]*):/i);
+    if (!explicit && (scheme || url.slice(0, 2) === '//')) return null;
+    var encoded = explicit ? url.slice(prefix.length) : url;
+    var hash = '';
+    var hashAt = encoded.indexOf('#');
+    if (hashAt >= 0) { hash = encoded.slice(hashAt + 1); encoded = encoded.slice(0, hashAt); }
+    var path;
+    try { path = decodeURIComponent(encoded); } catch (_) { return null; }
+    if (!path || path[0] === '/' || path.indexOf('\\') >= 0 || path.indexOf('?') >= 0) return null;
+    var parts = path.split('/');
+    if (parts.some(function (part) { return !part || part === '.' || part === '..'; })) return null;
+    if (!/\.html?$/i.test(parts[parts.length - 1])) return null;
+    var href = '/sessions/' + encodeURIComponent(sessionKey) + '/preview/' +
+      parts.map(function (part) { return encodeURIComponent(part); }).join('/');
+    if (hash) href += '#' + encodeURIComponent(hash);
+    return href;
+  }
   function mdAutoLink(html) {
     var template = document.createElement('template');
     template.innerHTML = html;
@@ -134,17 +155,18 @@
     });
     return template.innerHTML;
   }
-  function mdInline(s) {
+  function mdInline(s, sessionKey) {
     s = s.replace(/`([^`]+)`/g, function (_, c) { return '<code>' + c + '</code>'; });
     s = s.replace(/\*\*([^*]+?)\*\*/g, '<strong>$1</strong>');
     s = s.replace(/(^|[^\w*])\*([^*\n]+?)\*(?!\w)/g, '$1<em>$2</em>');
     s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, function (match, label, url) {
-      if (!mdSafeHref(url)) return match;
-      return '<a href="' + url + '" target="_blank" rel="noopener">' + label + '</a>';
+      var href = mdPreviewHref(url, sessionKey);
+      if (!href && !mdSafeHref(url)) return match;
+      return '<a href="' + (href || url) + '" target="_blank" rel="noopener">' + label + '</a>';
     });
     return mdAutoLink(s);
   }
-  function mdToHtml(text) {
+  function mdToHtml(text, sessionKey) {
     var segs = mdEscape(text).split(/```/), out = '';
     for (var i = 0; i < segs.length; i++) {
       if (i % 2 === 1) {                       // inside a fenced code block
@@ -154,11 +176,11 @@
       var lines = segs[i].split('\n'), buf = '', inList = false;
       for (var j = 0; j < lines.length; j++) {
         var ln = lines[j], li = ln.match(/^\s*[-*+]\s+(.*)$/), hd = ln.match(/^\s*(#{1,6})\s+(.*)$/);
-        if (li) { if (!inList) { buf += '<ul>'; inList = true; } buf += '<li>' + mdInline(li[1]) + '</li>'; continue; }
+        if (li) { if (!inList) { buf += '<ul>'; inList = true; } buf += '<li>' + mdInline(li[1], sessionKey) + '</li>'; continue; }
         if (inList) { buf += '</ul>'; inList = false; }
-        if (hd) buf += '<div class="md-h">' + mdInline(hd[2]) + '</div>';
+        if (hd) buf += '<div class="md-h">' + mdInline(hd[2], sessionKey) + '</div>';
         else if (ln.trim() === '') buf += '<br>';
-        else buf += mdInline(ln) + '<br>';
+        else buf += mdInline(ln, sessionKey) + '<br>';
       }
       if (inList) buf += '</ul>';
       out += buf;
@@ -522,7 +544,9 @@
   (function () {
     function enhance(scope) {
       (scope || document).querySelectorAll('.ev-text:not([data-md])').forEach(function (el) {
-        el.innerHTML = mdToHtml(el.textContent);
+        var transcript = el.closest('.transcript[data-session-key]');
+        var sessionKey = transcript && transcript.getAttribute('data-session-key');
+        el.innerHTML = mdToHtml(el.textContent, sessionKey);
         el.setAttribute('data-md', '');
       });
     }

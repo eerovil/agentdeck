@@ -1,11 +1,15 @@
 import asyncio
 import base64
 import json
+import os
+import re
+import socket
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+import uvicorn
 from httpx import ASGITransport, AsyncClient
 from playwright.async_api import async_playwright
 
@@ -1321,7 +1325,27 @@ async def test_markdown_links_reject_unsafe_schemes_and_attribute_breakout(tmp_p
                 "[x](vbscript:msgbox(1))",
                 '[x](https://e.com/"onmouseover=alert(1))',
                 "[x](https://e.com)",
+                "[preview](agentdeck-preview:demo/index.html)",
+                "[relative](demo/index.html)",
+                "[escape](agentdeck-preview:../outside.html)",
+                "[absolute](agentdeck-preview:/tmp/outside.html)",
+                "[source](agentdeck-preview:demo/index.py)",
             ],
+        )
+        preview_with_session = await page.evaluate(
+            """() => {
+                const output = document.querySelector('#output');
+                output.innerHTML = mdToHtml(
+                  '[preview](agentdeck-preview:demo/My%20Page.html#results)',
+                  'claude_code:test:sid1'
+                );
+                const link = output.querySelector('a');
+                return {
+                  href: link && link.getAttribute('href'),
+                  target: link && link.getAttribute('target'),
+                  rel: link && link.getAttribute('rel'),
+                };
+            }"""
         )
         await browser.close()
 
@@ -1334,6 +1358,18 @@ async def test_markdown_links_reject_unsafe_schemes_and_attribute_breakout(tmp_p
     assert " onmouseover=" not in quote_result["html"]
     assert rendered[4]["href"] == "https://e.com"
     assert '<a href="https://e.com" target="_blank" rel="noopener">x</a>' in rendered[4]["html"]
+    for result in (rendered[5], *rendered[7:]):
+        assert result["href"] is None
+        assert "<a " not in result["html"]
+    assert rendered[6]["href"] == "demo/index.html"
+    assert preview_with_session == {
+        "href": (
+            "/sessions/claude_code%3Atest%3Asid1/preview/"
+            "demo/My%20Page.html#results"
+        ),
+        "target": "_blank",
+        "rel": "noopener",
+    }
 
 
 async def test_transcript_plain_web_urls_render_as_safe_links(tmp_path):
@@ -1343,7 +1379,8 @@ async def test_transcript_plain_web_urls_render_as_safe_links(tmp_path):
     lines[0]["message"]["content"] = (
         "See https://github.com/eerovil/agentdeck/pull/65. "
         "Keep `https://example.test/code` literal and "
-        "[open docs](https://example.test/docs)."
+        "[open docs](https://example.test/docs). "
+        "[Open preview](demo/index.html)."
     )
     transcript.write_text("".join(json.dumps(line) + "\n" for line in lines))
 
@@ -1386,6 +1423,14 @@ async def test_transcript_plain_web_urls_render_as_safe_links(tmp_path):
         {
             "text": "open docs",
             "href": "https://example.test/docs",
+            "target": "_blank",
+            "rel": "noopener",
+        },
+        {
+            "text": "Open preview",
+            "href": (
+                "/sessions/claude_code%3Atest%3Asid1/preview/demo/index.html"
+            ),
             "target": "_blank",
             "rel": "noopener",
         },
@@ -1434,6 +1479,233 @@ async def test_local_file_route_escapes_active_text_and_serves_binary_inline(tmp
     assert binary_response.content == b"\x00\x01agentdeck"
     assert binary_response.headers["content-disposition"].startswith("inline;")
     assert missing_response.status_code == 404
+
+
+async def test_session_html_preview_serves_relative_assets_in_an_opaque_sandbox(tmp_path):
+    app = _app_with_state(tmp_path)
+    control_attempts = []
+
+    @app.post("/preview-control-probe")
+    async def preview_control_probe():
+        control_attempts.append(True)
+        return {"ok": True}
+
+    site = tmp_path / "site"
+    (site / "demo" / "styles").mkdir(parents=True)
+    (site / "demo" / "index.html").write_text(
+        "<!doctype html><link rel=stylesheet href=styles/app.css>"
+        "<body><h1>Rendered preview</h1><img id=pixel src=pixel.png>"
+        "<script src=app.js></script>"
+        "<script type=module src=module.mjs></script>"
+        "<script>Promise.allSettled(["
+        "fetch('data.json').then(()=>document.body.dataset.fetch='allowed')"
+        ".catch(()=>document.body.dataset.fetch='blocked'),"
+        "fetch('/preview-control-probe',{method:'POST',body:'x'})"
+        ".then(()=>document.body.dataset.control='allowed')"
+        ".catch(()=>document.body.dataset.control='blocked'),"
+        "fetch('https://example.com').then(()=>document.body.dataset.external='allowed')"
+        ".catch(()=>document.body.dataset.external='blocked'),"
+        "Promise.resolve().then(()=>navigator.serviceWorker.register('sw.js'))"
+        ".then(()=>document.body.dataset.worker='allowed')"
+        ".catch(()=>document.body.dataset.worker='blocked')"
+        "]).then(()=>document.body.dataset.settled='yes')</script>"
+    )
+    (site / "demo" / "styles" / "app.css").write_text("h1 { color: tomato; }")
+    (site / "demo" / "app.js").write_text(
+        "document.body.dataset.ready = 'yes';"
+        "const p=document.querySelector('#pixel');"
+        "const loaded=()=>document.body.dataset.asset='yes';"
+        "p.addEventListener('load',loaded);if(p.complete)loaded();"
+    )
+    (site / "demo" / "module.mjs").write_text("document.body.dataset.module = 'yes';")
+    (site / "demo" / "sw.js").write_text("self.addEventListener('fetch', () => {});")
+    (site / "demo" / "data.json").write_text('{"ok":"yes"}')
+    (site / "demo" / "pixel.png").write_bytes(
+        base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        )
+    )
+    (site / "demo" / "evil.svg").write_text(
+        "<svg xmlns='http://www.w3.org/2000/svg'><script><![CDATA["
+        "fetch('/healthz').then(()=>document.documentElement.dataset.control='allowed')"
+        ".catch(()=>document.documentElement.dataset.control='blocked')"
+        ".finally(()=>document.documentElement.dataset.settled='yes')"
+        "]]></script></svg>"
+    )
+    (site / "demo" / ".env").write_text("SECRET=not-for-the-preview")
+    session = app.state.app_state.sessions["claude_code:test:sid1"]
+    session.cwd = site
+
+    async with _client(app) as client:
+        wrapper = await client.get(
+            "/sessions/claude_code:test:sid1/preview/demo/index.html"
+        )
+        preview_src = re.search(r'<iframe src="([^"]+)"', wrapper.text).group(1)
+        asset_base = preview_src.rsplit("/", 1)[0]
+        html = await client.get(preview_src)
+        css = await client.get(f"{asset_base}/styles/app.css")
+        script = await client.get(f"{asset_base}/app.js")
+        data = await client.get(f"{asset_base}/data.json")
+        dotfile = await client.get(f"{asset_base}/.env")
+        health = await client.get("/healthz")
+
+    assert wrapper.status_code == 200
+    assert 'sandbox="allow-scripts"' in wrapper.text
+    assert "demo/index.html" in wrapper.text
+    assert html.status_code == 200
+    assert html.headers["content-type"].startswith("text/html")
+    assert "<h1>Rendered preview</h1>" in html.text
+    assert "sandbox allow-scripts" in html.headers["content-security-policy"]
+    assert "allow-same-origin" not in html.headers["content-security-policy"]
+    assert "allow-forms" not in html.headers["content-security-policy"]
+    assert "default-src 'none'" in html.headers["content-security-policy"]
+    assert "connect-src 'none'" in html.headers["content-security-policy"]
+    assert html.headers["cache-control"] == "private, no-store"
+    assert html.headers["cross-origin-opener-policy"] == "same-origin"
+    assert css.status_code == 200
+    assert css.headers["content-type"].startswith("text/css")
+    assert css.headers["access-control-allow-origin"] == "null"
+    assert script.status_code == 200
+    assert "dataset.ready" in script.text
+    assert data.headers["access-control-allow-origin"] == "null"
+    assert dotfile.status_code == 404
+    assert "access-control-allow-origin" not in health.headers
+
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    sock.listen()
+    port = sock.getsockname()[1]
+    server = uvicorn.Server(
+        uvicorn.Config(app, log_level="error", lifespan="off")
+    )
+    server_task = asyncio.create_task(server.serve(sockets=[sock]))
+    while not server.started:
+        await asyncio.sleep(0.01)
+    try:
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            page = await browser.new_page(viewport={"width": 320, "height": 640})
+            await page.goto(
+                f"http://127.0.0.1:{port}/sessions/claude_code:test:sid1/"
+                "preview/demo/index.html"
+            )
+            frame = page.frame_locator("iframe")
+            await frame.locator("body[data-settled=yes]").wait_for()
+            browser_result = await frame.locator("body").evaluate(
+                """() => ({
+                  script: document.body.dataset.ready,
+                  asset: document.body.dataset.asset,
+                  fetch: document.body.dataset.fetch,
+                  control: document.body.dataset.control,
+                  external: document.body.dataset.external,
+                  worker: document.body.dataset.worker,
+                  module: document.body.dataset.module,
+                  popup: window.open('about:blank') ? 'allowed' : 'blocked',
+                  color: getComputedStyle(document.querySelector('h1')).color,
+                })"""
+            )
+            iframe_src = await page.locator("iframe").get_attribute("src")
+            svg_page = await browser.new_page()
+            await svg_page.goto(iframe_src.rsplit("/", 1)[0] + "/evil.svg")
+            await svg_page.wait_for_function(
+                "document.documentElement.dataset.settled === 'yes'"
+            )
+            svg_control = await svg_page.evaluate(
+                "document.documentElement.dataset.control"
+            )
+            await browser.close()
+    finally:
+        server.should_exit = True
+        await server_task
+        sock.close()
+
+    assert browser_result == {
+        "script": "yes",
+        "asset": "yes",
+        "fetch": "blocked",
+        "control": "blocked",
+        "external": "blocked",
+        "worker": "blocked",
+        "module": "yes",
+        "popup": "blocked",
+        "color": "rgb(255, 99, 71)",
+    }
+    assert control_attempts == []
+    assert svg_control == "blocked"
+
+
+async def test_session_html_preview_rejects_traversal_and_symlink_escape(tmp_path):
+    app = _app_with_state(tmp_path)
+    site = tmp_path / "site"
+    (site / "demo").mkdir(parents=True)
+    (site / "other").mkdir()
+    (site / "demo" / "index.html").write_text("inside")
+    (site / "demo" / "source.py").write_text("secret = True")
+    (site / "other" / "secret.json").write_text('{"secret": true}')
+    os.mkfifo(site / "demo" / "pipe.txt")
+    outside = tmp_path / "outside.html"
+    outside.write_text("outside")
+    (site / "escape.html").symlink_to(outside)
+    (site / "demo" / "escape-dir").symlink_to(site / "other", target_is_directory=True)
+    rebound = tmp_path / "rebound"
+    (rebound / "demo").mkdir(parents=True)
+    (rebound / "demo" / "index.html").write_text("different cwd")
+    session = app.state.app_state.sessions["claude_code:test:sid1"]
+    session.cwd = site
+
+    async with _client(app) as client:
+        wrapper = await client.get(
+            "/sessions/claude_code:test:sid1/preview/demo/index.html"
+        )
+        preview_src = re.search(r'<iframe src="([^"]+)"', wrapper.text).group(1)
+        asset_base = preview_src.rsplit("/", 1)[0]
+        traversal = await client.get(
+            "/sessions/claude_code:test:sid1/preview/%2e%2e/outside.html"
+        )
+        nested_traversal = await client.get(
+            "/sessions/claude_code:test:sid1/preview/nested/../../outside.html"
+        )
+        symlink = await client.get(
+            "/sessions/claude_code:test:sid1/preview/escape.html"
+        )
+        bundle_escape = await client.get(
+            f"{asset_base}/%2e%2e/other/secret.json"
+        )
+        symlink_directory = await client.get(
+            f"{asset_base}/escape-dir/secret.json"
+        )
+        special_file = await client.get(f"{asset_base}/pipe.txt")
+        unknown_type = await client.get(f"{asset_base}/source.py")
+        token = preview_src.split("/")[-2]
+        replacement = ("A" if token[-1] != "A" else "B")
+        tampered = await client.get(
+            preview_src.replace(f"/{token}/", f"/{token[:-1] + replacement}/")
+        )
+        directory = await client.get(
+            "/sessions/claude_code:test:sid1/preview/."
+        )
+        unknown_session = await client.get(
+            "/sessions/claude_code:test:missing/preview/index.html"
+        )
+        session.cwd = rebound
+        rebound_capability = await client.get(preview_src)
+        session.cwd = None
+        missing_cwd = await client.get(
+            "/sessions/claude_code:test:sid1/preview/index.html"
+        )
+
+    assert traversal.status_code == 404
+    assert nested_traversal.status_code == 404
+    assert symlink.status_code == 404
+    assert bundle_escape.status_code == 404
+    assert symlink_directory.status_code == 404
+    assert special_file.status_code == 404
+    assert unknown_type.status_code == 404
+    assert tampered.status_code == 404
+    assert directory.status_code == 404
+    assert unknown_session.status_code == 404
+    assert rebound_capability.status_code == 404
+    assert missing_cwd.status_code == 404
 
 
 async def test_partial_sessions(tmp_path):

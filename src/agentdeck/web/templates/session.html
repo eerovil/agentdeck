@@ -74,7 +74,7 @@
 {% endif %}
 
 <div class="transcript-stage">
-  <div class="transcript" sse-swap="transcript" hx-swap="beforeend">
+  <div class="transcript" data-session-key="{{ session.key }}" sse-swap="transcript" hx-swap="beforeend">
     {% if detail.earliest_seq > 1 %}
     {% set before = detail.earliest_seq %}
     {% include "partials/load_earlier.html" %}

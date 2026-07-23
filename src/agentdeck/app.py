@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import secrets
 import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -120,6 +121,9 @@ def create_app(config: AppConfig) -> FastAPI:
     app.state.titles = titles
     app.state.push = push
     app.state.db = db
+    # Ephemeral signing key for cwd-scoped preview bundle capabilities. Transcript
+    # links point at a stable wrapper URL; each web-process lifetime has new tokens.
+    app.state.preview_secret = secrets.token_bytes(32)
 
     @app.middleware("http")
     async def measure_direct_actions(request, call_next):
