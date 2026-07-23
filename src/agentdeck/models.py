@@ -64,6 +64,25 @@ def runtime_control_capabilities(
     return frozenset(capabilities)
 
 
+def runtime_turn_state(
+    *, active_turn: bool, actionable_interaction: bool, stalled_evidence: bool
+) -> tuple[bool, bool]:
+    """Turn-presentation state an owned runtime agent projects right now.
+
+    Sibling of ``runtime_control_capabilities``: the single home for the "how
+    does ownership project turn state" precedence rule that both providers apply
+    on top of their own read of the raw facts. An actionable interaction outranks
+    stall evidence and suppresses thinking; a session is only thinking when a turn
+    is active, no interaction is pending, and it is not stalled.
+
+    Returns ``(stalled, thinking)`` — stalled first, because thinking is derived
+    from the overridden stalled value, not the raw evidence.
+    """
+    stalled = False if actionable_interaction else stalled_evidence
+    thinking = active_turn and not actionable_interaction and not stalled
+    return stalled, thinking
+
+
 @dataclass(frozen=True)
 class Account:
     key: str  # "claude_code:main" — provider_id ":" label-slug

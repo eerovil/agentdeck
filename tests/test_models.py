@@ -8,6 +8,7 @@ from agentdeck.models import (
     CONTROL_CAPABILITIES,
     Capability,
     runtime_control_capabilities,
+    runtime_turn_state,
 )
 
 
@@ -59,6 +60,32 @@ def test_result_is_always_within_the_control_set(active_turn, actionable_interac
     assert result <= CONTROL_CAPABILITIES
     assert Capability.TRANSCRIPT not in result
     assert Capability.DEEPLINK not in result
+
+
+def test_actionable_interaction_outranks_stall_and_suppresses_thinking():
+    # An answerable interaction overrides stall evidence and forces thinking off,
+    # regardless of turn activity.
+    assert runtime_turn_state(
+        active_turn=True, actionable_interaction=True, stalled_evidence=True
+    ) == (False, False)
+
+
+def test_stall_evidence_shows_without_interaction():
+    assert runtime_turn_state(
+        active_turn=True, actionable_interaction=False, stalled_evidence=True
+    ) == (True, False)
+
+
+def test_thinking_requires_active_turn_no_interaction_and_not_stalled():
+    assert runtime_turn_state(
+        active_turn=True, actionable_interaction=False, stalled_evidence=False
+    ) == (False, True)
+
+
+def test_idle_turn_is_neither_stalled_nor_thinking():
+    assert runtime_turn_state(
+        active_turn=False, actionable_interaction=False, stalled_evidence=False
+    ) == (False, False)
 
 
 def test_control_set_excludes_read_only_capabilities():

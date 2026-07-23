@@ -26,6 +26,7 @@ from ...models import (
     event_progress_at,
     event_turn_open,
     runtime_control_capabilities,
+    runtime_turn_state,
     turn_stalled,
 )
 from .._filecache import FileCache, mtime_sig, size_mtime_sig
@@ -258,8 +259,11 @@ class CodexProvider(SessionProvider):
         )
         session.status = SessionStatus.LIVE if active else SessionStatus.IDLE
         session.lifecycle_active = active
-        session.stalled = stalled if interaction is None else False
-        session.thinking = active and interaction is None and not session.stalled
+        session.stalled, session.thinking = runtime_turn_state(
+            active_turn=active,
+            actionable_interaction=interaction is not None,
+            stalled_evidence=stalled,
+        )
         session.last_progress = progress
         session.activity = (
             "Waiting for you"
