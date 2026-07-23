@@ -222,6 +222,30 @@ class InjectResult:
     session_id: str | None = None
     transcript_expected: bool = True
 
+    @classmethod
+    def from_wire(cls, data: object, *, source: str = "runtime") -> InjectResult:
+        """Decode the ``{accepted, reason, session_id}`` envelope the runtime
+        returns over its socket. Tolerant of a malformed reply: a non-dict or
+        non-string field degrades to a rejection / None rather than raising."""
+        if not isinstance(data, dict):
+            return cls(False, f"invalid response from {source}")
+        reason = data.get("reason")
+        session_id = data.get("session_id")
+        return cls(
+            bool(data.get("accepted")),
+            reason if isinstance(reason, str) else None,
+            session_id if isinstance(session_id, str) else None,
+        )
+
+    def to_wire(self) -> dict:
+        """The wire envelope a runtime endpoint sends back. ``transcript_expected``
+        is intentionally web-side only and never crosses the socket."""
+        return {
+            "accepted": self.accepted,
+            "reason": self.reason,
+            "session_id": self.session_id,
+        }
+
 
 @dataclass(frozen=True)
 class InteractionOption:

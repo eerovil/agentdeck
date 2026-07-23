@@ -9,24 +9,14 @@ from typing import Any
 
 import httpx
 
-from ...action_context import current_client_action_id
 from ...models import (
     Account,
     InjectResult,
     PendingInteraction,
 )
+from ..runtime_socket_client import RuntimeSocketClient, runtime_socket_path
 
-
-def runtime_socket_path() -> Path:
-    """Return the user-local socket shared by the web and runtime services."""
-    import os
-
-    configured = os.environ.get("AGENTDECK_CODEX_SOCKET")
-    if configured:
-        return Path(configured).expanduser()
-    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
-    base = Path(runtime_dir) if runtime_dir else Path("~/.cache").expanduser()
-    return base / "agentdeck" / "codex-runtime.sock"
+__all__ = ["CodexRuntimeClient", "runtime_socket_path"]
 
 
 def _interaction(raw: object) -> PendingInteraction | None:
@@ -35,8 +25,10 @@ def _interaction(raw: object) -> PendingInteraction | None:
     return PendingInteraction.from_dict(raw)
 
 
-class CodexRuntimeClient:
+class CodexRuntimeClient(RuntimeSocketClient):
     """Provider-side facade over the long-lived runtime's Unix socket."""
+
+    _runtime_label = "Codex runtime"
 
     def __init__(
         self,
@@ -45,34 +37,10 @@ class CodexRuntimeClient:
         on_change: Callable[[str], None] | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        self.account = account
+        super().__init__(account, transport=transport)
         self._on_change = on_change or (lambda _thread_id: None)
-        # A cancelled _post() closes self._http so uvicorn can shut down promptly,
-        # but a still-running web process must be able to reopen it. Keep a factory
-        # so any call can lazily rebuild a closed client; otherwise refresh() would
-        # die silently and the cached runtime state (active turns, interactions)
-        # would freeze forever, pinning finished sessions as "working".
-        self._new_transport = (
-            (lambda: transport)
-            if transport is not None
-            else (lambda: httpx.AsyncHTTPTransport(uds=str(runtime_socket_path())))
-        )
-        self._http = self._make_client()
         self._refresh_lock = asyncio.Lock()
         self._state: dict[str, dict[str, Any]] = {}
-
-    def _make_client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(
-            transport=self._new_transport(),
-            base_url="http://agentdeck-runtime",
-            timeout=httpx.Timeout(30.0, read=None),
-        )
-
-    def _client(self) -> httpx.AsyncClient:
-        # Reopen after a shutdown-path aclose() so the live process keeps syncing.
-        if self._http.is_closed:
-            self._http = self._make_client()
-        return self._http
 
     @property
     def _base(self) -> str:
@@ -82,9 +50,6 @@ class CodexRuntimeClient:
         response = await self._client().get("/healthz")
         response.raise_for_status()
         await self.refresh()
-
-    async def stop(self) -> None:
-        await self._http.aclose()
 
     async def refresh(self) -> set[str]:
         async with self._refresh_lock:
@@ -115,36 +80,6 @@ class CodexRuntimeClient:
 
     def interaction(self, thread_id: str) -> PendingInteraction | None:
         return _interaction(self._state.get(thread_id, {}).get("interaction"))
-
-    @staticmethod
-    def _result(raw: object) -> InjectResult:
-        if not isinstance(raw, dict):
-            return InjectResult(False, "invalid response from Codex runtime")
-        return InjectResult(
-            bool(raw.get("accepted")),
-            raw.get("reason") if isinstance(raw.get("reason"), str) else None,
-            raw.get("session_id") if isinstance(raw.get("session_id"), str) else None,
-        )
-
-    async def _post(self, action: str, payload: dict[str, Any]) -> InjectResult:
-        client_action_id = current_client_action_id()
-        if client_action_id:
-            payload = {**payload, "client_action_id": client_action_id}
-        try:
-            response = await self._client().post(f"{self._base}/{action}", json=payload)
-            response.raise_for_status()
-            result = self._result(response.json())
-            await self.refresh()
-            return result
-        except asyncio.CancelledError:
-            # A web deploy cancels InjectionService tasks that may be awaiting a
-            # queued turn for minutes. Close the local UDS client immediately;
-            # the separate runtime keeps processing the request and the Codex
-            # turn, while uvicorn can finish its web-service shutdown promptly.
-            await self._http.aclose()
-            raise
-        except httpx.HTTPError as exc:
-            return InjectResult(False, f"Codex runtime unavailable: {exc}")
 
     async def start_thread(
         self,

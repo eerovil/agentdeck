@@ -14,10 +14,12 @@ from collections.abc import Callable
 import httpx
 
 from ...models import Account, InjectResult
-from ..codex.runtime_client import runtime_socket_path
+from ..runtime_socket_client import RuntimeSocketClient
 
 
-class ClaudeWorkerClient:
+class ClaudeWorkerClient(RuntimeSocketClient):
+    _runtime_label = "claude worker runtime"
+
     def __init__(
         self,
         account: Account,
@@ -25,14 +27,8 @@ class ClaudeWorkerClient:
         on_change: Callable[[], None] | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        self.account = account
+        super().__init__(account, transport=transport)
         self._on_change = on_change or (lambda: None)
-        transport = transport or httpx.AsyncHTTPTransport(uds=str(runtime_socket_path()))
-        self._http = httpx.AsyncClient(
-            transport=transport,
-            base_url="http://agentdeck-runtime",
-            timeout=httpx.Timeout(30.0, read=None),
-        )
         # session_id -> worker snapshot fields used by provider capabilities.
         self._owned: dict[str, dict] = {}
         self.available = False
@@ -222,21 +218,17 @@ class ClaudeWorkerClient:
             await asyncio.sleep(min(0.2, remaining))
 
     async def _post(self, action: str, payload: dict) -> InjectResult:
+        # Overridden (for now) so this extraction stays behavior-preserving:
+        # unlike the base _post, the Claude client does not yet close-on-cancel or
+        # send client_action_id, and its reads still use self._http directly.
         try:
             response = await self._http.post(f"{self._base}/{action}", json=payload)
             response.raise_for_status()
         except httpx.HTTPError as exc:
-            return InjectResult(False, f"claude worker runtime unavailable: {exc}")
+            return InjectResult(False, f"{self._runtime_label} unavailable: {exc}")
         data = response.json()
         if not isinstance(data, dict):
-            return InjectResult(False, "invalid response from claude worker runtime")
+            return InjectResult(False, f"invalid response from {self._runtime_label}")
         # DeliverResult -> InjectResult; refresh so the owned map reflects the spawn.
         await self.refresh()
-        return InjectResult(
-            bool(data.get("accepted")),
-            data.get("reason") if isinstance(data.get("reason"), str) else None,
-            data.get("session_id") if isinstance(data.get("session_id"), str) else None,
-        )
-
-    async def stop(self) -> None:
-        await self._http.aclose()
+        return InjectResult.from_wire(data, source=self._runtime_label)

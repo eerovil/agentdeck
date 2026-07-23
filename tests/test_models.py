@@ -7,6 +7,7 @@ import pytest
 from agentdeck.models import (
     CONTROL_CAPABILITIES,
     Capability,
+    InjectResult,
     runtime_control_capabilities,
     runtime_turn_state,
 )
@@ -147,3 +148,22 @@ def test_pending_interaction_from_dict_rejects_a_non_dict_or_missing_id():
     assert PendingInteraction.from_dict(None) is None
     assert PendingInteraction.from_dict({"kind": "question"}) is None  # no id
     assert PendingInteraction.from_dict({"id": 5}) is None  # non-string id
+
+
+def test_inject_result_wire_round_trip_drops_web_only_field():
+    # to_wire carries exactly the three socket fields; transcript_expected is
+    # web-side only and must never cross the socket.
+    result = InjectResult(True, reason=None, session_id="s-1", transcript_expected=False)
+    assert result.to_wire() == {"accepted": True, "reason": None, "session_id": "s-1"}
+    decoded = InjectResult.from_wire(result.to_wire())
+    assert decoded == InjectResult(True, None, "s-1")  # transcript_expected back to default
+
+
+def test_inject_result_from_wire_tolerates_malformed_replies():
+    assert InjectResult.from_wire("nope", source="Codex runtime") == InjectResult(
+        False, "invalid response from Codex runtime"
+    )
+    # Non-string reason/session_id degrade to None rather than leaking through.
+    assert InjectResult.from_wire({"accepted": 1, "reason": 7, "session_id": []}) == InjectResult(
+        True, None, None
+    )

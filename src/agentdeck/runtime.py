@@ -58,11 +58,7 @@ class AnswerRequest(ActionRequest):
 
 
 def _result(result: InjectResult) -> dict[str, Any]:
-    return {
-        "accepted": result.accepted,
-        "reason": result.reason,
-        "session_id": result.session_id,
-    }
+    return result.to_wire()
 
 
 class DeliverRequest(ActionRequest):
