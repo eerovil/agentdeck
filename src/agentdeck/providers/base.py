@@ -175,7 +175,23 @@ class SessionProvider(ABC):
     def pending_interaction(
         self, account: Account, session: Session
     ) -> PendingInteraction | None:
-        """Return only a currently actionable, runtime-available interaction."""
+        """Return only a currently actionable, runtime-available interaction.
+
+        The INTERACT capability gate lives here once; a provider supplies only
+        the read via ``_actionable_interaction``. Callers never re-check the
+        capability — a session without INTERACT resolves to None.
+        """
+        if Capability.INTERACT not in session.capabilities:
+            return None
+        return self._actionable_interaction(account, session.session_id)
+
+    def _actionable_interaction(
+        self, account: Account, session_id: str
+    ) -> PendingInteraction | None:
+        """Provider read of a still-actionable, runtime-available interaction.
+
+        Default: none (the provider has no interaction source). Overriding this
+        is all a provider needs to make ``pending_interaction`` work."""
         return None
 
     async def steer(
@@ -200,4 +216,31 @@ class SessionProvider(ABC):
         answers: Mapping[str, list[str]],
         decision: str | None,
     ) -> InjectResult:
+        """Admit an answer: confirm INTERACT is granted and that ``interaction_id``
+        is still the actionable interaction, then hand a normalized answer to the
+        provider. Providers implement only ``_answer_actionable``; the guard and
+        the ``dict`` normalization live here once so the two providers cannot
+        drift on the admission policy."""
+        if Capability.INTERACT not in session.capabilities:
+            return InjectResult(False, "interaction is unavailable")
+        interaction = self._actionable_interaction(account, session.session_id)
+        if interaction is None or interaction.id != interaction_id:
+            return InjectResult(False, "interaction is no longer pending")
+        return await self._answer_actionable(
+            account, session, interaction, answers=dict(answers), decision=decision
+        )
+
+    async def _answer_actionable(
+        self,
+        account: Account,
+        session: Session,
+        interaction: PendingInteraction,
+        *,
+        answers: dict[str, list[str]],
+        decision: str | None,
+    ) -> InjectResult:
+        """Hand a validated, ``dict``-normalized answer to the provider's runtime.
+
+        Called only after ``answer_interaction`` confirmed the interaction is the
+        actionable one; ``interaction.id`` equals the submitted id."""
         return InjectResult(False, "this provider cannot answer interactions")

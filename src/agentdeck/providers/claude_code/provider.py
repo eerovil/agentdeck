@@ -407,18 +407,11 @@ class ClaudeCodeProvider(SessionProvider):
         meta = await asyncio.to_thread(transcripts_mod.transcript_meta, path)
         return meta.last_text if meta.last_role == "agent" else None
 
-    def pending_interaction(
-        self, account: Account, session: Session
-    ) -> PendingInteraction | None:
-        if Capability.INTERACT not in session.capabilities:
-            return None
-        return self._actionable_interaction(account, session.session_id)
-
-    async def answer_interaction(
+    async def _answer_actionable(
         self,
         account: Account,
         session: Session,
-        interaction_id: str,
+        interaction: PendingInteraction,
         *,
         answers,
         decision: str | None,
@@ -426,13 +419,8 @@ class ClaudeCodeProvider(SessionProvider):
         client = self._workers.get(account.key)
         if client is None:
             return InjectResult(False, "Claude workers are not enabled on the runtime service")
-        if Capability.INTERACT not in session.capabilities:
-            return InjectResult(False, "interaction is unavailable")
-        interaction = self._actionable_interaction(account, session.session_id)
-        if interaction is None or interaction.id != interaction_id:
-            return InjectResult(False, "interaction is no longer pending")
         return await client.answer(
-            session.session_id, interaction_id, answers=dict(answers), decision=decision
+            session.session_id, interaction.id, answers=answers, decision=decision
         )
 
     def _cached_meta(self, path: Path) -> transcripts_mod.TranscriptMeta:

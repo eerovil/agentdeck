@@ -350,11 +350,13 @@ async def test_interaction_card_prioritized_and_deterministic(tmp_path, monkeypa
 
 
 def test_interaction_is_hidden_without_interact_capability(tmp_path, monkeypatch):
+    # pending_interaction owns the INTERACT gate now, so for a session lacking
+    # INTERACT the provider's interaction *read* must never even be reached.
     calls = []
     monkeypatch.setattr(
         PROVIDERS["codex"],
-        "pending_interaction",
-        lambda account, session: calls.append(session.key),
+        "_actionable_interaction",
+        lambda account, session_id: calls.append(session_id),
     )
     assistant = _service(tmp_path, AsyncMock())
     session = _finished(tmp_path)

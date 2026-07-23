@@ -252,11 +252,7 @@ async def _session_stream(
         # unchanged interaction is what lets the user select radios/checkboxes and
         # type an answer without a refresh wiping it mid-interaction. Seed from the
         # already-rendered state so we don't clobber it on connect/reconnect.
-        _pending = (
-            provider.pending_interaction(account, session)
-            if Capability.INTERACT in session.capabilities
-            else None
-        )
+        _pending = provider.pending_interaction(account, session)
         last_interaction_id = _pending.id if _pending is not None else None
         last_usage_sig = _usage_sig(accounts, state)
         last_usage_push = loop.time()
@@ -324,11 +320,7 @@ async def _session_stream(
             if label != last_label:
                 last_label = label
                 yield format_sse("tools", render_tool_activity(templates, label, age))
-            interaction = (
-                provider.pending_interaction(account, current)
-                if Capability.INTERACT in current.capabilities
-                else None
-            )
+            interaction = provider.pending_interaction(account, current)
             interaction_id = interaction.id if interaction is not None else None
             if interaction_id != last_interaction_id:
                 last_interaction_id = interaction_id

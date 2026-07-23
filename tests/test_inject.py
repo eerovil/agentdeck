@@ -1542,10 +1542,13 @@ async def test_delegation_status_hides_interaction_without_capability(
     )
     from agentdeck.providers import PROVIDERS
 
+    # Patch the provider's interaction *read*; pending_interaction itself now
+    # owns the INTERACT gate, and the default session lacks INTERACT, so the gate
+    # must suppress this stale interaction.
     monkeypatch.setattr(
         PROVIDERS["codex"],
-        "pending_interaction",
-        lambda account, session: interaction,
+        "_actionable_interaction",
+        lambda account, session_id: interaction,
     )
     app.state.injector._remember_delegation(
         DelegationStatus(
@@ -1669,8 +1672,11 @@ async def test_pending_interaction_requires_interact_capability(tmp_path, monkey
     from agentdeck.providers import PROVIDERS
 
     provider = PROVIDERS["codex"]
+    # Patch the read + answer hooks; the INTERACT gate lives in the base's
+    # pending_interaction / answer_interaction and must suppress both the render
+    # and the POST for a session lacking INTERACT.
     monkeypatch.setattr(
-        provider, "pending_interaction", lambda account, session: interaction
+        provider, "_actionable_interaction", lambda account, session_id: interaction
     )
     answered = False
 
@@ -1679,7 +1685,7 @@ async def test_pending_interaction_requires_interact_capability(tmp_path, monkey
         answered = True
         return InjectResult(True)
 
-    monkeypatch.setattr(provider, "answer_interaction", answer)
+    monkeypatch.setattr(provider, "_answer_actionable", answer)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         page = await client.get("/sessions/codex:test:sid")
         partial = await client.get("/partials/sessions/codex:test:sid/interaction")

@@ -24,8 +24,8 @@ from .deckhand import deckhand_account, most_recent_first
 from .deckhand_runner import run_codex_json
 from .dismissals import Dismissals
 from .git_context import GitContext, GitContextResolver
-from .models import Account, Capability, PendingInteraction, Session
-from .providers import PROVIDERS
+from .models import Account, PendingInteraction, Session
+from .providers import pending_interaction_for
 from .push import PushService
 from .state import AppState
 from .triage import (
@@ -244,12 +244,7 @@ class AssistantService:
     # --- session selection & evidence ---------------------------------
 
     def _interaction(self, session: Session) -> PendingInteraction | None:
-        if Capability.INTERACT not in session.capabilities:
-            return None
-        account = next((a for a in self.accounts if a.key == session.account_key), None)
-        if account is None:
-            return None
-        return PROVIDERS[account.provider_id].pending_interaction(account, session)
+        return pending_interaction_for(session, self.accounts)
 
     def _triage_sessions(self) -> list[Session]:
         """Blocking chats first, then most-recently-active, capped to max_sessions."""

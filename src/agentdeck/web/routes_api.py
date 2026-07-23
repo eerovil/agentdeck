@@ -9,8 +9,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from ..models import Capability
-from ..providers import PROVIDERS
+from ..providers import PROVIDERS, pending_interaction_for
 from .deps import get_accounts, get_injector, get_state, require_access
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_access)])
@@ -218,18 +217,9 @@ async def delegation_status(request: Request, delegation_id: str) -> dict:
         session_url = f"/sessions/{status.session_key}"
         session = get_state(request).sessions.get(status.session_key)
         if session is not None:
-            account = next(
-                (item for item in get_accounts(request) if item.key == session.account_key),
-                None,
-            )
-            if account is not None:
-                interaction = (
-                    PROVIDERS[account.provider_id].pending_interaction(account, session)
-                    if Capability.INTERACT in session.capabilities
-                    else None
-                )
-                if interaction is not None and state == "running":
-                    state = "waiting"
+            interaction = pending_interaction_for(session, get_accounts(request))
+            if interaction is not None and state == "running":
+                state = "waiting"
 
     return {
         "id": status.id,

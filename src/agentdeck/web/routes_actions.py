@@ -300,11 +300,7 @@ async def pending_interaction(request: Request, session_key: str) -> HTMLRespons
     return _render_interaction(
         request,
         session_key,
-        (
-            provider.pending_interaction(account, session)
-            if Capability.INTERACT in session.capabilities
-            else None
-        ),
+        provider.pending_interaction(account, session),
     )
 
 

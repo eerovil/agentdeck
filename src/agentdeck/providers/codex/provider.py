@@ -797,11 +797,6 @@ class CodexProvider(SessionProvider):
         # fall back to the last assistant item only if no completed turn is present.
         return meta.last_agent_message or meta.last_text
 
-    def pending_interaction(self, account: Account, session: Session) -> PendingInteraction | None:
-        if Capability.INTERACT not in session.capabilities:
-            return None
-        return self._actionable_interaction(account, session.session_id)
-
     async def steer(
         self,
         account: Account,
@@ -821,11 +816,11 @@ class CodexProvider(SessionProvider):
             return InjectResult(False, "Codex app-server is unavailable")
         return await client.interrupt(session.session_id)
 
-    async def answer_interaction(
+    async def _answer_actionable(
         self,
         account: Account,
         session: Session,
-        interaction_id: str,
+        interaction: PendingInteraction,
         *,
         answers,
         decision: str | None,
@@ -833,14 +828,9 @@ class CodexProvider(SessionProvider):
         client = self._clients.get(account.key)
         if client is None:
             return InjectResult(False, "Codex app-server is unavailable")
-        if Capability.INTERACT not in session.capabilities:
-            return InjectResult(False, "interaction is unavailable")
-        interaction = self._actionable_interaction(account, session.session_id)
-        if interaction is None or interaction.id != interaction_id:
-            return InjectResult(False, "interaction is no longer pending")
         return await client.answer(
             session.session_id,
-            interaction_id,
+            interaction.id,
             answers=answers,
             decision=decision,
         )

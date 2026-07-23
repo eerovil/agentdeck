@@ -216,11 +216,7 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
             ),
             "inject_max_chars": request.app.state.config.inject.max_message_chars,
             "can_interrupt": Capability.INTERRUPT in session.capabilities,
-            "pending_interaction": (
-                provider.pending_interaction(account, session)
-                if Capability.INTERACT in session.capabilities
-                else None
-            ),
+            "pending_interaction": provider.pending_interaction(account, session),
             "assistant": assistant,
             "assistant_sessions": state.sessions,
             "working_count": presentation.working_count,
