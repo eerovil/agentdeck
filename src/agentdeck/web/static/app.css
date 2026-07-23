@@ -507,6 +507,26 @@ details.ev.tool > .ev-text { margin-top: 6px; max-height: 420px; overflow: auto;
   border-radius: var(--radius); padding: 10px; }
 .chat-link:active { background: var(--line); }
 
+.continue-chat { margin: 10px 0 4px; padding: 10px 12px; border: 1px solid var(--line);
+  border-radius: var(--radius); background: var(--panel); }
+.continue-chat form { display: flex; align-items: center; gap: 8px; }
+.continue-chat label { color: var(--muted); font-size: 12px; font-weight: 600; }
+.continue-chat select { min-width: 0; flex: 1; padding: 8px; border: 1px solid var(--line);
+  border-radius: 8px; color: var(--fg); background: var(--bg); font: inherit; }
+.continue-chat select:focus { outline: none; border-color: var(--remote); }
+.continue-chat button { flex: none; padding: 8px 12px; border: 0; border-radius: 8px;
+  color: white; background: var(--remote); font-weight: 600; }
+.continue-chat button:disabled { opacity: .55; }
+.continue-chat .inject-result { min-height: 0; margin: 7px 0 0; }
+.continue-chat .inject-result:empty { display: none; }
+
+@media (max-width: 480px) {
+  .continue-chat form { align-items: stretch; flex-wrap: wrap; }
+  .continue-chat label { flex-basis: 100%; }
+  .continue-chat select { flex-basis: 100%; }
+  .continue-chat button { width: 100%; }
+}
+
 .inject-form { position: sticky; bottom: 0; z-index: 5; margin: 12px -4px 0; padding: 12px;
   padding-bottom: calc(12px + env(safe-area-inset-bottom, 0)); border: 1px solid var(--line);
   border-radius: 10px; background: color-mix(in srgb, var(--panel) 94%, transparent);
