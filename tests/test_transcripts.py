@@ -233,6 +233,21 @@ COMPACT_CMD = {
 }
 _STDOUT = "<local-command-stdout>Compacted</local-command-stdout>"
 COMPACT_STDOUT = {"type": "user", "message": {"role": "user", "content": _STDOUT}}
+TASK_NOTIFICATION = {
+    "type": "user",
+    "message": {
+        "role": "user",
+        "content": """<task-notification>
+<task-id>a5c85ab59b8b7af55</task-id>
+<tool-use-id>toolu_01FC1FQ9Kc5PowdGkVwvTbxu</tool-use-id>
+<output-file>/tmp/claude/tasks/a5c85ab59b8b7af55.output</output-file>
+<status>completed</status>
+<summary>Agent \"Translate battle_message 192-281\" finished</summary>
+<note>This task may notify more than once.</note>
+<result>89 lines changed out of the 90-line range.</result>
+</task-notification>""",
+    },
+}
 
 
 def _enqueue(text):
@@ -249,6 +264,45 @@ def test_read_events_parses_roles(tmp_path):
     assert a.tool_name == "Bash"
     assert "ls -la" in a.tool_summary
     assert a.model == "claude-opus-4-8"
+
+
+def test_task_notification_renders_as_compact_lifecycle_event(tmp_path):
+    p = tmp_path / "t.jsonl"
+    _write(p, [USER, TASK_NOTIFICATION])
+
+    events = transcripts.read_events(p).events
+    meta = transcripts.transcript_meta(p)
+
+    assert len(events) == 2
+    update = events[-1]
+    assert update.role == "system"
+    assert update.text == "89 lines changed out of the 90-line range."
+    assert update.tool_name == "subagent"
+    assert update.tool_summary == 'Agent "Translate battle_message 192-281" finished'
+    assert update.subagent_status == "finished"
+    assert update.subagent_id == "a5c85ab59b8b7af55"
+    assert update.subagent_name == "Task"
+    assert update.turn_continues is True
+    assert "<task-notification>" not in update.text
+    assert meta.last_prompt == "hello there"
+
+
+def test_truncated_task_notification_is_hidden_as_protocol_noise(tmp_path):
+    p = tmp_path / "t.jsonl"
+    truncated = {
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": "<task-notification>\n<status>completed</status>",
+        },
+    }
+    _write(p, [USER, truncated])
+
+    events = transcripts.read_events(p).events
+    meta = transcripts.transcript_meta(p)
+
+    assert [(event.role, event.text) for event in events] == [("user", "hello there")]
+    assert meta.last_prompt == "hello there"
 
 
 def test_claude_stop_reason_preserves_quiet_tool_use_turn(tmp_path):
