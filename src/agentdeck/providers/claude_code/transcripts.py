@@ -245,6 +245,11 @@ _COMMAND_NOISE_PREFIXES = (
     "<local-command-stderr>",
     "<local-command-caveat>",
 )
+_TASK_NOTIFICATION_PREFIX = "<task-notification>"
+_TASK_NOTIFICATION_RE = re.compile(
+    r"^\s*<task-notification>\s*(?P<body>.*?)\s*</task-notification>\s*$",
+    re.DOTALL,
+)
 
 
 def _user_content_text(obj: dict) -> str | None:
@@ -265,6 +270,45 @@ def _is_slash_command_line(obj: dict) -> bool:
     return isinstance(text, str) and text.lstrip().startswith(_COMMAND_NOISE_PREFIXES)
 
 
+def _is_task_notification_line(obj: dict) -> bool:
+    text = _user_content_text(obj)
+    return isinstance(text, str) and text.lstrip().startswith(_TASK_NOTIFICATION_PREFIX)
+
+
+def _task_notification_field(body: str, field: str) -> str | None:
+    match = re.search(
+        rf"<{re.escape(field)}>(.*?)</{re.escape(field)}>",
+        body,
+        re.DOTALL,
+    )
+    if match is None:
+        return None
+    return match.group(1).strip() or None
+
+
+def _task_notification(obj: dict) -> tuple[str | None, str, str | None, str | None] | None:
+    """Useful fields from a complete Claude background-task notification."""
+    text = _user_content_text(obj)
+    if not isinstance(text, str):
+        return None
+    match = _TASK_NOTIFICATION_RE.fullmatch(text)
+    if match is None:
+        return None
+    body = match.group("body")
+    raw_status = _task_notification_field(body, "status") or "updated"
+    status = {
+        "completed": "finished",
+        "errored": "failed",
+        "error": "failed",
+    }.get(raw_status.casefold(), raw_status.casefold().replace("_", " "))
+    return (
+        _task_notification_field(body, "task-id"),
+        status,
+        _task_notification_field(body, "summary"),
+        _task_notification_field(body, "result"),
+    )
+
+
 def _is_compact_boundary(obj: dict) -> bool:
     """A completed local command or a compaction summary: the *user* took the
     turn, so the agent's prior turn is closed (idle), not open/working. Used to
@@ -274,8 +318,12 @@ def _is_compact_boundary(obj: dict) -> bool:
 
 def _is_noise_user(obj: dict) -> bool:
     """User lines that are bookkeeping, not conversation: meta caveats, the
-    compaction summary, and local slash-command echoes."""
-    return bool(obj.get("isMeta") or obj.get("isCompactSummary")) or _is_slash_command_line(obj)
+    compaction summary, local slash-command echoes, and task notifications."""
+    return (
+        bool(obj.get("isMeta") or obj.get("isCompactSummary"))
+        or _is_slash_command_line(obj)
+        or _is_task_notification_line(obj)
+    )
 
 
 def _usage_totals(usage: object) -> TokenTotals | None:
@@ -311,8 +359,25 @@ def _event_from_line(seq: int, data: dict) -> TranscriptEvent | None:
         return None
     if ltype not in ("user", "assistant", "system"):
         return None  # skip mode/summary lines
-    if ltype == "user" and _is_noise_user(data):
-        return None  # meta caveat, compaction summary, or slash-command echo
+    if ltype == "user":
+        notification = _task_notification(data)
+        if notification is not None:
+            task_id, status, summary, result = notification
+            return TranscriptEvent(
+                seq=seq,
+                role="system",
+                text=result[:_MAX_RENDERED_TEXT] if result else None,
+                tool_name="subagent",
+                tool_display_name="Subagent",
+                tool_summary=summary[:_MAX_TOOL_SUMMARY] if summary else None,
+                ts=_parse_ts(data.get("timestamp")),
+                turn_continues=True,
+                subagent_status=status,
+                subagent_id=task_id,
+                subagent_name="Task",
+            )
+        if _is_noise_user(data):
+            return None  # meta caveat, command echo, or incomplete protocol wrapper
     message = data.get("message")
     content = message.get("content") if isinstance(message, dict) else None
     text, tool_name, tool_summary, question, answer, image_media_types = _text_from_content(
