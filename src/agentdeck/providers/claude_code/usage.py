@@ -14,19 +14,14 @@ Observed response shape (CLI v2.1.198):
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
-import os
-import random
-import tempfile
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from datetime import UTC, datetime
-from pathlib import Path
 
 import httpx
 
 from ...models import Account, UsageSnapshot
+from ..usage import UsagePoller
 from .credentials import read_access_token
 
 log = logging.getLogger(__name__)
@@ -36,8 +31,6 @@ USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 # bucket. Kept generic + version-tagged; update alongside claude-code-internals.md.
 USER_AGENT = "claude-code/2.1.198 (agentdeck)"
 BETA_HEADER = "oauth-2025-04-20"
-
-BACKOFF_CAP_S = 1800.0
 
 
 class UsageUnavailable(Exception):
@@ -110,102 +103,34 @@ async def fetch_usage_once(account: Account, client: httpx.AsyncClient) -> Usage
     return parse_usage(account.key, data)
 
 
-def shared_cache_dir(configured: str = "") -> Path:
-    """Resolve the shared usage-cache directory, with an XDG fallback."""
-    if configured:
-        return Path(configured).expanduser()
-    runtime = os.environ.get("XDG_RUNTIME_DIR")
-    base = Path(runtime) if runtime else Path("~/.cache").expanduser()
-    return base / "agentdeck"
-
-
-def write_shared_cache(snapshot: UsageSnapshot, account: Account, cache_dir: Path) -> None:
-    """Atomically publish a snapshot other host tools (e.g. kanban_poll.sh) can read."""
-    try:
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "account": account.key,
-            "fetched_at": snapshot.fetched_at.isoformat(),
-            "five_hour_pct": snapshot.five_hour_pct,
-            "five_hour_resets_at": snapshot.five_hour_resets_at.isoformat()
-            if snapshot.five_hour_resets_at
-            else None,
-            "seven_day_pct": snapshot.seven_day_pct,
-            "seven_day_resets_at": snapshot.seven_day_resets_at.isoformat()
-            if snapshot.seven_day_resets_at
-            else None,
-        }
-        target = cache_dir / f"usage-{account.label}.json"
-        fd, tmp = tempfile.mkstemp(dir=cache_dir, prefix=".usage-", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w") as f:
-                json.dump(payload, f)
-            os.replace(tmp, target)
-        finally:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
-    except OSError as exc:
-        log.warning("could not write shared usage cache for %s: %s", account.key, exc)
-
-
-class UsagePoller:
-    """Long-lived per-account loop. Injectable ``sleep``/``jitter`` for tests."""
+class ClaudeUsagePoller(UsagePoller):
+    """Claude usage over a persistent httpx client, with a one-shot retry when
+    the bearer token rotated between read and use."""
 
     def __init__(
         self,
         account: Account,
         state,
         *,
-        interval_s: float = 300.0,
-        cache_dir: Path | None = None,
         client_factory: Callable[[], httpx.AsyncClient] | None = None,
-        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
-        jitter: Callable[[], float] = lambda: random.uniform(0.9, 1.1),
+        **kwargs,
     ):
-        self.account = account
-        self.state = state
-        self.interval_s = interval_s
-        self.cache_dir = cache_dir or shared_cache_dir()
+        super().__init__(account, state, **kwargs)
         self._client_factory = client_factory or (lambda: httpx.AsyncClient(timeout=30.0))
-        self._sleep = sleep
-        self._jitter = jitter
-        self._backoff: float | None = None
 
-    def _next_backoff(self) -> float:
-        if self._backoff is None:
-            self._backoff = self.interval_s
-        else:
-            self._backoff = min(self._backoff * 2, BACKOFF_CAP_S)
-        return self._backoff
+    def _resource(self):
+        return self._client_factory()
 
-    async def _publish(self, client: httpx.AsyncClient) -> None:
-        snap = await fetch_usage_once(self.account, client)
-        self.state.set_usage(snap)
-        write_shared_cache(snap, self.account, self.cache_dir)
-        self._backoff = None
+    async def _fetch(self, client: httpx.AsyncClient) -> UsageSnapshot:
+        return await fetch_usage_once(self.account, client)
 
-    async def run(self) -> None:
-        # Phase offset so multiple accounts never fire in lockstep.
-        await self._sleep(self.interval_s * (self._jitter() - 0.9))
-        async with self._client_factory() as client:
-            while True:
-                try:
-                    await self._publish(client)
-                    delay = self.interval_s * self._jitter()
-                except UsageAuthError:
-                    # Token may have rotated between read and use — retry once immediately
-                    # (fetch_usage_once re-reads the token from disk).
-                    try:
-                        await self._publish(client)
-                        delay = self.interval_s * self._jitter()
-                    except UsageUnavailable:
-                        self.state.mark_usage_stale(self.account.key)
-                        delay = self._next_backoff()
-                except UsageRateLimited:
-                    self.state.mark_usage_stale(self.account.key)
-                    delay = self._next_backoff()
-                except (UsageUnavailable, httpx.HTTPError) as exc:
-                    log.debug("usage poll failed for %s: %s", self.account.key, exc)
-                    self.state.mark_usage_stale(self.account.key)
-                    delay = self._next_backoff()
-                await self._sleep(delay)
+    async def _on_error(self, exc: Exception, client: object) -> float:
+        if isinstance(exc, UsageAuthError):
+            # Token may have rotated between read and use — retry once immediately
+            # (fetch_usage_once re-reads the token from disk).
+            try:
+                await self._publish_once(client)
+                return self.interval_s * self._jitter()
+            except UsageUnavailable:
+                pass
+        return await super()._on_error(exc, client)

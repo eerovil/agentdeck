@@ -3,11 +3,12 @@ import pytest
 import respx
 
 from agentdeck.models import Account
+from agentdeck.providers import usage as shared_usage
 from agentdeck.providers.claude_code import usage
 from agentdeck.providers.claude_code.usage import (
     USAGE_URL,
+    ClaudeUsagePoller,
     UsageAuthError,
-    UsagePoller,
     UsageRateLimited,
     UsageUnavailable,
     fetch_usage_once,
@@ -113,7 +114,7 @@ async def test_poller_backoff_schedule(account):
         if len(delays) > 4:
             raise Stop
 
-    poller = UsagePoller(
+    poller = ClaudeUsagePoller(
         account,
         _FakeState(),
         interval_s=100.0,
@@ -141,7 +142,9 @@ async def test_poller_publishes_on_success(account):
         if state.snapshots:
             raise Stop
 
-    poller = UsagePoller(account, state, interval_s=100.0, sleep=fake_sleep, jitter=lambda: 0.9)
+    poller = ClaudeUsagePoller(
+        account, state, interval_s=100.0, sleep=fake_sleep, jitter=lambda: 0.9
+    )
     with respx.mock:
         respx.get(USAGE_URL).mock(return_value=httpx.Response(200, json=OK_BODY))
         with pytest.raises(Stop):
@@ -161,9 +164,41 @@ class _FakeState:
         self.stale.append(key)
 
 
+async def test_poller_survives_unexpected_exception(account):
+    """A non-HTTP bug in the read must not crash the long-lived loop: the base
+    catches it, marks the account stale, and backs off like any other failure."""
+    state = _FakeState()
+    delays: list[float] = []
+
+    class Stop(Exception):
+        pass
+
+    async def fake_sleep(d: float) -> None:
+        delays.append(d)
+        if len(delays) == 3:
+            raise Stop
+
+    class _Boom(ClaudeUsagePoller):
+        async def _fetch(self, client):
+            raise ValueError("unexpected")
+
+    poller = _Boom(
+        account,
+        state,
+        interval_s=100.0,
+        cache_dir=account.root / "cache",
+        sleep=fake_sleep,
+        jitter=lambda: 0.9,
+    )
+    with pytest.raises(Stop):
+        await poller.run()
+    assert state.stale == ["claude_code:main"] * 2
+    assert delays == [pytest.approx(0.0), pytest.approx(100.0), pytest.approx(200.0)]
+
+
 async def test_write_shared_cache(account, tmp_path):
     snap = usage.parse_usage(account.key, OK_BODY)
     cache = tmp_path / "cache"
-    usage.write_shared_cache(snap, account, cache)
+    shared_usage.write_shared_cache(snap, account, cache)
     written = (cache / "usage-main.json").read_text()
     assert '"five_hour_pct": 12.0' in written

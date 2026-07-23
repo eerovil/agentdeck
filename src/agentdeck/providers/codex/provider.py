@@ -39,7 +39,7 @@ from .inject import (
     start_session as start_codex_session,
 )
 from .runtime_client import CodexRuntimeClient
-from .usage import UsagePoller, fetch_usage_once
+from .usage import CodexUsagePoller, fetch_usage_once
 
 if TYPE_CHECKING:
     from ...state import AppState
@@ -653,7 +653,7 @@ class CodexProvider(SessionProvider):
             return None
 
     def make_usage_poller(self, account: Account, state, bus, **kwargs):
-        return UsagePoller(
+        return CodexUsagePoller(
             account,
             state,
             interval_s=kwargs.get("interval_s", 300.0),

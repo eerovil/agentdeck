@@ -11,20 +11,17 @@ import asyncio
 import json
 import logging
 import os
-import random
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 from ...models import Account, UsageSnapshot
-from ..claude_code.usage import shared_cache_dir, write_shared_cache
+from ..usage import UsagePoller
 
 log = logging.getLogger(__name__)
 
 FIVE_HOUR_MINS = 5 * 60
 SEVEN_DAY_MINS = 7 * 24 * 60
-BACKOFF_CAP_S = 1800.0
 REQUEST_TIMEOUT_S = 30.0
 
 
@@ -192,46 +189,20 @@ async def fetch_usage_once(
         await _stop_process(process)
 
 
-class UsagePoller:
+class CodexUsagePoller(UsagePoller):
+    """Codex usage over a short-lived ``app-server`` subprocess per cycle. No
+    loop-scoped resource; the default broad-catch backoff covers every failure."""
+
     def __init__(
         self,
         account: Account,
         state,
         *,
-        interval_s: float = 300.0,
-        cache_dir: Path | None = None,
         fetch: Callable[[Account], Awaitable[UsageSnapshot]] = fetch_usage_once,
-        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
-        jitter: Callable[[], float] = lambda: random.uniform(0.9, 1.1),
+        **kwargs,
     ):
-        self.account = account
-        self.state = state
-        self.interval_s = interval_s
-        self.cache_dir = cache_dir or shared_cache_dir()
-        self._fetch = fetch
-        self._sleep = sleep
-        self._jitter = jitter
-        self._backoff: float | None = None
+        super().__init__(account, state, **kwargs)
+        self._fetch_fn = fetch
 
-    def _next_backoff(self) -> float:
-        self._backoff = (
-            self.interval_s
-            if self._backoff is None
-            else min(self._backoff * 2, BACKOFF_CAP_S)
-        )
-        return self._backoff
-
-    async def run(self) -> None:
-        await self._sleep(self.interval_s * (self._jitter() - 0.9))
-        while True:
-            try:
-                snapshot = await self._fetch(self.account)
-                self.state.set_usage(snapshot)
-                write_shared_cache(snapshot, self.account, self.cache_dir)
-                self._backoff = None
-                delay = self.interval_s * self._jitter()
-            except Exception as exc:  # noqa: BLE001 -- keep the long-lived poller alive
-                log.debug("Codex usage poll failed for %s: %s", self.account.key, exc)
-                self.state.mark_usage_stale(self.account.key)
-                delay = self._next_backoff()
-            await self._sleep(delay)
+    async def _fetch(self, resource: object) -> UsageSnapshot:
+        return await self._fetch_fn(self.account)

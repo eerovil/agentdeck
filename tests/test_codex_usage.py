@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import pytest
 
 from agentdeck.models import Account, UsageSnapshot
-from agentdeck.providers.codex.usage import UsagePoller, UsageUnavailable, fetch_usage_once
+from agentdeck.providers.codex.usage import CodexUsagePoller, UsageUnavailable, fetch_usage_once
 from agentdeck.providers.codex.usage import parse_usage as parse_codex_usage
 
 
@@ -173,7 +173,7 @@ async def test_poller_publishes_and_writes_shared_cache(tmp_path):
         if state.snapshots:
             raise Stop
 
-    poller = UsagePoller(
+    poller = CodexUsagePoller(
         account,
         state,
         interval_s=100,
@@ -205,7 +205,7 @@ async def test_poller_marks_stale_and_backs_off(tmp_path):
         if len(delays) == 4:
             raise Stop
 
-    poller = UsagePoller(
+    poller = CodexUsagePoller(
         _account(tmp_path),
         state,
         interval_s=100,

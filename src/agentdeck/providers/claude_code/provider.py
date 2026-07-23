@@ -45,7 +45,7 @@ from . import history as history_mod
 from . import kanban as kanban_mod
 from . import registry as registry_mod
 from . import transcripts as transcripts_mod
-from .usage import UsagePoller, fetch_usage_once
+from .usage import ClaudeUsagePoller, fetch_usage_once
 from .worker_client import ClaudeWorkerClient
 
 if TYPE_CHECKING:
@@ -804,7 +804,7 @@ class ClaudeCodeProvider(SessionProvider):
             return None
 
     def make_usage_poller(self, account: Account, state, bus, **kwargs):
-        return UsagePoller(
+        return ClaudeUsagePoller(
             account,
             state,
             interval_s=kwargs.get("interval_s", 300.0),

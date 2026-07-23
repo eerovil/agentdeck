@@ -22,7 +22,7 @@ from .config import AppConfig
 from .host_stats import HostStatsSampler
 from .models import Account
 from .providers import PROVIDERS, SessionProvider
-from .providers.claude_code.usage import shared_cache_dir
+from .providers.usage import shared_cache_dir
 from .state import AppState
 
 log = logging.getLogger(__name__)

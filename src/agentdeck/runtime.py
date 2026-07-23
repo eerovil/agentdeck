@@ -19,10 +19,10 @@ from pydantic import BaseModel, Field
 from .config import AppConfig
 from .models import Account, InjectResult
 from .providers.claude_code.restart import MARKER_TTL_S, RestartMarker, read_markers
-from .providers.claude_code.usage import shared_cache_dir
 from .providers.claude_code.worker import ClaudeWorkerHost, DeliverResult
 from .providers.codex.appserver import CodexAppServer
 from .providers.codex.runtime_client import runtime_socket_path
+from .providers.usage import shared_cache_dir
 
 log = logging.getLogger(__name__)
 
