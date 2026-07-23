@@ -3672,19 +3672,32 @@ async def test_model_picker_filters_options_by_account_provider(tmp_path):
     css = (static_dir / "app.css").read_text()
     picker = (static_dir / "model_picker.js").read_text()
     html = f"""<!doctype html><html><head><style>{css}</style></head>
-      <body><div class="new-chat" open><form>
-        <select id="new-chat-account" name="account_key">
+      <body><div class="new-chat" open><form data-model-picker>
+        <select id="new-chat-account" name="account_key" data-model-picker-account>
           <option value="codex:a" data-provider="codex">Codex A</option>
           <option value="claude:b" data-provider="claude_code">Claude B</option>
         </select>
-        <div class="model-field" id="new-chat-model-field" hidden>
+        <div class="model-field" id="new-chat-model-field" hidden data-model-picker-field>
           <label for="new-chat-model">Model</label>
-          <select id="new-chat-model" name="model">
+          <select id="new-chat-model" name="model" data-model-picker-select>
             <option value="">Default (account)</option>
             <option value="gpt-5.6-luna" data-provider="codex">Luna</option>
             <option value="gpt-5.6-sol" data-provider="codex">Sol</option>
             <option value="opus" data-provider="claude_code">Opus 4.8</option>
             <option value="haiku" data-provider="claude_code">Haiku</option>
+          </select>
+        </div>
+      </form></div>
+      <div class="continue-chat"><form data-model-picker>
+        <select id="continue-chat-account" data-model-picker-account>
+          <option value="claude:b" data-provider="claude_code">Claude B</option>
+          <option value="codex:a" data-provider="codex">Codex A</option>
+        </select>
+        <div id="continue-chat-model-field" hidden data-model-picker-field>
+          <select id="continue-chat-model" data-model-picker-select>
+            <option value="">Default (account)</option>
+            <option value="gpt-5.6-luna" data-provider="codex">Luna</option>
+            <option value="opus" data-provider="claude_code">Opus 4.8</option>
           </select>
         </div>
       </form></div></body></html>"""
@@ -3727,4 +3740,13 @@ async def test_model_picker_filters_options_by_account_provider(tmp_path):
         await page.select_option("#new-chat-account", "codex:a")
         desktop = await options(page)
         assert desktop["values"] == ["", "gpt-5.6-luna", "gpt-5.6-sol"]
+
+        # A second continuation form is initialized independently.
+        assert await page.locator("#continue-chat-model").evaluate(
+            "select => Array.from(select.options).map(option => option.value)"
+        ) == ["", "opus"]
+        await page.select_option("#continue-chat-account", "codex:a")
+        assert await page.locator("#continue-chat-model").evaluate(
+            "select => Array.from(select.options).map(option => option.value)"
+        ) == ["", "gpt-5.6-luna"]
         await browser.close()

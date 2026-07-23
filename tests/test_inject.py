@@ -859,8 +859,8 @@ async def test_continue_chat_starts_cross_provider_with_transcript_fetch_prompt(
     received = {}
     destination_key = "claude_code:alt:new-sid"
 
-    async def fake_start(account, cwd, message, *, timeout_s):
-        received.update(account=account, cwd=cwd, message=message)
+    async def fake_start(account, cwd, message, *, timeout_s, model=None):
+        received.update(account=account, cwd=cwd, message=message, model=model)
         return InjectResult(True, session_id="new-sid")
 
     async def fake_scan(account):
@@ -878,6 +878,7 @@ async def test_continue_chat_starts_cross_provider_with_transcript_fetch_prompt(
     from agentdeck.providers import PROVIDERS
 
     target_provider = PROVIDERS["claude_code"]
+    selected_model = target_provider.selectable_models[0].value
     monkeypatch.setattr(target_provider, "can_start_session", lambda account: True)
     monkeypatch.setattr(target_provider, "start_session", fake_start)
     monkeypatch.setattr(target_provider, "scan_sessions", fake_scan)
@@ -886,15 +887,27 @@ async def test_continue_chat_starts_cross_provider_with_transcript_fetch_prompt(
         detail = await client.get("/sessions/codex:test:sid")
         assert detail.status_code == 200
         assert 'hx-post="/sessions/codex:test:sid/continue"' in detail.text
-        assert '<option value="claude_code:alt">alt · claude code</option>' in detail.text
+        assert (
+            '<option value="claude_code:alt" data-provider="claude_code">'
+            "alt · claude code</option>"
+        ) in detail.text
+        assert 'id="continue-chat-model"' in detail.text
         assert '<option value="codex:test">' not in detail.text.split(
             '<div class="continue-chat">', 1
         )[1].split("</div>", 1)[0]
         assert "Continue in new chat" in detail.text
 
+        invalid_model = await client.post(
+            "/sessions/codex:test:sid/continue",
+            data={"account_key": "claude_code:alt", "model": "not-a-model"},
+            headers={"origin": "http://test"},
+        )
+        assert invalid_model.status_code == 422
+        assert invalid_model.json()["detail"] == "invalid model"
+
         response = await client.post(
             "/sessions/codex:test:sid/continue",
-            data={"account_key": "claude_code:alt"},
+            data={"account_key": "claude_code:alt", "model": selected_model},
             headers={"origin": "http://test"},
         )
         assert response.status_code == 202
@@ -908,6 +921,7 @@ async def test_continue_chat_starts_cross_provider_with_transcript_fetch_prompt(
 
         assert received["account"].key == "claude_code:alt"
         assert received["cwd"] == tmp_path
+        assert received["model"] == selected_model
         transcript_url = "http://test/sessions/codex:test:sid/transcript.json"
         assert transcript_url in received["message"]
         assert f"curl --fail --silent --show-error {transcript_url}" in received["message"]
@@ -980,6 +994,12 @@ async def test_continue_chat_control_fits_desktop_and_mobile(tmp_path, monkeypat
                     await route.fulfill(
                         status=200, content_type="text/javascript", body=stack_script
                     )
+                elif path == "/static/model_picker.js":
+                    await route.fulfill(
+                        status=200,
+                        content_type="text/javascript",
+                        body=(static_dir / "model_picker.js").read_text(),
+                    )
                 elif path == "/static/app.css":
                     await route.fulfill(
                         status=200, content_type="text/css", body=stylesheet
@@ -1001,7 +1021,10 @@ async def test_continue_chat_control_fits_desktop_and_mobile(tmp_path, monkeypat
                     "button": await control.get_by_role(
                         "button", name="Continue in new chat"
                     ).is_visible(),
-                    "options": await control.locator("option").all_text_contents(),
+                    "accounts": await control.locator(
+                        "#continue-chat-account option"
+                    ).all_text_contents(),
+                    "model": await control.locator("#continue-chat-model").is_visible(),
                     "fits": bool(box and box["x"] >= 0 and box["x"] + box["width"] <= width),
                     "overflow": await page.evaluate(
                         "document.documentElement.scrollWidth > innerWidth"
@@ -1015,14 +1038,16 @@ async def test_continue_chat_control_fits_desktop_and_mobile(tmp_path, monkeypat
         {
             "control": True,
             "button": True,
-            "options": ["alt · claude code"],
+            "accounts": ["alt · claude code"],
+            "model": True,
             "fits": True,
             "overflow": False,
         },
         {
             "control": True,
             "button": True,
-            "options": ["alt · claude code"],
+            "accounts": ["alt · claude code"],
+            "model": True,
             "fits": True,
             "overflow": False,
         },

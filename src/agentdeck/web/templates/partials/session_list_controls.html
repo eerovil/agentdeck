@@ -3,16 +3,16 @@
   <summary>＋ New chat</summary>
   <form hx-post="/sessions/new" hx-target="#new-session-result" hx-swap="outerHTML"
         hx-disabled-elt="find button" hx-encoding="multipart/form-data" data-clear-on-send
-        data-agentdeck-action="new_session">
+        data-agentdeck-action="new_session" data-model-picker>
     <label for="new-chat-account">Account</label>
-    <select id="new-chat-account" name="account_key" required>
+    <select id="new-chat-account" name="account_key" required data-model-picker-account>
       {% for account in new_chat_accounts %}
       <option value="{{ account.key }}" data-provider="{{ account.provider_id }}">{{ account.label }}</option>
       {% endfor %}
     </select>
-    <div class="model-field" id="new-chat-model-field" hidden>
+    <div class="model-field" id="new-chat-model-field" hidden data-model-picker-field>
       <label for="new-chat-model">Model</label>
-      <select id="new-chat-model" name="model">
+      <select id="new-chat-model" name="model" data-model-picker-select>
         <option value="">Default (account)</option>
         {% for model in new_chat_models %}
         <option value="{{ model.value }}" data-provider="{{ model.provider_id }}">{{ model.label }}</option>
