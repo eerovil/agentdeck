@@ -192,6 +192,68 @@ _Avoid_: Worker when the provider matters, Claude Session
 An AgentDeck-created or recovered Codex conversation under Persistent Runtime control.
 _Avoid_: Worker, app-server source
 
+## Kanban orchestration
+
+**Poller Project**:
+A configured work portfolio coordinated through one GitHub Project board and containing one or
+more issue or code repositories. A Poller Project may therefore represent either a single-repository
+product or a multi-repository portfolio.
+_Avoid_: Project, Repository, Workspace
+
+**Poller Manifest**:
+The portable, version-controlled definition of a Poller Project. It contains shareable workflow
+policy but excludes credentials and machine-specific paths.
+_Avoid_: Poller config, generated config, Host Overlay
+
+**Host Overlay**:
+The uncommitted, machine-local values that bind a Poller Manifest to credentials, repository
+checkouts, and other host resources.
+_Avoid_: Poller Manifest, secrets file
+
+**Work Controller**:
+A repository collaborator authorized to request, redirect, or stop Poller Project work. Repository
+roles may grant this authority according to the Poller Manifest.
+_Avoid_: Release Controller, trusted commenter
+
+**Release Controller**:
+A maintainer, administrator, or explicitly allowed person authorized to approve publication and
+change Poller Project automation policy. Release Controllers are a more privileged set than Work
+Controllers.
+_Avoid_: Work Controller, trusted commenter
+
+**Poller Builder**:
+The LLM-guided workflow that interviews an operator, inspects the relevant repositories and GitHub
+portfolio, and drafts and validates a Poller Manifest and Host Overlay.
+_Avoid_: setup wizard, configuration generator, poller
+
+**Poller Activation**:
+The explicitly approved transition from validated Poller Project configuration to operational
+automation. It may create or change external resources and must not be inferred from approval of a
+draft.
+_Avoid_: configuration, validation, installation when the authority gate is meant
+
+**Poller Engine**:
+The shared deterministic control machinery that interprets a Poller Manifest and owns command
+intake, authorization, durable queues, worker leases, lifecycle transitions, and guarded release.
+_Avoid_: Poller Project, Poller Extension, generated poller
+
+**Poller Extension**:
+Project-owned behavior attached at an explicit Poller Engine seam for concerns such as testing,
+deployment, screenshots, or incident handling. An extension cannot redefine the engine's ownership,
+queueing, lease, or authorization invariants.
+_Avoid_: Poller Engine, fork, custom poller
+
+**Poller Instance**:
+One activated, independently operated Poller Engine for one Poller Project. It may use AgentDeck's
+worker interface but does not share the lifecycle of the Web Process or Persistent Runtime.
+_Avoid_: Poller Project, Persistent Runtime, Web Process
+
+**Reference Poller Project**:
+The AgentDeck repository's operational Poller Project, used both for AgentDeck work and as the
+canonical example of a complete Poller Manifest, Host Overlay, extensions, activation, and ongoing
+operation.
+_Avoid_: sample project, demo poller, test fixture
+
 ## Deckhand and titles
 
 **Deckhand**:
