@@ -169,7 +169,22 @@ def structured_trigger(
             "Review the diagnosis, then close or retrigger it.",
         )
 
-    # 4. Finished-and-resting with an OPEN PR that no one has reviewed. This is
+    # 4. A Stalled Turn is current blocked state even though its cog has already
+    #    turned off. Evaluate it before resting-session conclusions so a prior
+    #    verdict or open-PR card cannot mask the current stall.
+    if session.stalled:
+        progress = session.last_progress or session.last_activity
+        idle_s = (now - progress).total_seconds() if progress is not None else hang_after_s
+        minutes = max(1, int(idle_s // 60))
+        return AssistantInsight(
+            key,
+            KIND_STALLED,
+            f"No progress for {minutes} min",
+            "The agent has an active turn but has not made execution progress recently. "
+            "It may be hung.",
+        )
+
+    # 5. Finished-and-resting with an OPEN PR that no one has reviewed. This is
     #    deterministic and re-evaluated every refresh from live PR status, so a
     #    merged or closed PR simply stops producing a card (no stale attention).
     if not session.thinking:
@@ -185,9 +200,11 @@ def structured_trigger(
                 key, KIND_FINISHED, f"PR #{pull.number} ready for review", detail
             )
 
-    # 5. Still "thinking" but the transcript has gone silent — likely hung.
-    if session.thinking and session.last_activity is not None:
-        idle_s = (now - session.last_activity).total_seconds()
+    # Compatibility fallback for provider projections that have not supplied
+    # ``stalled`` explicitly.
+    progress = session.last_progress or session.last_activity
+    if session.thinking and progress is not None:
+        idle_s = (now - progress).total_seconds()
         if idle_s >= hang_after_s:
             minutes = int(idle_s // 60)
             return AssistantInsight(

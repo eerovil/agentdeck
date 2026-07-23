@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 from agentdeck.assistant import AssistantInsight, AssistantService, AssistantView, run_codex
@@ -191,6 +192,37 @@ async def test_finished_card_drops_once_the_session_works_again(tmp_path):
     state.update_session(_finished(tmp_path, status=SessionStatus.LIVE, thinking=True))
     await assistant.refresh()
     assert assistant.view.insights == ()
+
+
+async def test_descendant_progress_prevents_false_parent_stall(tmp_path):
+    runner = AsyncMock(return_value=_ATTENTION)
+    now = datetime.now(UTC)
+    state = AppState()
+    parent = _finished(
+        tmp_path,
+        status=SessionStatus.LIVE,
+        thinking=False,
+        stalled=True,
+        last_progress=now - timedelta(minutes=12),
+    )
+    child = _finished(
+        tmp_path,
+        key="codex:test:child",
+        session_id="child",
+        status=SessionStatus.LIVE,
+        thinking=True,
+        last_progress=now,
+        parent_session_key=parent.key,
+        is_delegated=True,
+    )
+    state.update_session(parent)
+    state.update_session(child)
+    assistant = _service(tmp_path, runner, state=state)
+
+    await assistant.refresh()
+
+    assert assistant.view.insights == ()
+    runner.assert_not_awaited()
 
 
 async def test_merged_pr_produces_no_card_and_skips_the_model(tmp_path):

@@ -27,6 +27,7 @@ def resolve_activity_label(
     last_event: TranscriptEvent | None,
     age_s: float,
     has_working_subagent: bool,
+    lifecycle_active: bool | None = None,
 ) -> str | None:
     """The session's activity badge text, or None when it should show nothing.
 
@@ -41,7 +42,14 @@ def resolve_activity_label(
     if has_question:
         return None
     label = detailed_activity_label(
-        activity_label(live, streaming, last_event, age_s), last_event
+        activity_label(
+            live,
+            streaming,
+            last_event,
+            age_s,
+            lifecycle_active=lifecycle_active,
+        ),
+        last_event,
     )
     if label is None and has_working_subagent:
         return "Working"

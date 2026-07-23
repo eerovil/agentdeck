@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime, timedelta
 
 from agentdeck.models import Account, Session, SessionStatus
 from agentdeck.providers.claude_code import provider as provider_mod
@@ -248,6 +249,56 @@ def test_read_events_parses_roles(tmp_path):
     assert a.tool_name == "Bash"
     assert "ls -la" in a.tool_summary
     assert a.model == "claude-opus-4-8"
+
+
+def test_claude_stop_reason_preserves_quiet_tool_use_turn(tmp_path):
+    """Issue #94: assistant prose can be followed by a quiet tool-use gap.
+
+    Claude declares that continuation with ``stop_reason=tool_use`` even when
+    the renderable line contains only text, so the card must not mistake that
+    prose for a terminal reply after the short write-recency window expires.
+    """
+    p = tmp_path / "t.jsonl"
+    progress_at = datetime.now(UTC) - timedelta(seconds=60)
+    continuing = {
+        "type": "assistant",
+        "timestamp": progress_at.isoformat(),
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "I found the file."}],
+            "stop_reason": "tool_use",
+        },
+    }
+    _write(p, [USER, continuing])
+
+    event = transcripts.last_event(p)
+
+    assert event.turn_continues is True
+    assert ClaudeCodeProvider()._activity(
+        True, p, progress_at
+    ) == "Working"
+
+
+def test_claude_terminal_stop_reason_closes_turn_immediately(tmp_path):
+    p = tmp_path / "t.jsonl"
+    terminal = {
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Done."}],
+            "stop_reason": "end_turn",
+        },
+    }
+    _write(p, [USER, terminal])
+
+    event = transcripts.last_event(p)
+
+    assert event.turn_continues is False
+    assert ClaudeCodeProvider()._activity(True, p, datetime.now(UTC)) is None
+
+    terminal["message"]["stop_reason"] = "future_reason"
+    _write(p, [USER, terminal])
+    assert transcripts.last_event(p).turn_continues is None
 
 
 def _assistant_msg(text):

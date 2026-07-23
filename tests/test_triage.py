@@ -147,6 +147,21 @@ def test_silent_thinking_session_is_a_stalled_card():
     assert "No progress" in card.headline
 
 
+def test_stalled_turn_is_blocked_after_cog_turns_off():
+    session = _session(
+        status=SessionStatus.LIVE,
+        thinking=False,
+        stalled=True,
+        last_progress=_NOW - timedelta(minutes=10),
+    )
+
+    card = _trigger(session)
+
+    assert card is not None
+    assert card.kind == "stalled"
+    assert card.headline == "No progress for 10 min"
+
+
 def test_recently_active_thinking_session_does_not_trigger():
     session = _session(
         status=SessionStatus.LIVE,
@@ -275,6 +290,7 @@ def test_resolve_deckhand_status_precedence():
         return AssistantInsight("codex:test:thread-1", kind, headline, "d")
 
     finished = Verdict("finished", "Finished the work", "")
+    blocked = Verdict("blocked", "Old blocked turn", "")
 
     # A background/delegated chat never carries a pill.
     assert resolve(_session(is_delegated=True), verdict=finished) is None
@@ -298,6 +314,16 @@ def test_resolve_deckhand_status_precedence():
     assert resolve(_session(thinking=True), live_insight=live("stalled", "Hung")).state == "blocked"
     # A non-live (stored) verdict is suppressed mid-turn.
     assert resolve(_session(thinking=True), verdict=finished) is None
+    assert resolve(_session(thinking=True), verdict=blocked) is None
+    # At the ten-minute transition the cog is off, but the fresh live stall
+    # replaces even a prior operator-done status with current blocked state.
+    current_stall = resolve(
+        _session(thinking=False, stalled=True),
+        dismissed=True,
+        dismissed_headline="Old turn done",
+        live_insight=live("stalled", "No progress for 10 min"),
+    )
+    assert current_stall.state == "blocked"
     # Resting but unclassified -> "?".
     p = resolve(_session())
     assert (p.state, p.label) == ("unknown", "?")

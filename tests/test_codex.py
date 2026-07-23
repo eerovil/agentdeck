@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -456,7 +457,8 @@ async def test_running_spawned_agents_are_counted_on_parent_session(tmp_path):
 
     # Durable task boundaries outrank a quiet file: a long-running subagent must
     # remain visible instead of disappearing after the generic 30-second window.
-    old_time = time.time() - 10 * 60
+    # Quiet for eight minutes is still an Active Turn; it stalls at ten.
+    old_time = time.time() - 8 * 60
     os.utime(active, (old_time, old_time))
     expired_time = time.time() - 60 * 60
     os.utime(expired, (expired_time, expired_time))
@@ -1059,8 +1061,10 @@ async def test_codex_sweep_refreshes_status_and_tail_metadata(tmp_path):
     (session,) = await provider.scan_sessions(account)
     assert session.status == SessionStatus.IDLE
 
+    new_prompt = _message("user", "One more change")
+    new_prompt["timestamp"] = datetime.now(UTC).isoformat()
     with path.open("a") as handle:
-        handle.write(json.dumps(_message("user", "One more change")) + "\n")
+        handle.write(json.dumps(new_prompt) + "\n")
     changed = provider.sweep_liveness(account, [session], AppState())
     assert changed == [session]
     assert session.status == SessionStatus.LIVE

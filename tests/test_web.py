@@ -2,7 +2,7 @@ import asyncio
 import base64
 import json
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -1992,13 +1992,24 @@ def test_ask_user_question_renders_in_transcript(tmp_path):
 
 
 def test_activity_label_fallback():
-    from agentdeck.models import TranscriptEvent, detailed_activity_label
+    from agentdeck.models import (
+        TokenTotals,
+        TranscriptEvent,
+        detailed_activity_label,
+        transcript_event_is_progress,
+    )
     from agentdeck.web.render import activity_label
 
     tool_call = TranscriptEvent(seq=1, role="assistant", tool_name="Bash", text=None)
     tool_result = TranscriptEvent(seq=1, role="tool", text="output")
     user_msg = TranscriptEvent(seq=1, role="user", text="do it")
     reply = TranscriptEvent(seq=1, role="assistant", text="done")
+    continuing_reply = TranscriptEvent(
+        seq=2, role="assistant", text="checking", turn_continues=True
+    )
+    terminal_reply = TranscriptEvent(
+        seq=3, role="assistant", text="done", turn_continues=False
+    )
 
     # a long tool run: quiet (not streaming) but last line is a tool → still busy
     assert activity_label(True, False, tool_call) == "Using tools"
@@ -2009,11 +2020,16 @@ def test_activity_label_fallback():
     assert activity_label(True, False, reply) is None
     # finished reply but actively writing → working
     assert activity_label(True, True, reply) == "Working"
+    # Provider lifecycle beats write recency in both directions.
+    assert activity_label(True, False, continuing_reply, age_s=60) == "Working"
+    assert activity_label(True, True, terminal_reply) is None
     # dead process → never a marker
     assert activity_label(False, True, tool_call) is None
     # open turn but no write for ages → stalled worker, not "Using tools" forever
     assert activity_label(True, False, tool_call, age_s=10_000) is None
     assert activity_label(True, False, user_msg, age_s=10_000) is None
+    assert activity_label(True, False, continuing_reply, age_s=599) == "Working"
+    assert activity_label(True, False, continuing_reply, age_s=600) is None
     # an unanswered AskUserQuestion is waiting on the user, not busy — even though
     # it is a tool_use and even right after it was written (streaming).
     ask = TranscriptEvent(seq=1, role="assistant", tool_name="AskUserQuestion", question="Pick?")
@@ -2041,6 +2057,11 @@ def test_activity_label_fallback():
     assert detailed_activity_label("Using tools", reasoning) == "Thinking"
     assert detailed_activity_label("Using tools", waiting) == "Waiting for command output"
     assert detailed_activity_label("Working", command) == "Working"
+    usage_only = TranscriptEvent(
+        seq=6, role="system", tokens=TokenTotals(input_tokens=1)
+    )
+    assert transcript_event_is_progress(usage_only) is False
+    assert transcript_event_is_progress(reasoning) is True
 
 
 def test_resolve_activity_label_pipeline():
@@ -2246,6 +2267,39 @@ def test_session_presentation_nests_subagents_under_parent():
     effective_parent = next(session for session in top if session.key == parent.key)
     assert effective_parent.thinking is False
     assert parent.key not in children
+
+
+def test_descendant_progress_sustains_parent_and_resets_effective_stall():
+    from agentdeck.state import AppState
+
+    now = datetime.now(UTC)
+    state = AppState()
+    parent = Session(
+        key="a:p",
+        account_key="a",
+        session_id="p",
+        status=SessionStatus.LIVE,
+        stalled=True,
+        last_progress=now - timedelta(minutes=12),
+    )
+    child = Session(
+        key="a:c",
+        account_key="a",
+        session_id="c",
+        status=SessionStatus.LIVE,
+        thinking=True,
+        last_progress=now,
+        parent_session_key=parent.key,
+    )
+    state.update_session(parent)
+    state.update_session(child)
+
+    effective = state.session_presentation().display(parent)
+
+    assert effective.thinking is True
+    assert effective.stalled is False
+    assert effective.last_progress == now
+    assert state.sessions[parent.key].stalled is True  # display projection only
 
 
 def test_session_presentation_includes_embedded_subagents_in_parent_activity():

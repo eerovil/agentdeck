@@ -37,7 +37,9 @@ from ...models import (
     TranscriptEvent,
     UsageSnapshot,
     activity_label,
+    event_progress_at,
     runtime_control_capabilities,
+    turn_stalled,
 )
 from ..base import ModelChoice, SessionProvider
 from . import history as history_mod
@@ -59,8 +61,8 @@ log = logging.getLogger(__name__)
 # can hold thousands of transcripts; show the most recently active.
 MAX_IDLE_SESSIONS = 200
 
-# A LIVE session whose transcript was written within this window is "thinking"
-# (streaming a response); past it, the agent is live but waiting for input.
+# Brief write recency resolves only ambiguous transcript events. Structural or
+# provider lifecycle keeps an Active Turn working beyond this window.
 THINKING_WINDOW_S = 25.0
 
 
@@ -208,7 +210,9 @@ class ClaudeCodeProvider(SessionProvider):
         ] = {}
         # last-renderable-event cache (mtime-keyed) — the liveness sweep reads it
         # every few seconds per live session, so idle ones must stay a cache hit.
-        self._last_ev_cache: dict[str, tuple[float, TranscriptEvent | None]] = {}
+        self._last_ev_cache: dict[
+            str, tuple[tuple[int, int], TranscriptEvent | None]
+        ] = {}
         # Context-window occupancy (mtime-keyed), read from the transcript tail —
         # same cheap-cache treatment as meta/last-event so idle sessions cost nothing.
         self._ctx_cache: dict[str, tuple[float, int | None]] = {}
@@ -283,11 +287,21 @@ class ClaudeCodeProvider(SessionProvider):
         if workers is None or not workers.owns(session.session_id):
             return False
         active = workers.turn_active(session.session_id)
+        interaction = self._actionable_interaction(account, session.session_id)
+        activity, stalled, progress = self._turn_state(
+            True,
+            transcript_path,
+            last_activity,
+            lifecycle_active=active,
+        )
         session.status = (
             SessionStatus.LIVE if workers.live(session.session_id) else SessionStatus.IDLE
         )
-        session.thinking = active
-        session.activity = self._activity(True, transcript_path, last_activity) if active else None
+        session.lifecycle_active = active
+        session.stalled = stalled if interaction is None else False
+        session.thinking = active and interaction is None and not session.stalled
+        session.activity = activity if session.thinking else None
+        session.last_progress = progress
         session.show_when_idle = True
         # Keep the read-only capabilities derived from the transcript; strip the
         # whole control set and reapply the current live projection so a stale
@@ -297,8 +311,7 @@ class ClaudeCodeProvider(SessionProvider):
                 available=workers.available,
                 active_turn=active,
                 actionable_interaction=(
-                    self._actionable_interaction(account, session.session_id)
-                    is not None
+                    interaction is not None
                 ),
             )
         )
@@ -478,14 +491,15 @@ class ClaudeCodeProvider(SessionProvider):
 
     def _cached_last_event(self, path: Path) -> TranscriptEvent | None:
         try:
-            mtime = path.stat().st_mtime
+            stat = path.stat()
         except OSError:
             return None
+        signature = (stat.st_size, stat.st_mtime_ns)
         hit = self._last_ev_cache.get(str(path))
-        if hit is not None and hit[0] == mtime:
+        if hit is not None and hit[0] == signature:
             return hit[1]
         ev = transcripts_mod.last_event(path)
-        self._last_ev_cache[str(path)] = (mtime, ev)
+        self._last_ev_cache[str(path)] = (signature, ev)
         return ev
 
     def _cached_context_tokens(self, path: Path) -> int | None:
@@ -500,15 +514,40 @@ class ClaudeCodeProvider(SessionProvider):
         self._ctx_cache[str(path)] = (mtime, ctx)
         return ctx
 
+    def _turn_state(
+        self,
+        is_live: bool,
+        tpath: Path | None,
+        last_write: datetime | None,
+        *,
+        lifecycle_active: bool | None = None,
+    ) -> tuple[str | None, bool, datetime | None]:
+        """Normalized own-turn presentation from lifecycle + transcript evidence."""
+        if last_write is None:
+            return (None, False, last_write)
+        last_ev = self._cached_last_event(tpath) if tpath is not None else None
+        progress = event_progress_at(last_ev, last_write)
+        age = (datetime.now(UTC) - progress).total_seconds() if progress else 1e9
+        stalled = turn_stalled(
+            live=is_live,
+            lifecycle_active=lifecycle_active,
+            last_ev=last_ev,
+            age_s=age,
+        )
+        label = activity_label(
+            is_live,
+            age < THINKING_WINDOW_S,
+            last_ev,
+            age,
+            lifecycle_active=lifecycle_active,
+        )
+        return (label, stalled, progress)
+
     def _activity(self, is_live: bool, tpath: Path | None, last_write) -> str | None:
         """Activity label for a live session, from its open turn (cheap, mtime
         -cached tail read). Same logic as the detail page, so list and detail
         agree."""
-        if not (is_live and tpath is not None and last_write is not None):
-            return None
-        age = (datetime.now(UTC) - last_write).total_seconds()
-        last_ev = self._cached_last_event(tpath)
-        return activity_label(True, age < THINKING_WINDOW_S, last_ev, age)
+        return self._turn_state(is_live, tpath, last_write)[0]
 
     # --- discovery -----------------------------------------------------
 
@@ -624,7 +663,9 @@ class ClaudeCodeProvider(SessionProvider):
             last_activity = _mtime(tpath) if tpath else (entry.started_at if entry else None)
 
             status = SessionStatus.LIVE if is_live else SessionStatus.IDLE
-            activity = self._activity(is_live, tpath, last_activity)
+            activity, stalled, last_progress = self._turn_state(
+                is_live, tpath, last_activity
+            )
             thinking = activity is not None
             # A claude.ai deep link exists only for live, cloud/RC-spawned
             # sessions (the access token lives in the process env).
@@ -648,6 +689,7 @@ class ClaudeCodeProvider(SessionProvider):
                 session_id=sid,
                 status=status,
                 thinking=thinking,
+                stalled=stalled,
                 activity=activity,
                 cwd=cwd,
                 title=title,
@@ -666,6 +708,7 @@ class ClaudeCodeProvider(SessionProvider):
                 proc_start=entry.proc_start if entry else None,
                 started_at=entry.started_at if entry else None,
                 last_activity=last_activity,
+                last_progress=last_progress,
                 context_tokens=context_tokens,
                 deep_link=deep_link,
                 deep_link_label="open in claude.ai" if deep_link else None,
@@ -684,19 +727,20 @@ class ClaudeCodeProvider(SessionProvider):
         # parent session as compact child rows instead of being invisible. Only
         # nesting under a currently-shown parent already bounds this to recent
         # work — no extra age gate needed.
-        now = datetime.now(UTC)
         built_ids = {s.session_id for s in sessions}
         for sub_sid, (sub_path, parent_uuid) in _list_subagents(root).items():
             if parent_uuid not in built_ids or sub_sid in built_ids:
                 continue  # only nest under a shown parent; never shadow a real session
             last_activity = _mtime(sub_path)
-            age = (now - last_activity).total_seconds() if last_activity else 1e9
             sub_meta = self._cached_meta(sub_path)
             ai_title, sub_text, sub_role = sub_meta.title, sub_meta.last_text, sub_meta.last_role
             # transcript_meta drops isSidechain user lines, so read the subagent's
             # own first prompt (the Task description) for a human-readable title.
             task = _subagent_task(sub_path)
-            thinking = age < THINKING_WINDOW_S
+            activity, stalled, last_progress = self._turn_state(
+                True, sub_path, last_activity
+            )
+            thinking = activity is not None
             sessions.append(
                 Session(
                     key=f"{account.key}:{sub_sid}",
@@ -704,7 +748,8 @@ class ClaudeCodeProvider(SessionProvider):
                     session_id=sub_sid,
                     status=SessionStatus.LIVE if thinking else SessionStatus.IDLE,
                     thinking=thinking,
-                    activity=self._activity(thinking, sub_path, last_activity),
+                    stalled=stalled,
+                    activity=activity,
                     title=ai_title or task or sub_sid,
                     initial_prompt=task,
                     last_text=sub_text,
@@ -717,6 +762,7 @@ class ClaudeCodeProvider(SessionProvider):
                     is_delegated=not thinking,
                     parent_session_key=f"{account.key}:{parent_uuid}",
                     last_activity=last_activity,
+                    last_progress=last_progress,
                     show_when_idle=True,
                     capabilities=frozenset({Capability.TRANSCRIPT}),
                 )
@@ -744,6 +790,8 @@ class ClaudeCodeProvider(SessionProvider):
             )
             status_now = SessionStatus.LIVE if live_now else SessionStatus.IDLE
             activity_now = None
+            stalled_now = False
+            last_progress_now = s.last_progress
             last_prompt_now = s.last_prompt
             last_text_now = s.last_text
             last_role_now = s.last_role
@@ -752,7 +800,9 @@ class ClaudeCodeProvider(SessionProvider):
             tp = None
             if live_now:
                 tp = self._transcript_path(account, s)
-                activity_now = self._activity(True, tp, _mtime(tp) if tp else None)
+                activity_now, stalled_now, last_progress_now = self._turn_state(
+                    True, tp, _mtime(tp) if tp else None
+                )
                 if tp is not None:
                     # keep the list's messages as fresh as the detail tail — this
                     # is the mtime-cached meta, so idle transcripts cost nothing.
@@ -782,7 +832,11 @@ class ClaudeCodeProvider(SessionProvider):
             )
             s.status = status_now
             s.thinking = thinking_now
+            s.stalled = stalled_now
+            s.lifecycle_active = None
             s.activity = activity_now
+            s.last_activity = _mtime(tp) if tp is not None else s.last_activity
+            s.last_progress = last_progress_now
             s.last_prompt = last_prompt_now
             s.last_text = last_text_now
             s.last_role = last_role_now

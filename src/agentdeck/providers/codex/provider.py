@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ...models import (
+    STALL_S,
     Account,
     Capability,
     InjectResult,
@@ -22,7 +23,10 @@ from ...models import (
     UsageSnapshot,
     activity_label,
     detailed_activity_label,
+    event_progress_at,
+    event_turn_open,
     runtime_control_capabilities,
+    turn_stalled,
 )
 from ..base import ModelChoice, SessionProvider
 from . import transcripts as transcripts_mod
@@ -43,6 +47,7 @@ DETAIL_WINDOW = 400
 MAX_SESSIONS = 200
 LIVE_WINDOW_S = 30.0
 SUBAGENT_QUIET_S = 300.0
+SUBAGENT_STALL_S = STALL_S
 RECENT_SUBAGENT_S = 30 * 60.0
 MAX_SUBAGENTS_SHOWN = 4
 
@@ -106,7 +111,9 @@ class CodexProvider(SessionProvider):
 
     def __init__(self) -> None:
         self._meta_cache: dict[str, tuple[float, transcripts_mod.TranscriptMeta]] = {}
-        self._last_ev_cache: dict[str, tuple[float, TranscriptEvent | None]] = {}
+        self._last_ev_cache: dict[
+            str, tuple[tuple[int, int], TranscriptEvent | None]
+        ] = {}
         self._delegation_cache: dict[str, tuple[int, int, frozenset[str]]] = {}
         self._paths: dict[tuple[str, str], Path] = {}
         self._clients: dict[str, CodexRuntimeClient] = {}
@@ -192,12 +199,23 @@ class CodexProvider(SessionProvider):
         path = path or self._transcript_path(account, session)
         if path is not None:
             last_activity = _mtime(path)
-            status, thinking, activity = self._derived_state(path, last_activity)
             meta = self._cached_meta(path)
+            lifecycle_active = (
+                meta.task_active if meta.task_status is not None else None
+            )
+            status, thinking, activity, stalled, last_progress = self._derived_state(
+                path,
+                last_activity,
+                lifecycle_active=lifecycle_active,
+                turn_started_at=meta.task_started_at,
+            )
             session.status = status
             session.thinking = thinking
+            session.stalled = stalled
+            session.lifecycle_active = lifecycle_active
             session.activity = activity
             session.last_activity = last_activity
+            session.last_progress = last_progress
             session.last_prompt = meta.last_prompt
             session.last_text = meta.last_text
             session.last_role = meta.last_role
@@ -212,6 +230,8 @@ class CodexProvider(SessionProvider):
         else:
             session.status = SessionStatus.IDLE
             session.thinking = False
+            session.stalled = False
+            session.lifecycle_active = None
             session.activity = None
             session.capabilities = frozenset()
             session.kind = None
@@ -222,13 +242,38 @@ class CodexProvider(SessionProvider):
             return False
         active = client.active_turn(session.session_id) is not None
         interaction = self._actionable_interaction(account, session.session_id)
+        progress = event_progress_at(
+            last_event,
+            session.last_progress or session.last_activity or session.started_at,
+        )
+        if active and progress is None:
+            # First runtime observation before a transcript exists: establish a
+            # durable local progress anchor once, then retain it across sweeps.
+            progress = datetime.now(UTC)
+        age = (datetime.now(UTC) - progress).total_seconds() if progress else 1e9
+        stalled = turn_stalled(
+            live=True,
+            lifecycle_active=active,
+            last_ev=last_event,
+            age_s=age,
+        )
         session.status = SessionStatus.LIVE if active else SessionStatus.IDLE
-        session.thinking = active and interaction is None
+        session.lifecycle_active = active
+        session.stalled = stalled if interaction is None else False
+        session.thinking = active and interaction is None and not session.stalled
+        session.last_progress = progress
         session.activity = (
             "Waiting for you"
             if interaction
             else detailed_activity_label(
-                activity_label(active, active, last_event), last_event
+                activity_label(
+                    active,
+                    active,
+                    last_event,
+                    age,
+                    lifecycle_active=active,
+                ),
+                last_event,
             )
         )
         session.question = self._interaction_summary(interaction)
@@ -284,14 +329,15 @@ class CodexProvider(SessionProvider):
 
     def _cached_last_event(self, path: Path) -> TranscriptEvent | None:
         try:
-            mtime = path.stat().st_mtime
+            stat = path.stat()
         except OSError:
             return None
+        signature = (stat.st_size, stat.st_mtime_ns)
         hit = self._last_ev_cache.get(str(path))
-        if hit is not None and hit[0] == mtime:
+        if hit is not None and hit[0] == signature:
             return hit[1]
         event = transcripts_mod.last_event(path)
-        self._last_ev_cache[str(path)] = (mtime, event)
+        self._last_ev_cache[str(path)] = (signature, event)
         return event
 
     def _cached_delegated_session_keys(self, path: Path) -> frozenset[str]:
@@ -337,16 +383,47 @@ class CodexProvider(SessionProvider):
         return frozenset(capabilities)
 
     def _derived_state(
-        self, path: Path, last_activity: datetime | None
-    ) -> tuple[SessionStatus, bool, str | None]:
+        self,
+        path: Path,
+        last_activity: datetime | None,
+        *,
+        lifecycle_active: bool | None = None,
+        turn_started_at: datetime | None = None,
+    ) -> tuple[SessionStatus, bool, str | None, bool, datetime | None]:
         if last_activity is None:
-            return (SessionStatus.IDLE, False, None)
-        age = max(0.0, (datetime.now(UTC) - last_activity).total_seconds())
-        live = age < LIVE_WINDOW_S
+            return (SessionStatus.IDLE, False, None, False, None)
+        write_age = max(0.0, (datetime.now(UTC) - last_activity).total_seconds())
+        live = write_age < LIVE_WINDOW_S
         status = SessionStatus.LIVE if live else SessionStatus.IDLE
         last_event = self._cached_last_event(path)
-        activity = detailed_activity_label(activity_label(live, live, last_event, age), last_event)
-        return (status, activity is not None, activity)
+        progress = event_progress_at(last_event, last_activity)
+        if lifecycle_active and turn_started_at is not None and (
+            progress is None or progress < turn_started_at
+        ):
+            progress = turn_started_at
+        age = max(0.0, (datetime.now(UTC) - progress).total_seconds()) if progress else 1e9
+        # Unowned rollouts have no process lifecycle feed. Structural open-turn
+        # evidence therefore sustains Working through quiet tool gaps.
+        evidence_available = (
+            live or lifecycle_active is True or event_turn_open(last_event) is True
+        )
+        stalled = turn_stalled(
+            live=evidence_available,
+            lifecycle_active=lifecycle_active,
+            last_ev=last_event,
+            age_s=age,
+        )
+        activity = detailed_activity_label(
+            activity_label(
+                evidence_available,
+                live,
+                last_event,
+                age,
+                lifecycle_active=lifecycle_active,
+            ),
+            last_event,
+        )
+        return (status, activity is not None, activity, stalled, progress)
 
     @staticmethod
     def _apply_model(events: list[TranscriptEvent], model: str | None) -> list[TranscriptEvent]:
@@ -456,7 +533,7 @@ class CodexProvider(SessionProvider):
                         # task_active flag alone gets stuck True on a subagent
                         # that died mid-task, showing "Working" for hours and
                         # flooding the working count + Deckhand stalls.
-                        child_active = meta.task_active and age < SUBAGENT_QUIET_S
+                        child_active = meta.task_active and age < SUBAGENT_STALL_S
                         sessions.append(
                             Session(
                                 key=f"{account.key}:{child_id}",
@@ -499,13 +576,23 @@ class CodexProvider(SessionProvider):
                 turn_starts[session_id] = meta.task_started_at
             current_paths[(account.key, session_id)] = path
             last_activity = _mtime(path)
-            status, thinking, activity = self._derived_state(path, last_activity)
+            lifecycle_active = (
+                meta.task_active if meta.task_status is not None else None
+            )
+            status, thinking, activity, stalled, last_progress = self._derived_state(
+                path,
+                last_activity,
+                lifecycle_active=lifecycle_active,
+                turn_started_at=meta.task_started_at,
+            )
             session = Session(
                 key=f"{account.key}:{session_id}",
                 account_key=account.key,
                 session_id=session_id,
                 status=status,
                 thinking=thinking,
+                stalled=stalled,
+                lifecycle_active=lifecycle_active,
                 activity=activity,
                 cwd=Path(meta.cwd) if meta.cwd else None,
                 title=meta.title,
@@ -527,6 +614,7 @@ class CodexProvider(SessionProvider):
                 ),
                 started_at=meta.started_at,
                 last_activity=last_activity,
+                last_progress=last_progress,
                 tokens=meta.tokens,
                 context_tokens=meta.context_tokens,
                 show_when_idle=True,
@@ -550,9 +638,15 @@ class CodexProvider(SessionProvider):
                 )
             )
             session.subagents = tuple(agents[:MAX_SUBAGENTS_SHOWN])
-            session.subagent_count = sum(
-                agent.status in ("working", "quiet") for agent in agents
-            )
+            now = datetime.now(UTC)
+            active_agent_progress = [
+                stamp
+                for agent in agents
+                if agent.status in ("working", "quiet")
+                and (stamp := agent.updated_at or agent.started_at) is not None
+                and (now - stamp).total_seconds() < SUBAGENT_STALL_S
+            ]
+            session.subagent_count = len(active_agent_progress)
         self._paths = {key: value for key, value in self._paths.items() if key[0] != account.key}
         self._paths.update(current_paths)
         # Publish this account's delegation links so cross-provider children

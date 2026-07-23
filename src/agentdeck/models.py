@@ -118,7 +118,14 @@ class Session:
     account_key: str
     session_id: str  # provider-scoped source id; child agents may use their agent id
     status: SessionStatus
-    thinking: bool = False  # LIVE and actively writing its transcript right now
+    # User-facing Working Session state. This stays true through quiet tool-use
+    # gaps; it turns false only when the turn completes, waits on the operator,
+    # or crosses the stall threshold.
+    thinking: bool = False
+    stalled: bool = False  # an Active Turn with no Turn Progress for STALL_S
+    # Explicit provider lifecycle, when one exists. None means transcript
+    # structure/brief recency is the best available Active Turn evidence.
+    lifecycle_active: bool | None = None
     cwd: Path | None = None
     title: str | None = None  # provider-native title
     generated_title: str | None = None  # Deckhand display title; native title stays intact
@@ -145,6 +152,9 @@ class Session:
     proc_start: str | None = None  # /proc starttime token — pid-reuse guard
     started_at: datetime | None = None
     last_activity: datetime | None = None
+    # Latest execution advancement (assistant/reasoning output, tool call/result,
+    # or descendant work). Presentation metadata must not move this clock.
+    last_progress: datetime | None = None
     tokens: TokenTotals | None = None  # summed from transcript usage blocks (v0.2)
     context_tokens: int | None = None  # context-window occupancy (input side of latest usage block)
     deep_link: str | None = None  # provider-native URL when applicable
@@ -155,10 +165,10 @@ class Session:
     @property
     def display_state(self) -> str:
         """User-facing state, in the vocabulary that matters: a session with a
-        live process that isn't writing is **idle** (alive but resting); only one
-        actively writing is **thinking**. (``status`` stays process-based — LIVE
-        means a process exists; providers may still keep no-process sessions in
-        the dashboard with ``show_when_idle``.)"""
+        live process but no Active Turn is **idle** (alive but resting); a
+        Working Session is **thinking**, including quiet tool-use gaps.
+        (``status`` stays process-based — LIVE means a process exists; providers
+        may still keep no-process sessions in the dashboard.)"""
         if self.thinking:
             return "thinking"
         if self.status == SessionStatus.LIVE:
@@ -232,11 +242,72 @@ class PendingInteraction:
 # An open turn older than this is considered stalled (hung worker), not busy —
 # without it, a dead-but-LIVE process whose last line is a tool call would show
 # "Using tools" forever.
-STALL_S = 300.0
+STALL_S = 600.0
+
+
+def event_turn_open(last_ev: TranscriptEvent | None) -> bool | None:
+    """Structural Active Turn evidence carried by the latest transcript event."""
+    if last_ev is None:
+        return None
+    if last_ev.tool_name == "AskUserQuestion" or last_ev.question:
+        return False
+    if last_ev.turn_continues is not None:
+        return last_ev.turn_continues
+    if last_ev.role in {"user", "tool"} or last_ev.tool_name:
+        return True
+    return None
+
+
+def event_progress_at(
+    last_ev: TranscriptEvent | None, fallback: datetime | None
+) -> datetime | None:
+    """Latest execution-progress timestamp, excluding non-event file writes."""
+    return last_ev.ts if last_ev is not None and last_ev.ts is not None else fallback
+
+
+def transcript_event_is_progress(event: TranscriptEvent) -> bool:
+    """Whether a normalized transcript event advances execution.
+
+    Usage/token bookkeeping is intentionally excluded. Visible model output,
+    prompts, tool calls/results, reasoning heartbeats, and descendant lifecycle
+    events are progress.
+    """
+    return bool(
+        event.role == "tool"
+        or event.text
+        or event.tool_name
+        or event.question
+        or event.answer
+        or event.image_media_types
+        or event.subagent_status
+    )
+
+
+def turn_stalled(
+    *,
+    live: bool,
+    lifecycle_active: bool | None,
+    last_ev: TranscriptEvent | None,
+    age_s: float,
+    stall_s: float = STALL_S,
+) -> bool:
+    """Whether current normalized evidence represents a Stalled Turn."""
+    if not live or (last_ev is not None and last_ev.tool_name == "AskUserQuestion"):
+        return False
+    active = lifecycle_active
+    if active is None:
+        active = event_turn_open(last_ev)
+    return active is True and age_s >= stall_s
 
 
 def activity_label(
-    live: bool, streaming: bool, last_ev, age_s: float = 0.0, stall_s: float = STALL_S
+    live: bool,
+    streaming: bool,
+    last_ev,
+    age_s: float = 0.0,
+    stall_s: float = STALL_S,
+    *,
+    lifecycle_active: bool | None = None,
 ) -> str | None:
     """What the agent is doing right now, or None when idle/dead/stalled.
 
@@ -257,14 +328,20 @@ def activity_label(
     # question). Surfaced as a question on the card instead of an activity badge.
     if last_ev is not None and last_ev.tool_name == "AskUserQuestion":
         return None
-    if last_ev is not None and age_s < stall_s:
-        if last_ev.role == "tool" or last_ev.tool_name:
-            return "Using tools"
-        if last_ev.role == "user":
-            return "Working"
-    if streaming:
-        return "Working"
-    return None
+    active = lifecycle_active
+    if active is None:
+        active = event_turn_open(last_ev)
+    # Explicit lifecycle/structure closes immediately; recency is only a
+    # fallback for an ambiguous assistant event or an empty live tail.
+    if active is False:
+        return None
+    if active is None:
+        return "Working" if streaming else None
+    if age_s >= stall_s:
+        return None
+    if last_ev is not None and (last_ev.role == "tool" or last_ev.tool_name):
+        return "Using tools"
+    return "Working"
 
 
 def detailed_activity_label(label: str | None, last_ev) -> str | None:
@@ -322,6 +399,9 @@ class TranscriptEvent:  # normalized transcript line (parsed from v0.2)
     ts: datetime | None = None
     subagent: str | None = None  # set when from <uuid>/subagents/
     queued: bool = False  # user message typed while the agent was busy (enqueued)
+    # Provider-declared continuation on this event: True keeps the Active Turn
+    # open, False closes it, None leaves structure/brief recency to decide.
+    turn_continues: bool | None = None
     tool_detail: str | None = None  # expandable provider-native tool input
     subagent_status: str | None = None  # compact spawned-agent lifecycle update
     subagent_id: str | None = None

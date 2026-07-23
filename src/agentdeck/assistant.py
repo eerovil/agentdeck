@@ -285,7 +285,11 @@ class AssistantService:
 
     def _eligible_sessions(self) -> list[Session]:
         """Operator-owned chats only; delegated/background agents report to parents."""
-        return [session for session in self.state.visible_sessions() if not session.is_delegated]
+        return [
+            session
+            for session in self.state.session_presentation().visible
+            if not session.is_delegated
+        ]
 
     @staticmethod
     def _message_signature(session: Session) -> str:

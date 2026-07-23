@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
-from ..models import Capability, SessionStatus
+from ..models import Capability, SessionStatus, transcript_event_is_progress
 from .deps import (
     get_accounts,
     get_injector,
@@ -49,11 +49,19 @@ HEARTBEAT_S = 15.0
 # before a fresh turn or incoming question shows on the watched page.
 TAIL_INTERVAL_S = 1.5
 TAIL_IDLE_INTERVAL_S = 4.0
-# Detail-page "thinking" turns off this long after the last transcript write.
+# Brief recency fallback for ambiguous detail-page progress events.
 THINKING_OFF_S = 3.0
 # Re-render the usage bars at least this often so the "updated Nm ago" time
 # ticks and the bars re-sync between the (slower) usage polls.
 USAGE_REFRESH_S = 30.0
+
+
+def _progress_age_s(event) -> float:
+    """Wall-clock age of one progress event; untimestamped live events are new."""
+    if event.ts is None:
+        return 0.0
+    timestamp = event.ts if event.ts.tzinfo is not None else event.ts.replace(tzinfo=UTC)
+    return max(0.0, (datetime.now(UTC) - timestamp).total_seconds())
 
 
 def _usage_sig(accounts, state) -> tuple:
@@ -174,11 +182,12 @@ async def _session_stream(
         events = await provider.read_transcript(account, session, after_seq=read_after)
         backfill = [event for event in events if event.seq <= seq]
     last_ev = await provider.last_event(account, session)
-    # Anchor the write-clock to the transcript's real age, so a page opened
-    # mid-turn starts from the true last-write time (not "never wrote").
+    # Anchor the progress clock to normalized Turn Progress, so presentation
+    # bookkeeping cannot postpone a real stall.
+    progress_at = session.last_progress or session.last_activity
     init_age = (
-        (datetime.now(UTC) - session.last_activity).total_seconds()
-        if session.last_activity
+        (datetime.now(UTC) - progress_at).total_seconds()
+        if progress_at
         else 1e9
     )
     last_activity_t = loop.time() - init_age
@@ -231,8 +240,12 @@ async def _session_stream(
                 ),
                 event_id=backfill[-1].seq,
             )
-            last_activity_t = loop.time()
-            last_ev = backfill[-1]
+            progress_events = [
+                event for event in backfill if transcript_event_is_progress(event)
+            ]
+            if progress_events:
+                last_ev = progress_events[-1]
+                last_activity_t = loop.time() - _progress_age_s(last_ev)
         # The pending-interaction widget is server-rendered on page load and kept
         # live here — pushed ONLY when the interaction actually changes (a new
         # question, or the current one answered/cancelled). Never re-pushing an
@@ -265,8 +278,12 @@ async def _session_stream(
                     ),
                     event_id=new_events[-1].seq,
                 )
-                last_activity_t = loop.time()
-                last_ev = new_events[-1]
+                progress_events = [
+                    event for event in new_events if transcript_event_is_progress(event)
+                ]
+                if progress_events:
+                    last_ev = progress_events[-1]
+                    last_activity_t = loop.time() - _progress_age_s(last_ev)
             current = state.sessions.get(session_key) or session
             presentation = state.session_presentation()
             live = current.status == SessionStatus.LIVE
@@ -281,6 +298,7 @@ async def _session_stream(
                 last_event=last_ev,
                 age_s=age,
                 has_working_subagent=presentation.has_working_subagent(current),
+                lifecycle_active=current.lifecycle_active,
             )
             busy = label is not None
             if (

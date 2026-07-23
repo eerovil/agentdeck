@@ -284,8 +284,8 @@ class AppState:
 
     def _effective_activity(
         self, visible: list[Session], parent_by_key: Mapping[str, str | None]
-    ) -> tuple[set[str], set[str]]:
-        """Return effective-working keys and keys working through subagents.
+    ) -> tuple[set[str], set[str], dict[str, datetime | None]]:
+        """Return effective-working keys, descendant-work keys, and progress.
 
         Providers keep ``Session.thinking`` scoped to the session's own turn.
         Parent activity is relationship state: Codex may report spawned agents
@@ -297,20 +297,54 @@ class AppState:
         through_subagents = {
             session.key for session in visible if session.subagent_count
         }
+        progress: dict[str, datetime | None] = {}
+        for session in visible:
+            stamps = [session.last_progress or session.last_activity]
+            if session.subagent_count:
+                stamps.extend(
+                    agent.updated_at or agent.started_at
+                    for agent in session.subagents
+                    if agent.status in ("working", "quiet")
+                )
+            progress[session.key] = max(
+                (stamp for stamp in stamps if stamp is not None), default=None
+            )
         frontier = list(own_working | through_subagents)
         while frontier:
-            parent = parent_by_key.get(frontier.pop())
-            if parent is None or parent in through_subagents:
+            child = frontier.pop()
+            parent = parent_by_key.get(child)
+            if parent is None:
                 continue
-            through_subagents.add(parent)
-            frontier.append(parent)
-        return own_working | through_subagents, through_subagents
+            child_progress = progress.get(child)
+            parent_progress = progress.get(parent)
+            progress_changed = child_progress is not None and (
+                parent_progress is None or child_progress > parent_progress
+            )
+            if progress_changed:
+                progress[parent] = child_progress
+            newly_working = parent not in through_subagents
+            if newly_working:
+                through_subagents.add(parent)
+            if newly_working or progress_changed:
+                frontier.append(parent)
+        return own_working | through_subagents, through_subagents, progress
 
     @staticmethod
-    def _with_effective_activity(session: Session, working_keys: set[str]) -> Session:
-        if session.key not in working_keys or session.thinking:
-            return replace(session)
-        return replace(session, thinking=True, activity=session.activity or "Working")
+    def _with_effective_activity(
+        session: Session,
+        working_keys: set[str],
+        progress: Mapping[str, datetime | None],
+    ) -> Session:
+        effective_progress = progress.get(session.key)
+        if session.key not in working_keys:
+            return replace(session, last_progress=effective_progress)
+        return replace(
+            session,
+            thinking=True,
+            stalled=False,
+            activity=session.activity or "Working",
+            last_progress=effective_progress,
+        )
 
     def session_presentation(self) -> SessionPresentation:
         """Build one immutable display projection of the visible session graph.
@@ -331,12 +365,14 @@ class AppState:
             session.key: self._parent_key(session, key_by_session_id)
             for session in visible
         }
-        working_keys, through_subagents = self._effective_activity(
+        working_keys, through_subagents, effective_progress = self._effective_activity(
             visible, parent_by_key
         )
         top_keys = {key for key, parent in parent_by_key.items() if parent is None}
         display_by_key = {
-            session.key: self._with_effective_activity(session, working_keys)
+            session.key: self._with_effective_activity(
+                session, working_keys, effective_progress
+            )
             for session in visible
         }
         top: list[Session] = []

@@ -49,6 +49,19 @@ _MAX_RENDERED_TEXT = 200_000
 _MAX_IMAGE_DATA_CHARS = 14 * 1024 * 1024
 _MAX_IMAGE_TOTAL_CHARS = 28 * 1024 * 1024
 _MAX_IMAGES = 4
+_CONTINUING_STOP_REASONS = frozenset({"tool_use", "pause_turn"})
+_TERMINAL_STOP_REASONS = frozenset(
+    {"end_turn", "max_tokens", "stop_sequence", "refusal", "model_context_window_exceeded"}
+)
+
+
+def _turn_continues(stop_reason: object) -> bool | None:
+    """Normalize known Claude lifecycle values; unknown future values stay ambiguous."""
+    if stop_reason in _CONTINUING_STOP_REASONS:
+        return True
+    if stop_reason in _TERMINAL_STOP_REASONS:
+        return False
+    return None
 
 
 def _text_from_content(
@@ -306,6 +319,7 @@ def _event_from_line(seq: int, data: dict) -> TranscriptEvent | None:
         content
     )
     model = message.get("model") if isinstance(message, dict) else None
+    stop_reason = message.get("stop_reason") if isinstance(message, dict) else None
     usage = message.get("usage") if isinstance(message, dict) else None
     is_tool_result = tool_name is None and ltype == "user" and _looks_like_tool_result(content)
     # An AskUserQuestion answer arrives on a tool_result line but is your reply —
@@ -324,6 +338,7 @@ def _event_from_line(seq: int, data: dict) -> TranscriptEvent | None:
         model=model if isinstance(model, str) else None,
         tokens=_usage_totals(usage),
         ts=_parse_ts(data.get("timestamp")),
+        turn_continues=_turn_continues(stop_reason),
         image_media_types=image_media_types,
     )
 

@@ -157,9 +157,10 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
 
     last_ev = detail.events[-1] if detail.events else None
     live = session.status == SessionStatus.LIVE
+    progress_at = session.last_progress or session.last_activity
     age = (
-        (datetime.now(UTC) - session.last_activity).total_seconds()
-        if session.last_activity
+        (datetime.now(UTC) - progress_at).total_seconds()
+        if progress_at
         else 1e9
     )
     presentation = state.session_presentation()
@@ -170,6 +171,7 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
         last_event=last_ev,
         age_s=age,
         has_working_subagent=presentation.has_working_subagent(session),
+        lifecycle_active=session.lifecycle_active,
     )
     effective_session = presentation.display(session)
     labels = session_labels(accounts)

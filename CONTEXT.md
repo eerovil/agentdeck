@@ -87,8 +87,16 @@ A provider-accessible Session with no local transcript.
 _Avoid_: Live Session, cloud worker
 
 **Active Turn**:
-A user turn that the Session itself is currently executing.
+A user turn that the Session itself is currently executing, including quiet gaps while the agent
+prepares or performs tool use. It begins with a user prompt or steer and ends with a terminal reply,
+a Waiting Session, or a Stalled Turn; provider lifecycle is authoritative when available,
+conversation structure otherwise, and liveness alone is insufficient.
 _Avoid_: Live Session, open Session
+
+**Turn Progress**:
+Evidence that an Active Turn has advanced through agent output, tool activity, or active descendant
+work. Session metadata and presentation bookkeeping are not Turn Progress.
+_Avoid_: Last activity, transcript write, file modification
 
 **Resting Session**:
 A Live Session with no Active Turn.
@@ -99,8 +107,9 @@ A Session paused for an operator answer or approval. Waiting is not working.
 _Avoid_: Resting Session, blocked issue
 
 **Stalled Turn**:
-An apparently open turn that has produced no progress beyond the accepted threshold and is no
-longer presented as working.
+An Active Turn that has produced no progress for ten minutes and is no longer presented as
+working. The stall itself produces the current blocked Deckhand Status rather than reviving a prior
+status.
 _Avoid_: Resting Session, failed Session
 
 **Direct Activity**:
@@ -109,7 +118,7 @@ _Avoid_: Effective Activity
 
 **Effective Activity**:
 The activity attributed to a Session after including current work by its descendants or Embedded
-Subagents.
+Subagents. Descendant Turn Progress sustains it and resets the parent Session's stall clock.
 _Avoid_: Parent thinking, inherited Session state
 
 **Working Session**:
@@ -209,8 +218,8 @@ _Avoid_: Completion, resolution, shipped
 
 **Deckhand Status**:
 The effective operator-facing attention state of a Session, distinct from its availability and
-activity. It has exactly one resolution per Session; presentation renders it without re-deriving
-its precedence.
+activity. It has exactly one resolution per Session, and a resolution from a prior Resting Session
+does not remain effective after the Session resumes an Active Turn.
 _Avoid_: Session status, liveness, activity, pill
 
 **Native Title**:
