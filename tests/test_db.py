@@ -235,3 +235,58 @@ def test_disabled_history_is_nulldb():
     assert isinstance(db, NullDb)
     db.record_usage(_snap(50.0))  # no-ops
     assert db.recent_five_hour("x") == []
+
+
+def test_write_and_query_degrade_on_sqlite_error(tmp_path):
+    # The durability seam swallows sqlite errors and degrades — this pins the one
+    # consolidated contract instead of an arbitrary per-method except.
+    db = Db(tmp_path / "degrade.db")
+
+    class _Boom:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, *a, **k):
+            raise sqlite3.OperationalError("forced")
+
+    db._conn = _Boom()
+    db.record_usage(_snap(1.0))  # a write must degrade (not raise)
+    assert db.recent_five_hour("claude_code:main") == []  # a query returns its default
+
+
+def test_usage_history_pruned_on_open(tmp_path):
+    from datetime import timedelta
+
+    path = tmp_path / "prune.db"
+    db = Db(path, retention_days=1)
+    old_ts = (datetime.now(UTC) - timedelta(days=2)).isoformat()
+    db._write(
+        "INSERT INTO usage_history(account_key, ts, five_hour_pct, seven_day_pct)"
+        " VALUES (?, ?, ?, ?)",
+        ("claude_code:main", old_ts, 5.0, None),
+    )
+    db.record_usage(_snap(9.0))
+    db.close()
+    reopened = Db(path, retention_days=1)  # prune runs on open
+    assert reopened.recent_five_hour("claude_code:main") == [9.0]  # old row pruned
+    reopened.close()
+
+
+def test_retention_zero_keeps_everything(tmp_path):
+    from datetime import timedelta
+
+    path = tmp_path / "keep.db"
+    db = Db(path, retention_days=0)
+    old_ts = (datetime.now(UTC) - timedelta(days=100)).isoformat()
+    db._write(
+        "INSERT INTO usage_history(account_key, ts, five_hour_pct, seven_day_pct)"
+        " VALUES (?, ?, ?, ?)",
+        ("claude_code:main", old_ts, 5.0, None),
+    )
+    db.close()
+    reopened = Db(path, retention_days=0)  # 0 disables pruning
+    assert reopened.recent_five_hour("claude_code:main") == [5.0]
+    reopened.close()

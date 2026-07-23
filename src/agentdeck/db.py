@@ -13,7 +13,8 @@ import json
 import logging
 import sqlite3
 import threading
-from datetime import UTC, datetime
+from collections.abc import Iterable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -173,215 +174,193 @@ class Db:
                 self._conn.execute(
                     "ALTER TABLE delegated_sessions ADD COLUMN parent_session_id TEXT"
                 )
+        self._prune_usage_history()
 
-    def record_usage(self, snapshot: UsageSnapshot) -> None:
+    # --- durability seam ------------------------------------------------
+    # Every persisting method funnels through these, so the lock, the transaction,
+    # and the "a DB error is non-fatal — log at debug and degrade" policy live in
+    # exactly one place instead of being re-typed per method.
+
+    def _write(self, sql: str, params: tuple = ()) -> None:
         try:
             with self._lock, self._conn:
-                self._conn.execute(
-                    "INSERT INTO usage_history(account_key, ts, five_hour_pct, seven_day_pct)"
-                    " VALUES (?, ?, ?, ?)",
-                    (
-                        snapshot.account_key,
-                        snapshot.fetched_at.isoformat(),
-                        snapshot.five_hour_pct,
-                        snapshot.seven_day_pct,
-                    ),
-                )
+                self._conn.execute(sql, params)
         except sqlite3.Error as exc:
-            log.debug("record_usage failed: %s", exc)
+            log.debug("db write failed: %s", exc)
 
-    def recent_five_hour(self, account_key: str, limit: int = 24) -> list[float]:
+    def _write_many(self, sql: str, rows: Iterable[tuple]) -> None:
+        try:
+            with self._lock, self._conn:
+                self._conn.executemany(sql, rows)
+        except sqlite3.Error as exc:
+            log.debug("db write failed: %s", exc)
+
+    def _query(self, sql: str, params: tuple = ()) -> list[tuple]:
         try:
             with self._lock:
-                rows = self._conn.execute(
-                    "SELECT five_hour_pct FROM usage_history"
-                    " WHERE account_key = ? AND five_hour_pct IS NOT NULL"
-                    " ORDER BY ts DESC LIMIT ?",
-                    (account_key, limit),
-                ).fetchall()
-            return [float(r[0]) for r in reversed(rows)]
-        except sqlite3.Error:
+                return self._conn.execute(sql, params).fetchall()
+        except sqlite3.Error as exc:
+            log.debug("db query failed: %s", exc)
             return []
+
+    def _prune_usage_history(self) -> None:
+        """Drop usage_history rows older than the retention window, once at open.
+        ``retention_days <= 0`` keeps everything — a valid "disable pruning"
+        setting — so the append-only table can't grow unbounded by default."""
+        if self.retention_days <= 0:
+            return
+        cutoff = (datetime.now(UTC) - timedelta(days=self.retention_days)).isoformat()
+        self._write("DELETE FROM usage_history WHERE ts < ?", (cutoff,))
+
+    def record_usage(self, snapshot: UsageSnapshot) -> None:
+        self._write(
+            "INSERT INTO usage_history(account_key, ts, five_hour_pct, seven_day_pct)"
+            " VALUES (?, ?, ?, ?)",
+            (
+                snapshot.account_key,
+                snapshot.fetched_at.isoformat(),
+                snapshot.five_hour_pct,
+                snapshot.seven_day_pct,
+            ),
+        )
+
+    def recent_five_hour(self, account_key: str, limit: int = 24) -> list[float]:
+        rows = self._query(
+            "SELECT five_hour_pct FROM usage_history"
+            " WHERE account_key = ? AND five_hour_pct IS NOT NULL"
+            " ORDER BY ts DESC LIMIT ?",
+            (account_key, limit),
+        )
+        return [float(r[0]) for r in reversed(rows)]
 
     def upsert_sessions_seen(self, sessions: list[Session]) -> None:
         now = datetime.now(UTC).isoformat()
-        try:
-            with self._lock, self._conn:
-                for s in sessions:
-                    self._conn.execute(
-                        "INSERT INTO sessions_seen(session_key, account_key, title, cwd,"
-                        " first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?)"
-                        " ON CONFLICT(session_key) DO UPDATE SET"
-                        " title=excluded.title, cwd=excluded.cwd, last_seen=excluded.last_seen",
-                        (
-                            s.key,
-                            s.account_key,
-                            s.title,
-                            str(s.cwd) if s.cwd else None,
-                            now,
-                            now,
-                        ),
-                    )
-        except sqlite3.Error as exc:
-            log.debug("upsert_sessions_seen failed: %s", exc)
+        self._write_many(
+            "INSERT INTO sessions_seen(session_key, account_key, title, cwd,"
+            " first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(session_key) DO UPDATE SET"
+            " title=excluded.title, cwd=excluded.cwd, last_seen=excluded.last_seen",
+            (
+                (s.key, s.account_key, s.title, str(s.cwd) if s.cwd else None, now, now)
+                for s in sessions
+            ),
+        )
 
     def load_generated_titles(self) -> dict[str, GeneratedTitle]:
+        rows = self._query(
+            "SELECT session_key, title, evidence_signature, updated_at FROM generated_titles"
+        )
         try:
-            with self._lock:
-                rows = self._conn.execute(
-                    "SELECT session_key, title, evidence_signature, updated_at"
-                    " FROM generated_titles"
-                ).fetchall()
             return {
                 str(session_key): GeneratedTitle(
                     str(title), str(signature), datetime.fromisoformat(str(updated_at))
                 )
                 for session_key, title, signature, updated_at in rows
             }
-        except (sqlite3.Error, ValueError) as exc:
-            log.debug("load_generated_titles failed: %s", exc)
+        except ValueError as exc:  # a stored timestamp that won't parse
+            log.debug("load_generated_titles decode failed: %s", exc)
             return {}
 
     def record_generated_title(
         self, session_key: str, title: str, evidence_signature: str
     ) -> GeneratedTitle:
         updated_at = datetime.now(UTC)
-        record = GeneratedTitle(title, evidence_signature, updated_at)
-        try:
-            with self._lock, self._conn:
-                self._conn.execute(
-                    "INSERT INTO generated_titles(session_key, title, evidence_signature,"
-                    " updated_at) VALUES (?, ?, ?, ?)"
-                    " ON CONFLICT(session_key) DO UPDATE SET"
-                    " title=excluded.title, evidence_signature=excluded.evidence_signature,"
-                    " updated_at=excluded.updated_at",
-                    (session_key, title, evidence_signature, updated_at.isoformat()),
-                )
-        except sqlite3.Error as exc:
-            log.debug("record_generated_title failed: %s", exc)
-        return record
+        self._write(
+            "INSERT INTO generated_titles(session_key, title, evidence_signature,"
+            " updated_at) VALUES (?, ?, ?, ?)"
+            " ON CONFLICT(session_key) DO UPDATE SET"
+            " title=excluded.title, evidence_signature=excluded.evidence_signature,"
+            " updated_at=excluded.updated_at",
+            (session_key, title, evidence_signature, updated_at.isoformat()),
+        )
+        return GeneratedTitle(title, evidence_signature, updated_at)
 
     def load_manual_new_chat_cwd(self) -> str | None:
-        try:
-            with self._lock:
-                row = self._conn.execute(
-                    "SELECT cwd FROM manual_new_chat_state WHERE singleton = 1"
-                ).fetchone()
-            return str(row[0]) if row is not None else None
-        except sqlite3.Error as exc:
-            log.debug("load_manual_new_chat_cwd failed: %s", exc)
-            return None
+        rows = self._query("SELECT cwd FROM manual_new_chat_state WHERE singleton = 1")
+        return str(rows[0][0]) if rows else None
 
     def load_delegated_sessions(self) -> set[str]:
-        try:
-            with self._lock:
-                rows = self._conn.execute(
-                    "SELECT session_key FROM delegated_sessions"
-                ).fetchall()
-            return {str(row[0]) for row in rows}
-        except sqlite3.Error as exc:
-            log.debug("load_delegated_sessions failed: %s", exc)
-            return set()
+        rows = self._query("SELECT session_key FROM delegated_sessions")
+        return {str(row[0]) for row in rows}
 
     def load_delegation_parents(self) -> dict[str, str]:
-        try:
-            with self._lock:
-                rows = self._conn.execute(
-                    "SELECT session_key, parent_session_id FROM delegated_sessions"
-                    " WHERE parent_session_id IS NOT NULL"
-                ).fetchall()
-            return {str(row[0]): str(row[1]) for row in rows}
-        except sqlite3.Error as exc:
-            log.debug("load_delegation_parents failed: %s", exc)
-            return {}
+        rows = self._query(
+            "SELECT session_key, parent_session_id FROM delegated_sessions"
+            " WHERE parent_session_id IS NOT NULL"
+        )
+        return {str(row[0]): str(row[1]) for row in rows}
 
     def record_delegated_session(
         self, session_key: str, parent_session_id: str | None = None
     ) -> None:
-        try:
-            with self._lock, self._conn:
-                if parent_session_id is None:
-                    # Never clobber a previously recorded parent with a bare
-                    # is_delegated re-record.
-                    self._conn.execute(
-                        "INSERT OR IGNORE INTO delegated_sessions(session_key, created_at)"
-                        " VALUES (?, ?)",
-                        (session_key, datetime.now(UTC).isoformat()),
-                    )
-                else:
-                    self._conn.execute(
-                        "INSERT INTO delegated_sessions"
-                        "(session_key, created_at, parent_session_id)"
-                        " VALUES (?, ?, ?)"
-                        " ON CONFLICT(session_key) DO UPDATE SET"
-                        " parent_session_id = excluded.parent_session_id",
-                        (session_key, datetime.now(UTC).isoformat(), parent_session_id),
-                    )
-        except sqlite3.Error as exc:
-            log.debug("record_delegated_session failed: %s", exc)
+        if parent_session_id is None:
+            # Never clobber a previously recorded parent with a bare is_delegated
+            # re-record.
+            self._write(
+                "INSERT OR IGNORE INTO delegated_sessions(session_key, created_at)"
+                " VALUES (?, ?)",
+                (session_key, datetime.now(UTC).isoformat()),
+            )
+        else:
+            self._write(
+                "INSERT INTO delegated_sessions"
+                "(session_key, created_at, parent_session_id)"
+                " VALUES (?, ?, ?)"
+                " ON CONFLICT(session_key) DO UPDATE SET"
+                " parent_session_id = excluded.parent_session_id",
+                (session_key, datetime.now(UTC).isoformat(), parent_session_id),
+            )
 
     def record_manual_new_chat_cwd(self, cwd: str) -> None:
-        try:
-            with self._lock, self._conn:
-                self._conn.execute(
-                    "INSERT INTO manual_new_chat_state(singleton, cwd, updated_at)"
-                    " VALUES (1, ?, ?)"
-                    " ON CONFLICT(singleton) DO UPDATE SET"
-                    " cwd=excluded.cwd, updated_at=excluded.updated_at",
-                    (cwd, datetime.now(UTC).isoformat()),
-                )
-        except sqlite3.Error as exc:
-            log.debug("record_manual_new_chat_cwd failed: %s", exc)
+        self._write(
+            "INSERT INTO manual_new_chat_state(singleton, cwd, updated_at)"
+            " VALUES (1, ?, ?)"
+            " ON CONFLICT(singleton) DO UPDATE SET"
+            " cwd=excluded.cwd, updated_at=excluded.updated_at",
+            (cwd, datetime.now(UTC).isoformat()),
+        )
 
     def load_assistant_checkpoint(self) -> dict[str, Any] | None:
-        try:
-            with self._lock:
-                row = self._conn.execute(
-                    "SELECT payload FROM assistant_checkpoint WHERE singleton = 1"
-                ).fetchone()
-            if row is None:
-                return None
-            payload = json.loads(row[0])
-            return payload if isinstance(payload, dict) else None
-        except (sqlite3.Error, json.JSONDecodeError, TypeError) as exc:
-            log.debug("load_assistant_checkpoint failed: %s", exc)
+        rows = self._query("SELECT payload FROM assistant_checkpoint WHERE singleton = 1")
+        if not rows:
             return None
+        try:
+            payload = json.loads(rows[0][0])
+        except (json.JSONDecodeError, TypeError) as exc:
+            log.debug("load_assistant_checkpoint decode failed: %s", exc)
+            return None
+        return payload if isinstance(payload, dict) else None
 
     def record_assistant_checkpoint(self, payload: dict[str, Any]) -> None:
         try:
             encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-            with self._lock, self._conn:
-                self._conn.execute(
-                    "INSERT INTO assistant_checkpoint(singleton, payload, updated_at)"
-                    " VALUES (1, ?, ?)"
-                    " ON CONFLICT(singleton) DO UPDATE SET"
-                    " payload=excluded.payload, updated_at=excluded.updated_at",
-                    (encoded, datetime.now(UTC).isoformat()),
-                )
-        except (sqlite3.Error, TypeError, ValueError) as exc:
-            log.debug("record_assistant_checkpoint failed: %s", exc)
+        except (TypeError, ValueError) as exc:
+            log.debug("record_assistant_checkpoint encode failed: %s", exc)
+            return
+        self._write(
+            "INSERT INTO assistant_checkpoint(singleton, payload, updated_at)"
+            " VALUES (1, ?, ?)"
+            " ON CONFLICT(singleton) DO UPDATE SET"
+            " payload=excluded.payload, updated_at=excluded.updated_at",
+            (encoded, datetime.now(UTC).isoformat()),
+        )
 
     def load_assistant_handled(
         self,
     ) -> dict[str, tuple[str, str | None, str | None, str | None]]:
-        try:
-            with self._lock:
-                rows = self._conn.execute(
-                    "SELECT session_key, evidence_signature, kind, headline, detail"
-                    " FROM assistant_handled ORDER BY handled_at"
-                ).fetchall()
-            return {
-                str(session_key): (
-                    str(signature),
-                    str(kind) if kind is not None else None,
-                    str(headline) if headline is not None else None,
-                    str(detail) if detail is not None else None,
-                )
-                for session_key, signature, kind, headline, detail in rows
-            }
-        except sqlite3.Error as exc:
-            log.debug("load_assistant_handled failed: %s", exc)
-            return {}
+        rows = self._query(
+            "SELECT session_key, evidence_signature, kind, headline, detail"
+            " FROM assistant_handled ORDER BY handled_at"
+        )
+        return {
+            str(session_key): (
+                str(signature),
+                str(kind) if kind is not None else None,
+                str(headline) if headline is not None else None,
+                str(detail) if detail is not None else None,
+            )
+            for session_key, signature, kind, headline, detail in rows
+        }
 
     def record_assistant_handled(
         self,
@@ -391,96 +370,58 @@ class Db:
         headline: str | None = None,
         detail: str | None = None,
     ) -> None:
-        try:
-            with self._lock, self._conn:
-                self._conn.execute(
-                    "INSERT INTO assistant_handled(session_key, evidence_signature, kind,"
-                    " headline, detail, handled_at) VALUES (?, ?, ?, ?, ?, ?)"
-                    " ON CONFLICT(session_key) DO UPDATE SET"
-                    " evidence_signature=excluded.evidence_signature,"
-                    " kind=excluded.kind, headline=excluded.headline, detail=excluded.detail,"
-                    " handled_at=excluded.handled_at",
-                    (
-                        session_key,
-                        evidence_signature,
-                        kind,
-                        headline,
-                        detail,
-                        datetime.now(UTC).isoformat(),
-                    ),
-                )
-        except sqlite3.Error as exc:
-            log.debug("record_assistant_handled failed: %s", exc)
+        self._write(
+            "INSERT INTO assistant_handled(session_key, evidence_signature, kind,"
+            " headline, detail, handled_at) VALUES (?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(session_key) DO UPDATE SET"
+            " evidence_signature=excluded.evidence_signature,"
+            " kind=excluded.kind, headline=excluded.headline, detail=excluded.detail,"
+            " handled_at=excluded.handled_at",
+            (
+                session_key,
+                evidence_signature,
+                kind,
+                headline,
+                detail,
+                datetime.now(UTC).isoformat(),
+            ),
+        )
 
     def delete_assistant_handled(self, session_key: str) -> None:
-        try:
-            with self._lock, self._conn:
-                self._conn.execute(
-                    "DELETE FROM assistant_handled WHERE session_key = ?", (session_key,)
-                )
-        except sqlite3.Error as exc:
-            log.debug("delete_assistant_handled failed: %s", exc)
+        self._write(
+            "DELETE FROM assistant_handled WHERE session_key = ?", (session_key,)
+        )
 
     # --- web push (issue #7) ------------------------------------------
 
     def load_vapid_keys(self) -> tuple[str, str] | None:
-        try:
-            with self._lock:
-                row = self._conn.execute(
-                    "SELECT public_key, private_pem FROM push_vapid WHERE singleton = 1"
-                ).fetchone()
-        except sqlite3.Error as exc:
-            log.debug("load_vapid_keys failed: %s", exc)
-            return None
-        return (row[0], row[1]) if row else None
+        rows = self._query("SELECT public_key, private_pem FROM push_vapid WHERE singleton = 1")
+        return (rows[0][0], rows[0][1]) if rows else None
 
     def save_vapid_keys(self, public_key: str, private_pem: str) -> None:
-        try:
-            with self._lock, self._conn:
-                self._conn.execute(
-                    "INSERT INTO push_vapid(singleton, public_key, private_pem, created_at)"
-                    " VALUES (1, ?, ?, ?) ON CONFLICT(singleton) DO UPDATE SET"
-                    " public_key=excluded.public_key, private_pem=excluded.private_pem,"
-                    " created_at=excluded.created_at",
-                    (public_key, private_pem, datetime.now(UTC).isoformat()),
-                )
-        except sqlite3.Error as exc:
-            log.debug("save_vapid_keys failed: %s", exc)
+        self._write(
+            "INSERT INTO push_vapid(singleton, public_key, private_pem, created_at)"
+            " VALUES (1, ?, ?, ?) ON CONFLICT(singleton) DO UPDATE SET"
+            " public_key=excluded.public_key, private_pem=excluded.private_pem,"
+            " created_at=excluded.created_at",
+            (public_key, private_pem, datetime.now(UTC).isoformat()),
+        )
 
     def load_push_subscriptions(self) -> list[dict]:
         """Subscriptions in the ``subscription_info`` shape pywebpush expects."""
-        try:
-            with self._lock:
-                rows = self._conn.execute(
-                    "SELECT endpoint, p256dh, auth FROM push_subscriptions"
-                ).fetchall()
-        except sqlite3.Error as exc:
-            log.debug("load_push_subscriptions failed: %s", exc)
-            return []
-        return [
-            {"endpoint": r[0], "keys": {"p256dh": r[1], "auth": r[2]}} for r in rows
-        ]
+        rows = self._query("SELECT endpoint, p256dh, auth FROM push_subscriptions")
+        return [{"endpoint": r[0], "keys": {"p256dh": r[1], "auth": r[2]}} for r in rows]
 
     def add_push_subscription(self, endpoint: str, p256dh: str, auth: str) -> None:
-        try:
-            with self._lock, self._conn:
-                self._conn.execute(
-                    "INSERT INTO push_subscriptions(endpoint, p256dh, auth, created_at)"
-                    " VALUES (?, ?, ?, ?) ON CONFLICT(endpoint) DO UPDATE SET"
-                    " p256dh=excluded.p256dh, auth=excluded.auth",
-                    (endpoint, p256dh, auth, datetime.now(UTC).isoformat()),
-                )
-        except sqlite3.Error as exc:
-            log.debug("add_push_subscription failed: %s", exc)
+        self._write(
+            "INSERT INTO push_subscriptions(endpoint, p256dh, auth, created_at)"
+            " VALUES (?, ?, ?, ?) ON CONFLICT(endpoint) DO UPDATE SET"
+            " p256dh=excluded.p256dh, auth=excluded.auth",
+            (endpoint, p256dh, auth, datetime.now(UTC).isoformat()),
+        )
 
     def delete_push_subscription(self, endpoint: str) -> None:
-        try:
-            with self._lock, self._conn:
-                self._conn.execute(
-                    "DELETE FROM push_subscriptions WHERE endpoint = ?", (endpoint,)
-                )
-        except sqlite3.Error as exc:
-            log.debug("delete_push_subscription failed: %s", exc)
+        self._write("DELETE FROM push_subscriptions WHERE endpoint = ?", (endpoint,))
 
     def close(self) -> None:
         with self._lock:
