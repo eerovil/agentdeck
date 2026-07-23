@@ -60,13 +60,22 @@
 <div class="continue-chat">
   <form hx-post="/sessions/{{ session.key }}/continue"
         hx-target="#continue-session-result" hx-swap="outerHTML"
-        hx-disabled-elt="find button">
+        hx-disabled-elt="find button" data-model-picker>
     <label for="continue-chat-account">Account</label>
-    <select id="continue-chat-account" name="account_key" required>
+    <select id="continue-chat-account" name="account_key" required data-model-picker-account>
       {% for account in continue_chat_accounts %}
-      <option value="{{ account.key }}">{{ account.label }} · {{ account.provider_id | replace('_', ' ') }}</option>
+      <option value="{{ account.key }}" data-provider="{{ account.provider_id }}">{{ account.label }} · {{ account.provider_id | replace('_', ' ') }}</option>
       {% endfor %}
     </select>
+    <div class="model-field" id="continue-chat-model-field" hidden data-model-picker-field>
+      <label for="continue-chat-model">Model</label>
+      <select id="continue-chat-model" name="model" data-model-picker-select>
+        <option value="">Default (account)</option>
+        {% for model in new_chat_models %}
+        <option value="{{ model.value }}" data-provider="{{ model.provider_id }}">{{ model.label }}</option>
+        {% endfor %}
+      </select>
+    </div>
     <button type="submit">Continue in new chat</button>
   </form>
   <div id="continue-session-result" class="inject-result"></div>

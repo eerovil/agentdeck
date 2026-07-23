@@ -447,6 +447,10 @@ async def continue_session(request: Request, session_key: str) -> HTMLResponse:
     if account_key == source_session.account_key:
         raise HTTPException(status_code=422, detail="choose another account")
     account, provider = _account_provider(request, account_key)
+    raw_model = form.get("model")
+    model = raw_model.strip() if isinstance(raw_model, str) else ""
+    if model and not provider.is_valid_model(model):
+        raise HTTPException(status_code=422, detail="invalid model")
     transcript_url = str(
         request.url_for("session_transcript", session_key=source_session.key)
     )
@@ -465,6 +469,7 @@ async def continue_session(request: Request, session_key: str) -> HTMLResponse:
             provider,
             source_session.cwd,
             message,
+            model=model or None,
             client_action_id=client_action_id,
         )
     if not result.accepted:

@@ -1,14 +1,15 @@
-// New-chat model picker: keep the model <select> in sync with the chosen
-// account's provider. Options for other providers are removed (not just
+// New-session model pickers: keep each model <select> in sync with its form's
+// chosen account provider. Options for other providers are removed (not just
 // hidden — mobile Safari ignores `hidden` on <option>), and the whole field
-// disappears when the selected provider offers no models. The picker lives in
-// the create form only; model is fixed at spawn, so there is no in-chat variant.
+// disappears when the selected provider offers no models.
 (function () {
-  function init() {
-    var account = document.getElementById('new-chat-account');
-    var model = document.getElementById('new-chat-model');
-    var field = document.getElementById('new-chat-model-field');
+  function initPicker(root) {
+    if (root.dataset.modelPickerReady) return;
+    var account = root.querySelector('[data-model-picker-account]');
+    var model = root.querySelector('[data-model-picker-select]');
+    var field = root.querySelector('[data-model-picker-field]');
     if (!account || !model || !field) return;
+    root.dataset.modelPickerReady = 'true';
 
     // Snapshot every provider's options once; the live <select> is rebuilt from
     // this on each account change so switching provider can't strand a stale slug.
@@ -53,6 +54,10 @@
 
     account.addEventListener('change', rebuild);
     rebuild();
+  }
+
+  function init() {
+    document.querySelectorAll('[data-model-picker]').forEach(initPicker);
   }
 
   if (document.readyState === 'loading') {
