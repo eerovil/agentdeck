@@ -570,6 +570,7 @@ class AssistantService:
                 self.view = replace(
                     self.view, summary=tracking_summary(len(insights)), insights=insights
                 )
+            self._save_checkpoint()
             self.state.assistant_changed()
             return True
         # A non-question Deckhand card (blocked/finished): dismiss on the evidence
