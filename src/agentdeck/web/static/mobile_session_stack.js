@@ -121,6 +121,55 @@
   detail.addEventListener('pointerup', finishDrag);
   detail.addEventListener('pointercancel', resetDrag);
 
+  // A quick swipe toward earlier messages should not require repeating the
+  // gesture through a long transcript. The finger moves down while the
+  // transcript moves toward its top. Keep the threshold intentionally strict
+  // so ordinary reading, horizontal Back swipes, and slow repositioning retain
+  // their native behavior.
+  var topSwipe = null;
+  var TOP_SWIPE_MIN_DISTANCE_PX = 120;
+  var TOP_SWIPE_MIN_VELOCITY_PX_MS = 0.75;
+  var TOP_SWIPE_VERTICAL_RATIO = 1.5;
+
+  detail.addEventListener('touchstart', function (event) {
+    if (!initialized || !mobile.matches || event.touches.length !== 1 ||
+        body.classList.contains('mobile-list-open') ||
+        event.target.closest('input, textarea, select, button, a, [contenteditable]')) {
+      topSwipe = null;
+      return;
+    }
+    var touch = event.touches[0];
+    topSwipe = {
+      id: touch.identifier,
+      startX: touch.clientX,
+      startY: touch.clientY,
+      startedAt: event.timeStamp,
+    };
+  }, {passive: true});
+
+  detail.addEventListener('touchend', function (event) {
+    if (!topSwipe) return;
+    var touch = Array.from(event.changedTouches).find(function (candidate) {
+      return candidate.identifier === topSwipe.id;
+    });
+    if (!touch) return;
+
+    var dx = Math.abs(touch.clientX - topSwipe.startX);
+    var dy = touch.clientY - topSwipe.startY;
+    var elapsed = Math.max(1, event.timeStamp - topSwipe.startedAt);
+    topSwipe = null;
+    if (detail.scrollTop <= detail.clientHeight ||
+        dy < TOP_SWIPE_MIN_DISTANCE_PX ||
+        dy < dx * TOP_SWIPE_VERTICAL_RATIO ||
+        dy / elapsed < TOP_SWIPE_MIN_VELOCITY_PX_MS) return;
+
+    detail.scrollTo(0, 0);
+  }, {passive: true});
+
+  detail.addEventListener('touchcancel', function () {
+    topSwipe = null;
+  }, {passive: true});
+
   // Keep the chat's usable height equal to the *visual* viewport so the sticky
   // composer — and its Send/Stop buttons — sits above the on-screen keyboard
   // instead of behind it. `dvh` doesn't shrink for the keyboard on iOS, so a
