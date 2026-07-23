@@ -43,6 +43,15 @@ class RestartMarker:
     service: str
     created_at: float
 
+    @property
+    def delivery_id(self) -> str:
+        """Stable at-most-once identity for this marker's continuation turn."""
+        return f"restart-continue:{self.session_id}:{int(self.created_at)}"
+
+    def is_stale(self, now: float) -> bool:
+        """Whether this marker has exceeded the restart continuation window."""
+        return now - self.created_at > MARKER_TTL_S
+
     def to_dict(self) -> dict:
         return {
             "session_id": self.session_id,

@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 
 from .config import AppConfig
 from .models import Account, InjectResult
-from .providers.claude_code.restart import MARKER_TTL_S, RestartMarker, read_markers
+from .providers.claude_code.restart import RestartMarker, read_markers
 from .providers.claude_code.worker import ClaudeWorkerHost, DeliverResult
 from .providers.codex.appserver import CodexAppServer
 from .providers.codex.runtime_client import runtime_socket_path
@@ -146,7 +146,7 @@ class ClaudeWorkerRuntime:
             return
         for path, marker in entries:
             try:
-                if time.time() - marker.created_at > MARKER_TTL_S:
+                if marker.is_stale(time.time()):
                     log.info(
                         "restart-continue marker for session %s is stale; dropping",
                         marker.session_id,
@@ -170,7 +170,7 @@ class ClaudeWorkerRuntime:
             result = await host.deliver(
                 key,
                 marker.prompt,
-                delivery_id=f"restart-continue:{marker.session_id}:{int(marker.created_at)}",
+                delivery_id=marker.delivery_id,
             )
             log.info(
                 "restart-continue: session %s -> %s/%s (%s)",

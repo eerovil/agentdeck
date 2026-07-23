@@ -43,6 +43,14 @@ def test_marker_round_trip(tmp_path):
     assert loaded.service == "agentdeck-staging-codex.service"
 
 
+def test_marker_owns_stable_delivery_identity_and_staleness():
+    marker = _marker(session_id="sid-1", created_at=1_700_000_000.875)
+
+    assert marker.delivery_id == "restart-continue:sid-1:1700000000"
+    assert marker.is_stale(marker.created_at + restart.MARKER_TTL_S) is False
+    assert marker.is_stale(marker.created_at + restart.MARKER_TTL_S + 0.001) is True
+
+
 def test_read_markers_drops_malformed(tmp_path):
     write_marker(tmp_path, _marker())
     bad = restart.markers_dir(tmp_path) / "garbage.json"
@@ -121,13 +129,14 @@ async def test_resume_delivers_to_matching_session_and_clears_marker(tmp_path):
     host.deliver = AsyncMock(return_value=DeliverResult(True, "revived", session_id="sid-1"))
     workers.hosts["main"] = host
 
-    write_marker(tmp_path, _marker(session_id="sid-1", prompt="run pytest"))
+    marker = _marker(session_id="sid-1", prompt="run pytest")
+    write_marker(tmp_path, marker)
     await workers.resume_after_restart()
 
     host.deliver.assert_awaited_once()
     args, kwargs = host.deliver.await_args
     assert args[0] == "issue-1" and args[1] == "run pytest"
-    assert kwargs["delivery_id"].startswith("restart-continue:sid-1:")
+    assert kwargs["delivery_id"] == marker.delivery_id
     assert read_markers(tmp_path) == []  # marker consumed
 
 
