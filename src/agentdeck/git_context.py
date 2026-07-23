@@ -72,6 +72,17 @@ class PullRequestContext:
         """
         return self.status in {"merged", "closed"}
 
+    @property
+    def is_reviewable(self) -> bool:
+        """Open and not a draft — a human could review it now."""
+        return self.is_open and not self.draft
+
+    @property
+    def display_status(self) -> str:
+        """The chip label: an open draft reads ``draft``, otherwise the raw
+        status. (The CSS class stays keyed on the raw ``status``.)"""
+        return "draft" if self.draft and self.is_open else self.status
+
     def as_json(self) -> dict:
         return {
             "repository": self.repository,
@@ -91,6 +102,24 @@ class GitContext:
     branch: str | None
     dirty: bool
     pull_requests: tuple[PullRequestContext, ...] = ()
+
+    @property
+    def reviewable_pull(self) -> PullRequestContext | None:
+        """The first reviewable PR (highest-numbered, by resolver ordering), or None."""
+        return next((pull for pull in self.pull_requests if pull.is_reviewable), None)
+
+    @property
+    def is_shipped(self) -> bool:
+        """Has resolved PRs and every one is terminal. An empty set is NOT
+        shipped — a session with no PRs stays eligible for a finished card."""
+        if not self.pull_requests:
+            return False
+        return all(pull.is_terminal for pull in self.pull_requests)
+
+    @property
+    def has_merged_pr(self) -> bool:
+        """At least one PR actually merged (closed-without-merging does not count)."""
+        return any(pull.is_merged for pull in self.pull_requests)
 
     def as_json(self) -> dict:
         return {

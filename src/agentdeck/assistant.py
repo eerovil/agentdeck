@@ -33,10 +33,8 @@ from .triage import (
     AssistantView,
     DeckhandStatus,
     Verdict,
-    all_pulls_terminal,
     card_priority,
     classification_prompt,
-    has_merged_pr,
     needs_llm,
     parse_verdict,
     resolve_deckhand_status,
@@ -410,7 +408,7 @@ class AssistantService:
             if card is not None:
                 cards.append(card)
                 continue
-            if all_pulls_terminal(context):
+            if context is not None and context.is_shipped:
                 # The agent's PR(s) merged/closed — terminal, nothing to review.
                 continue
             if not needs_llm(session):
@@ -678,7 +676,7 @@ class AssistantService:
                 dismissed_headline=(
                     handled_insight.headline if handled_insight is not None else None
                 ),
-                merged=context is not None and has_merged_pr(context),
+                merged=context is not None and context.has_merged_pr,
                 live_insight=live_by_key.get(key),
             )
             if status is not None:

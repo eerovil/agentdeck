@@ -103,17 +103,6 @@ def _first_line(value: str, limit: int = 140) -> str:
     return line[:limit].rstrip()
 
 
-def _open_pull(context: GitContext | None) -> object | None:
-    if context is None:
-        return None
-    return next(
-        (
-            pull
-            for pull in context.pull_requests
-            if pull.is_open and not pull.draft
-        ),
-        None,
-    )
 
 
 def structured_trigger(
@@ -188,9 +177,9 @@ def structured_trigger(
     #    deterministic and re-evaluated every refresh from live PR status, so a
     #    merged or closed PR simply stops producing a card (no stale attention).
     if not session.thinking:
-        pull = _open_pull(context)
+        pull = context.reviewable_pull if context is not None else None
         if pull is not None:
-            title = getattr(pull, "title", "") or ""
+            title = pull.title or ""
             detail = (
                 f"{title} — ready for your review."
                 if title
@@ -218,29 +207,6 @@ def structured_trigger(
     return None
 
 
-def all_pulls_terminal(context: GitContext | None) -> bool:
-    """True when the session has resolved PRs and every one is merged or closed.
-
-    Such a session's work has shipped — there is nothing left to review, so it
-    must not produce a card: not a structured open-PR card (that only fires for
-    open PRs) and not an LLM "finished" resurrected from a transcript that still
-    says "opened PR #123". A merged PR is done.
-    """
-    if context is None or not context.pull_requests:
-        return False
-    return all(pull.is_terminal for pull in context.pull_requests)
-
-
-def has_merged_pr(context: GitContext | None) -> bool:
-    """True when at least one of the session's PRs actually merged.
-
-    Drives the non-attention ``merged`` pill. A PR *closed without merging* does
-    not count — nothing shipped, so the session falls back to its finished/done
-    status instead.
-    """
-    if context is None:
-        return False
-    return any(pull.is_merged for pull in context.pull_requests)
 
 
 def needs_llm(session: Session) -> bool:

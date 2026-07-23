@@ -443,3 +443,39 @@ def test_terminal_is_not_merely_the_complement_of_open():
     # still open (draft-ness is orthogonal to status).
     assert _pull("closed").is_terminal and not _pull("closed").is_merged
     assert _pull("open", draft=True).is_open
+
+
+def test_pull_is_reviewable_and_display_status():
+    assert _pull("open").is_reviewable is True
+    assert _pull("open", draft=True).is_reviewable is False  # a draft is not reviewable
+    assert _pull("merged").is_reviewable is False
+    # display_status is the chip LABEL, not a boolean: an open draft reads "draft".
+    assert _pull("open").display_status == "open"
+    assert _pull("open", draft=True).display_status == "draft"
+    assert _pull("merged").display_status == "merged"
+    assert _pull("closed").display_status == "closed"
+
+
+def test_reviewable_pull_returns_first_match_or_none():
+    from agentdeck.git_context import GitContext
+
+    ctx = GitContext("r", "b", False, (_pull("merged"), _pull("open"), _pull("open", draft=True)))
+    assert ctx.reviewable_pull is ctx.pull_requests[1]  # first reviewable in order
+    assert GitContext("r", "b", False, (_pull("merged"), _pull("closed"))).reviewable_pull is None
+    assert GitContext("r", "b", False, ()).reviewable_pull is None
+
+
+def test_is_shipped_requires_prs_and_all_terminal():
+    from agentdeck.git_context import GitContext
+
+    assert GitContext("r", "b", False, (_pull("merged"), _pull("closed"))).is_shipped is True
+    assert GitContext("r", "b", False, (_pull("merged"), _pull("open"))).is_shipped is False
+    assert GitContext("r", "b", False, ()).is_shipped is False  # empty is NOT shipped
+
+
+def test_has_merged_pr_only_counts_actual_merges():
+    from agentdeck.git_context import GitContext
+
+    assert GitContext("r", "b", False, (_pull("merged"), _pull("open"))).has_merged_pr is True
+    assert GitContext("r", "b", False, (_pull("closed"), _pull("open"))).has_merged_pr is False
+    assert GitContext("r", "b", False, ()).has_merged_pr is False
