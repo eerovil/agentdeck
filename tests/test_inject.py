@@ -563,6 +563,41 @@ def test_transcript_observation_uses_provider_timestamp_precision():
     assert service.observe_transcript("codex:test:sid", [provider_event]) == {11: item}
 
 
+def test_transcript_observation_accepts_timestamp_less_queued_event_after_cursor():
+    queued_at = datetime.now(UTC)
+    item = QueuedMessage(
+        1,
+        "sent while busy",
+        state="accepted",
+        created_at=queued_at,
+        after_seq=10,
+    )
+    service = InjectionService(InjectConfig(enabled=True))
+    service._items["claude_code:test:sid"] = [item]
+    old_event = TranscriptEvent(
+        seq=10,
+        role="user",
+        text="sent while busy",
+        queued=True,
+    )
+    durable_event = TranscriptEvent(
+        seq=11,
+        role="user",
+        text="sent while busy",
+        queued=True,
+    )
+
+    assert service.observe_transcript("claude_code:test:sid", [old_event]) == {}
+    assert service.observe_transcript("claude_code:test:sid", [durable_event]) == {
+        11: item
+    }
+    assert item.state == "observed"
+    assert item.observed_at is None
+    assert service.observe_transcript("claude_code:test:sid", [durable_event]) == {
+        11: item
+    }
+
+
 async def test_delivery_without_transcript_reaches_terminal_state(tmp_path):
     class Provider:
         async def inject(self, account, session, message, *, timeout_s):

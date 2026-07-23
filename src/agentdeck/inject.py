@@ -127,18 +127,19 @@ class InjectionService:
             for item in items
             if item.state == "observed"
             and item.observed_seq is not None
-            and item.observed_at is not None
         }
         links: dict[int, QueuedMessage] = {}
         changed = False
         for event in events:
-            if event.role != "user" or event.ts is None:
+            if event.role != "user":
                 continue
-            event_ts = (
-                event.ts
-                if event.ts.tzinfo is not None
-                else event.ts.replace(tzinfo=UTC)
-            )
+            event_ts = event.ts
+            if event_ts is not None and event_ts.tzinfo is None:
+                event_ts = event_ts.replace(tzinfo=UTC)
+            # Claude queue-operation events are durable transcript evidence but
+            # carry no timestamp. Their pre-send cursor is the temporal guard.
+            if event_ts is None and not event.queued:
+                continue
             identity = (event.seq, event_ts, event.text, event.image_media_types)
             already_observed = observed_by_identity.get(identity)
             if already_observed is not None:
@@ -152,9 +153,17 @@ class InjectionService:
                     and item.text == event.text
                     and item.image_media_types == event.image_media_types
                     and (item.after_seq is None or event.seq > item.after_seq)
-                    and event_ts
-                    >= item.created_at.replace(
-                        microsecond=(item.created_at.microsecond // 1000) * 1000
+                    and (
+                        event_ts is not None
+                        and event_ts
+                        >= item.created_at.replace(
+                            microsecond=(item.created_at.microsecond // 1000) * 1000
+                        )
+                        or (
+                            event_ts is None
+                            and event.queued
+                            and item.after_seq is not None
+                        )
                     )
                 ),
                 None,
