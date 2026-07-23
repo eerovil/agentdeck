@@ -530,6 +530,38 @@ def test_codex_compacts_subagent_notifications_without_clobbering_last_prompt(tm
     assert update.text == "Read-only audit complete.\n\nFound one parser gap."
 
 
+def test_codex_compacts_turn_aborted_without_clobbering_last_prompt(tmp_path):
+    path = tmp_path / "rollout.jsonl"
+    detail = (
+        "The user interrupted the previous turn on purpose. Any running commands "
+        "may have partially executed."
+    )
+    aborted = f"<turn_aborted>\n{detail}\n</turn_aborted>"
+    path.write_text(
+        "".join(
+            json.dumps(item) + "\n"
+            for item in [
+                _message("user", "Review the UX"),
+                _message("user", aborted),
+            ]
+        )
+    )
+
+    meta = transcripts.transcript_meta(path)
+    events = transcripts.read_events(path).events
+
+    assert meta.last_prompt == "Review the UX"
+    assert len(events) == 2
+    update = events[1]
+    assert update.role == "system"
+    assert update.text is None
+    assert update.tool_name == "turn_aborted"
+    assert update.tool_display_name == "Turn aborted"
+    assert update.tool_summary == "Interrupted by user"
+    assert update.tool_detail == detail
+    assert update.turn_continues is False
+
+
 def test_codex_labels_wrapped_subagent_operations(tmp_path):
     path = tmp_path / "rollout.jsonl"
     lines = [
