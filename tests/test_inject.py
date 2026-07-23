@@ -598,6 +598,36 @@ def test_transcript_observation_accepts_timestamp_less_queued_event_after_cursor
     }
 
 
+def test_claude_queued_command_attachment_reconciles_pending_message():
+    from agentdeck.providers.claude_code.transcripts import _event_from_line
+
+    text = "Add rule to translation fan out at 85% usage"
+    item = QueuedMessage(
+        1,
+        text,
+        state="accepted",
+        created_at=datetime(2026, 7, 23, 18, 32, 9, 965614, tzinfo=UTC),
+        after_seq=10,
+    )
+    raw_event = {
+        "type": "attachment",
+        "attachment": {
+            "type": "queued_command",
+            "prompt": [{"type": "text", "text": text}],
+            "commandMode": "prompt",
+            "timestamp": "2026-07-23T18:32:10.003Z",
+        },
+        "timestamp": "2026-07-23T18:32:10.003Z",
+    }
+    event = _event_from_line(11, raw_event)
+
+    assert event is not None
+    service = InjectionService(InjectConfig(enabled=True))
+    service._items["claude_code:test:sid"] = [item]
+    assert service.observe_transcript("claude_code:test:sid", [event]) == {11: item}
+    assert item.state == "observed"
+
+
 async def test_delivery_without_transcript_reaches_terminal_state(tmp_path):
     class Provider:
         async def inject(self, account, session, message, *, timeout_s):

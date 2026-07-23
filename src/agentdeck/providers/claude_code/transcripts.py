@@ -295,6 +295,26 @@ def _usage_totals(usage: object) -> TokenTotals | None:
 
 def _event_from_line(seq: int, data: dict) -> TranscriptEvent | None:
     ltype = data.get("type")
+    if ltype == "attachment":
+        attachment = data.get("attachment")
+        if not isinstance(attachment, dict) or attachment.get("type") != "queued_command":
+            return None
+        text, _, _, _, _, image_media_types = _text_from_content(
+            attachment.get("prompt")
+        )
+        if text is None and not image_media_types:
+            return None
+        return TranscriptEvent(
+            seq=seq,
+            role="user",
+            text=text,
+            queued=True,
+            ts=(
+                _parse_ts(data.get("timestamp"))
+                or _parse_ts(attachment.get("timestamp"))
+            ),
+            image_media_types=image_media_types,
+        )
     if ltype == "queue-operation":
         # A message typed while the agent was busy. Only the "enqueue" carries
         # the text; render it as a user turn (deduped in read_events against the
