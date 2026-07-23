@@ -31,6 +31,12 @@ from typing import Any
 from ...images import SUPPORTED_IMAGE_MEDIA_TYPES
 from ...models import Account
 from . import registry
+from .delivery import (
+    DELIVERY_RECEIPT_CAP,
+    DELIVERY_RECEIPT_TTL_S,
+    DeliverResult,
+    DeliveryReceipts,
+)
 
 log = logging.getLogger(__name__)
 
@@ -45,13 +51,6 @@ INIT_TIMEOUT_S = 30.0
 # trusted — a stalled collector must not permanently block (or greenlight) work.
 USAGE_MAX_AGE_S = 1800.0
 
-# Delivery receipts are retained by age (not a fixed FIFO count) so a delivery ID
-# retried after many intervening deliveries still finds its record and dedups,
-# instead of silently re-executing. The high count cap is only a runaway backstop.
-DELIVERY_RECEIPT_TTL_S = 24 * 3600.0
-DELIVERY_RECEIPT_CAP = 4096
-
-
 class WorkerError(RuntimeError):
     """A Claude worker process could not complete a request.
 
@@ -62,14 +61,6 @@ class WorkerError(RuntimeError):
     def __init__(self, *args: object, write_started: bool = False) -> None:
         super().__init__(*args)
         self.write_started = write_started
-
-
-@dataclass
-class DeliverResult:
-    accepted: bool
-    action: str  # spawned/revived/steered/queued/parked/released/stopped/rejected
-    reason: str | None = None
-    session_id: str | None = None
 
 
 @dataclass
@@ -86,6 +77,13 @@ class WorkerRecord:
     # revive so a follow-up can't silently change a chat's policy.
     permission_mode: str | None = None
     deliveries: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    @property
+    def receipts(self) -> DeliveryReceipts:
+        """At-most-once fence over this record's durable ``deliveries`` dict. A
+        property (not a field) so it stays out of ``vars()`` and the on-disk
+        state shape is unchanged."""
+        return DeliveryReceipts(self.deliveries)
 
 
 @dataclass
