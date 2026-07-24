@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from .deps import (
@@ -126,6 +127,49 @@ async def dashboard(request: Request) -> HTMLResponse:
 
 
 @router.get(
+    "/sessions/{session_key}/transcript.json",
+    response_class=JSONResponse,
+    dependencies=[Depends(require_access)],
+)
+async def session_transcript(request: Request, session_key: str) -> JSONResponse:
+    """Expose the complete normalized transcript for agent-to-agent handoffs."""
+    account, session, provider = resolve_session(request, session_key)
+    from ..models import Capability
+
+    if Capability.TRANSCRIPT not in session.capabilities:
+        raise HTTPException(status_code=404, detail="transcript unavailable")
+    events = await provider.read_transcript(account, session)
+    encoded_events = []
+    for event in events:
+        encoded = jsonable_encoder(event)
+        encoded["image_urls"] = [
+            str(
+                request.url_for(
+                    "transcript_image",
+                    session_key=session.key,
+                    seq=event.seq,
+                    image_index=index,
+                )
+            )
+            for index in range(len(event.image_media_types))
+        ]
+        encoded_events.append(encoded)
+    response = JSONResponse(
+        {
+            "session_key": session.key,
+            "account_key": session.account_key,
+            "working_directory": str(session.cwd) if session.cwd else None,
+            "session_url": str(
+                request.url_for("session_detail", session_key=session.key)
+            ),
+            "events": encoded_events,
+        }
+    )
+    response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
+@router.get(
     "/sessions/{session_key}", response_class=HTMLResponse, dependencies=[Depends(require_access)]
 )
 async def session_detail(request: Request, session_key: str) -> HTMLResponse:
@@ -181,6 +225,12 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
     git_context = await assistant.ensure_session_context(
         session, transcript_context=_pr_reference_text(detail.events)
     )
+    controls_context = _session_list_controls_context(request, accounts, state)
+    continue_chat_accounts = [
+        candidate
+        for candidate in controls_context["new_chat_accounts"]
+        if candidate.key != session.account_key
+    ]
     resp = templates.TemplateResponse(
         request,
         "session.html",
@@ -217,12 +267,19 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
             "assistant_handled": assistant.handled_insight(session.key),
             "session_handled": assistant.is_handled(session.key),
             "session_waiting": session.is_waiting,
+            "continue_chat_accounts": (
+                continue_chat_accounts
+                if controls_context["new_chat_enabled"]
+                and Capability.TRANSCRIPT in session.capabilities
+                and session.cwd is not None
+                else []
+            ),
             "git_context": git_context,
             # topbar usage bars, rendered server-side so they paint immediately
             # (the per-session SSE stream then keeps them live over one socket).
             "rows": _usage_rows(accounts, state),
             "host": state.host_stats,
-            **_session_list_controls_context(request, accounts, state),
+            **controls_context,
         },
     )
     resp.headers["Cache-Control"] = "no-cache"

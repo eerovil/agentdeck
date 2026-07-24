@@ -383,6 +383,26 @@ async def test_checkpoint_restores_view_without_reclassifying(tmp_path):
     reloaded_runner.assert_not_awaited()  # cached verdict survived the restart
 
 
+async def test_waiting_dismissal_updates_checkpoint_before_restart(tmp_path):
+    path = tmp_path / "agentdeck.db"
+    session = _finished(tmp_path, question="Ship it?")
+    state = AppState(db=Db(path))
+    state.update_session(session)
+    first = _service(tmp_path, AsyncMock(), state=state)
+    await first.refresh()
+    assert len(first.view.insights) == 1
+
+    assert first.handle(session.key) is True
+    assert first.view.insights == ()
+
+    state2 = AppState(db=Db(path))
+    state2.update_session(session)
+    second = _service(tmp_path, AsyncMock(), state=state2)
+
+    assert second.view.insights == ()
+    assert second.is_handled(session.key)
+
+
 def test_dedupe_and_order_collapses_duplicates_and_sinks_finished():
     cards = [
         AssistantInsight("a", "finished", "PR #255 ready for review", "d"),

@@ -3056,6 +3056,93 @@ async def test_mobile_chat_layers_over_live_list_and_back_and_swipe_are_instant(
     }
 
 
+async def test_mobile_fast_swipe_toward_earlier_messages_jumps_to_top(tmp_path):
+    app = _app_with_state(tmp_path, with_transcript=True)
+    async with _client(app) as client:
+        detail = await client.get("/sessions/claude_code:test:sid1")
+
+    static_dir = Path(__file__).parents[1] / "src/agentdeck/web/static"
+    stylesheet = (static_dir / "app.css").read_text()
+    stack_script = (static_dir / "mobile_session_stack.js").read_text()
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        context = await browser.new_context(
+            viewport={"width": 320, "height": 800},
+            has_touch=True,
+            service_workers="block",
+        )
+        page = await context.new_page()
+
+        async def serve(route, request):
+            path = request.url.split("?", 1)[0].removeprefix("http://agentdeck.test")
+            if path == "/sessions/claude_code:test:sid1":
+                await route.fulfill(status=200, content_type="text/html", body=detail.text)
+            elif path == "/static/mobile_session_stack.js":
+                await route.fulfill(
+                    status=200, content_type="text/javascript", body=stack_script
+                )
+            elif path == "/static/app.css":
+                await route.fulfill(status=200, content_type="text/css", body=stylesheet)
+            else:
+                await route.fulfill(status=204, body="")
+
+        await page.route("http://agentdeck.test/**", serve)
+        await page.goto("http://agentdeck.test/sessions/claude_code:test:sid1")
+        await page.wait_for_function(
+            "document.body.classList.contains('mobile-session-stack-ready')"
+        )
+        result = await page.evaluate(
+            """async () => {
+              const detail = document.querySelector('.session-detail');
+              const transcript = document.querySelector('.transcript');
+              const frame = () => new Promise(requestAnimationFrame);
+              const settle = async () => { await frame(); await frame(); };
+              const fireTouch = (type, x, y, identifier) => {
+                const touch = new Touch({
+                  identifier, target: detail,
+                  clientX: x, clientY: y, screenX: x, screenY: y,
+                  pageX: x, pageY: y,
+                });
+                const active = type === 'touchend' ? [] : [touch];
+                detail.dispatchEvent(new TouchEvent(type, {
+                  bubbles: true, cancelable: true,
+                  touches: active, targetTouches: active, changedTouches: [touch],
+                }));
+              };
+              const swipe = async (from, to, delay, identifier) => {
+                fireTouch('touchstart', from[0], from[1], identifier);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                fireTouch('touchend', to[0], to[1], identifier);
+                await settle();
+                return detail.scrollTop;
+              };
+
+              transcript.insertAdjacentHTML(
+                'afterbegin',
+                Array.from({length: 50}, (_, index) =>
+                  `<div class="ev" style="min-height:80px">older ${index}</div>`
+                ).join('')
+              );
+              detail.scrollTo(0, detail.scrollHeight);
+              await settle();
+              const initial = detail.scrollTop;
+              const opposite = await swipe([160, 330], [160, 170], 20, 1);
+              const horizontal = await swipe([40, 200], [220, 210], 20, 2);
+              const slow = await swipe([160, 170], [160, 330], 320, 3);
+              const fast = await swipe([160, 170], [160, 330], 20, 4);
+              return {initial, opposite, horizontal, slow, fast};
+            }"""
+        )
+        await browser.close()
+
+    assert result["initial"] > 1000
+    assert result["opposite"] == result["initial"]
+    assert result["horizontal"] == result["initial"]
+    assert result["slow"] == result["initial"]
+    assert result["fast"] == 0
+
+
 async def test_subagent_count_renders_on_card_and_detail_header(tmp_path):
     app = _app_with_state(tmp_path, with_transcript=True)
     session = app.state.app_state.sessions["claude_code:test:sid1"]
@@ -3949,19 +4036,32 @@ async def test_model_picker_filters_options_by_account_provider(tmp_path):
     css = (static_dir / "app.css").read_text()
     picker = (static_dir / "model_picker.js").read_text()
     html = f"""<!doctype html><html><head><style>{css}</style></head>
-      <body><div class="new-chat" open><form>
-        <select id="new-chat-account" name="account_key">
+      <body><div class="new-chat" open><form data-model-picker>
+        <select id="new-chat-account" name="account_key" data-model-picker-account>
           <option value="codex:a" data-provider="codex">Codex A</option>
           <option value="claude:b" data-provider="claude_code">Claude B</option>
         </select>
-        <div class="model-field" id="new-chat-model-field" hidden>
+        <div class="model-field" id="new-chat-model-field" hidden data-model-picker-field>
           <label for="new-chat-model">Model</label>
-          <select id="new-chat-model" name="model">
+          <select id="new-chat-model" name="model" data-model-picker-select>
             <option value="">Default (account)</option>
             <option value="gpt-5.6-luna" data-provider="codex">Luna</option>
             <option value="gpt-5.6-sol" data-provider="codex">Sol</option>
             <option value="opus" data-provider="claude_code">Opus 4.8</option>
             <option value="haiku" data-provider="claude_code">Haiku</option>
+          </select>
+        </div>
+      </form></div>
+      <div class="continue-chat"><form data-model-picker>
+        <select id="continue-chat-account" data-model-picker-account>
+          <option value="claude:b" data-provider="claude_code">Claude B</option>
+          <option value="codex:a" data-provider="codex">Codex A</option>
+        </select>
+        <div id="continue-chat-model-field" hidden data-model-picker-field>
+          <select id="continue-chat-model" data-model-picker-select>
+            <option value="">Default (account)</option>
+            <option value="gpt-5.6-luna" data-provider="codex">Luna</option>
+            <option value="opus" data-provider="claude_code">Opus 4.8</option>
           </select>
         </div>
       </form></div></body></html>"""
@@ -4004,4 +4104,13 @@ async def test_model_picker_filters_options_by_account_provider(tmp_path):
         await page.select_option("#new-chat-account", "codex:a")
         desktop = await options(page)
         assert desktop["values"] == ["", "gpt-5.6-luna", "gpt-5.6-sol"]
+
+        # A second continuation form is initialized independently.
+        assert await page.locator("#continue-chat-model").evaluate(
+            "select => Array.from(select.options).map(option => option.value)"
+        ) == ["", "opus"]
+        await page.select_option("#continue-chat-account", "codex:a")
+        assert await page.locator("#continue-chat-model").evaluate(
+            "select => Array.from(select.options).map(option => option.value)"
+        ) == ["", "gpt-5.6-luna"]
         await browser.close()
