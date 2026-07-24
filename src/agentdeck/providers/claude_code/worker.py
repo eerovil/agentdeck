@@ -19,6 +19,7 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import signal
 import time
 import uuid
@@ -48,6 +49,9 @@ INIT_TIMEOUT_S = 30.0
 # Published usage snapshots older than this are treated as unknown rather than
 # trusted — a stalled collector must not permanently block (or greenlight) work.
 USAGE_MAX_AGE_S = 1800.0
+
+_TASK_ID_RE = re.compile(r"<task-id>([^<]+)</task-id>")
+_TASK_STATUS_RE = re.compile(r"<status>([^<]+)</status>")
 
 
 class WorkerError(RuntimeError):
@@ -101,6 +105,56 @@ class _LiveWorker:
     # interaction id the web layer answers against. Only one is open at a time —
     # the turn is paused until we write the matching control_response.
     pending_interaction: dict[str, Any] | None = None
+    # Claude-native async Agent tasks outlive the outer turn's `result` event.
+    # Keep their ephemeral lifecycle here so deploy safety reflects effective
+    # activity rather than only the top-level turn.
+    background_agents: set[str] = field(default_factory=set)
+    transcript_path: Path | None = None
+    transcript_offset: int = 0
+
+
+def _event_text(event: dict[str, Any]) -> str | None:
+    """Extract task-notification text from Claude's stream/transcript shapes."""
+    content = event.get("content")
+    message = event.get("message")
+    if isinstance(message, dict):
+        content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        texts = [
+            block.get("text")
+            for block in content
+            if isinstance(block, dict) and isinstance(block.get("text"), str)
+        ]
+        return "\n".join(texts) if texts else None
+    return None
+
+
+def _update_background_agents(live: _LiveWorker, event: dict[str, Any]) -> None:
+    """Apply Claude-native async Agent launch, stop, and resume transitions."""
+    tool_result = event.get("toolUseResult", event.get("tool_use_result"))
+    if isinstance(tool_result, dict):
+        agent_id = tool_result.get("agentId", tool_result.get("agent_id"))
+        if tool_result.get("status") == "async_launched" and isinstance(agent_id, str):
+            live.background_agents.add(agent_id)
+        resumed_id = tool_result.get(
+            "resumedAgentId", tool_result.get("resumed_agent_id")
+        )
+        if isinstance(resumed_id, str):
+            live.background_agents.add(resumed_id)
+
+    text = _event_text(event)
+    if not text or "<task-notification>" not in text:
+        return
+    task_ids = _TASK_ID_RE.findall(text)
+    status = _TASK_STATUS_RE.search(text)
+    # The notification itself means the Agent run stopped; the raw status is a
+    # reason, and Claude may add new reason spellings in future versions.
+    if status is None:
+        return
+    for task_id in task_ids:
+        live.background_agents.discard(task_id.strip())
 
 
 def _preview_tool_input(tool_input: object) -> str | None:
@@ -396,7 +450,11 @@ class ClaudeWorkerHost:
         for key, rec in self._records.items():
             live = self._live.get(key)
             alive = live is not None and live.process.returncode is None
+            if alive:
+                self._sync_background_agents(rec, live)
             turn_active = bool(alive and live.turn_active)
+            background_agent_count = len(live.background_agents) if alive else 0
+            effective_activity = bool(turn_active or background_agent_count)
             pending = live.pending_interaction if alive else None
             stalled = (
                 turn_active
@@ -412,6 +470,8 @@ class ClaudeWorkerHost:
                 "cwd": rec.cwd,
                 "live": alive,
                 "turn_active": turn_active,
+                "background_agent_count": background_agent_count,
+                "effective_activity": effective_activity,
                 "stalled": stalled,
                 "last_delivery_at": rec.last_delivery_at,
                 "last_result_at": rec.last_result_at,
@@ -428,6 +488,46 @@ class ClaudeWorkerHost:
             "usage_pct": self._usage_reader(),
             "over_budget": self._over_budget(),
         }
+
+    def _sync_background_agents(self, rec: WorkerRecord, live: _LiveWorker) -> None:
+        """Replay newly appended parent-transcript events into agent lifecycle state."""
+        session_id = rec.session_id
+        if not session_id:
+            return
+        path = live.transcript_path
+        if path is None or not path.exists():
+            matches = list(
+                (self.account.root / "projects").glob(f"*/{session_id}.jsonl")
+            )
+            if not matches:
+                return
+            path = max(matches, key=lambda candidate: candidate.stat().st_mtime)
+            live.transcript_path = path
+            live.transcript_offset = 0
+            live.background_agents.clear()
+        try:
+            size = path.stat().st_size
+            if size < live.transcript_offset:
+                live.transcript_offset = 0
+                live.background_agents.clear()
+            with path.open("rb") as transcript:
+                transcript.seek(live.transcript_offset)
+                appended = transcript.read()
+        except OSError:
+            log.debug("failed to read Claude transcript lifecycle events", exc_info=True)
+            return
+        final_newline = appended.rfind(b"\n")
+        if final_newline < 0:
+            return
+        complete = appended[: final_newline + 1]
+        live.transcript_offset += len(complete)
+        for raw_line in complete.splitlines():
+            try:
+                event = json.loads(raw_line)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            if isinstance(event, dict):
+                _update_background_agents(live, event)
 
     async def deliver(
         self,

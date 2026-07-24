@@ -647,6 +647,68 @@ async def test_result_event_clears_pending_interaction(tmp_path):
     await host.stop()
 
 
+async def test_background_agent_keeps_worker_effectively_active_after_result(tmp_path):
+    host, spawned = _host(tmp_path)
+    await host.deliver("issue-1", "start", cwd=str(tmp_path))
+    proc = spawned[0]["process"]
+    transcript = tmp_path / "cfg" / "projects" / "project" / "sid-auto-1.jsonl"
+    transcript.parent.mkdir(parents=True)
+
+    def append_event(event: dict) -> None:
+        with transcript.open("a") as stream:
+            stream.write(json.dumps(event) + "\n")
+
+    for agent_id in ("agent-1", "agent-2"):
+        append_event(
+            {
+                "type": "user",
+                "toolUseResult": {
+                    "isAsync": True,
+                    "status": "async_launched",
+                    "agentId": agent_id,
+                },
+            }
+        )
+    proc.stdout.emit({"type": "result", "subtype": "success"})
+    await _settle()
+
+    worker = host.snapshot()["workers"]["issue-1"]
+    assert worker["turn_active"] is False
+    assert worker["background_agent_count"] == 2
+    assert worker["effective_activity"] is True
+
+    append_event(
+        {
+            "type": "queue-operation",
+            "operation": "enqueue",
+            "content": (
+                "<task-notification>\n"
+                "<task-id>agent-1</task-id>\n"
+                "<task-id>agent-2</task-id>\n"
+                "<status>stopped</status>\n"
+                "</task-notification>"
+            ),
+        }
+    )
+    worker = host.snapshot()["workers"]["issue-1"]
+    assert worker["background_agent_count"] == 0
+    assert worker["effective_activity"] is False
+
+    append_event(
+        {
+            "type": "user",
+            "toolUseResult": {
+                "success": True,
+                "resumedAgentId": "agent-1",
+            },
+        }
+    )
+    worker = host.snapshot()["workers"]["issue-1"]
+    assert worker["background_agent_count"] == 1
+    assert worker["effective_activity"] is True
+    await host.stop()
+
+
 async def test_worker_waiting_on_interaction_is_not_stalled(tmp_path):
     host, spawned = _host(tmp_path, stall_after_s=100.0)
     await host.deliver("issue-1", "start", cwd=str(tmp_path))

@@ -103,8 +103,9 @@ async def test_runtime_activity_reports_codex_and_claude_active_turns():
     claude = MagicMock()
     claude.snapshot.return_value = {
         "workers": {
-            "busy": {"turn_active": True},
-            "idle": {"turn_active": False},
+            "busy": {"turn_active": True, "effective_activity": True},
+            "background": {"turn_active": False, "effective_activity": True},
+            "idle": {"turn_active": False, "effective_activity": False},
         }
     }
     app.state.claude_workers.hosts["main"] = claude
@@ -116,7 +117,7 @@ async def test_runtime_activity_reports_codex_and_claude_active_turns():
 
     assert response.json() == {
         "active": True,
-        "active_turns": {"codex": 1, "claude": 1},
+        "active_turns": {"codex": 1, "claude": 2},
     }
 
 

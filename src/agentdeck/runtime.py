@@ -122,9 +122,9 @@ class ClaudeWorkerRuntime:
         return host
 
     def active_turn_count(self) -> int:
-        """Number of deck-owned Claude workers currently executing a turn."""
+        """Number of workers with a turn or Claude-native background agent active."""
         return sum(
-            bool(worker.get("turn_active"))
+            bool(worker.get("effective_activity", worker.get("turn_active")))
             for host in self.hosts.values()
             for worker in host.snapshot().get("workers", {}).values()
         )
