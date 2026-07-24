@@ -72,6 +72,11 @@ async def test_title_generation_uses_conversation_and_persists_semantic_title(
     assert record.title == "Fix refund errors"
     assert state.sessions[session.key].title == "store#42 · Native refund issue (review)"
     assert state.sessions[session.key].display_title == "store#42 · Fix refund errors (review)"
+    assert state.sessions[session.key].project_name == "store"
+    assert (
+        state.sessions[session.key].generated_title_subject
+        == "#42 · Fix refund errors (review)"
+    )
     prompt = runner.await_args.args[2]
     assert "Investigate the broken refund flow" in prompt
     assert "The fix is ready." in prompt
@@ -94,7 +99,9 @@ async def test_title_refresh_waits_for_changed_chat_to_be_idle(tmp_path, monkeyp
         ]
     )
     state = AppState()
-    session = _session(tmp_path, issue_url=None, title="Raw prompt")
+    project = tmp_path / "agentdeck"
+    (project / ".git").mkdir(parents=True)
+    session = _session(project, issue_url=None, title="Raw prompt")
     state.update_session(session)
     service = TitleService(_config(tmp_path), state, runner=runner)
 
@@ -104,7 +111,7 @@ async def test_title_refresh_waits_for_changed_chat_to_be_idle(tmp_path, monkeyp
 
     state.update_session(
         _session(
-            tmp_path,
+            project,
             issue_url=None,
             title="Raw prompt",
             last_prompt="Deploy it now",
@@ -116,7 +123,7 @@ async def test_title_refresh_waits_for_changed_chat_to_be_idle(tmp_path, monkeyp
 
     state.update_session(
         _session(
-            tmp_path,
+            project,
             issue_url=None,
             title="Raw prompt",
             last_prompt="Deploy it now",
@@ -126,7 +133,62 @@ async def test_title_refresh_waits_for_changed_chat_to_be_idle(tmp_path, monkeyp
     await service.refresh()
     assert runner.await_count == 2
     assert state.sessions[session.key].title == "Raw prompt"
-    assert state.sessions[session.key].display_title == "Deploy the refund fix"
+    assert state.sessions[session.key].display_title == "agentdeck · Deploy the refund fix"
+
+
+async def test_generated_title_uses_worktree_project_and_strips_model_prefix(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setitem(PROVIDERS, "codex", _TranscriptProvider([]))
+    runner = AsyncMock(
+        return_value={"titles": [{"id": 0, "title": "agentdeck · Fix session titles"}]}
+    )
+    state = AppState()
+    session = _session(
+        tmp_path / "agentdeck" / ".worktrees" / "issue-159" / "src" / "agentdeck",
+        issue_url=None,
+        title="Requested changes",
+    )
+    state.update_session(session)
+
+    await TitleService(_config(tmp_path), state, runner=runner).refresh()
+
+    assert state.generated_titles[session.key].title == "Fix session titles"
+    assert state.sessions[session.key].display_title == "agentdeck · Fix session titles"
+    assert state.sessions[session.key].generated_title_subject == "Fix session titles"
+
+
+async def test_generated_title_uses_repository_root_for_nested_cwd(tmp_path, monkeypatch):
+    monkeypatch.setitem(PROVIDERS, "codex", _TranscriptProvider([]))
+    project = tmp_path / "agentdeck"
+    (project / ".git").mkdir(parents=True)
+    state = AppState()
+    session = _session(project / "src" / "agentdeck", issue_url=None)
+    state.update_session(session)
+
+    await TitleService(
+        _config(tmp_path),
+        state,
+        runner=AsyncMock(
+            return_value={"titles": [{"id": 0, "title": "Fix session titles"}]}
+        ),
+    ).refresh()
+
+    assert state.sessions[session.key].display_title == "agentdeck · Fix session titles"
+
+
+async def test_title_generation_waits_until_project_identity_is_available(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setitem(PROVIDERS, "codex", _TranscriptProvider([]))
+    runner = AsyncMock()
+    state = AppState()
+    session = _session(tmp_path, issue_url=None, cwd=None)
+    state.update_session(session)
+
+    assert await TitleService(_config(tmp_path), state, runner=runner).refresh() == 0
+    runner.assert_not_awaited()
+    assert session.key not in state.generated_titles
 
 
 async def test_stale_title_result_is_discarded_when_a_new_prompt_arrives(

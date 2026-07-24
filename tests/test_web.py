@@ -1075,6 +1075,64 @@ async def test_long_card_title_gets_full_width_three_line_layout(tmp_path):
     assert metrics["scrollWidth"] <= metrics["viewportWidth"]
 
 
+async def test_generated_title_starts_with_project_in_existing_card_header(tmp_path):
+    app = _app_with_state(tmp_path)
+    session = Session(
+        key="codex:test:generated",
+        account_key="codex:test",
+        session_id="generated",
+        status=SessionStatus.LIVE,
+        cwd=tmp_path / "agentdeck" / ".worktrees" / "issue-159",
+        title="Requested changes",
+        issue_url="https://github.com/eerovil/agentdeck/issues/159",
+        deep_link="https://chatgpt.com/codex/session",
+        deep_link_label="open in Codex",
+        last_prompt="Implement the requested title change",
+        subagent_count=2,
+    )
+    app.state.app_state.update_session(session)
+    app.state.app_state.set_generated_title(session.key, "Prefix generated titles", "sig")
+
+    async with _client(app) as client:
+        response = await client.get("/")
+
+    card = _session_card(response.text, session.key)
+    assert card.index('class="session-project"') < card.index('class="card-title"')
+    assert '>agentdeck</span>' in card
+    assert 'title="agentdeck#159 · Prefix generated titles"' in card
+    assert '>#159 · Prefix generated titles</span>' in card
+
+    static_dir = Path(__file__).parents[1] / "src/agentdeck/web/static"
+    css = (static_dir / "app.css").read_text()
+    html = response.text.replace("</head>", f"<style>{css}</style></head>")
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        page = await browser.new_page(viewport={"width": 320, "height": 800})
+        await page.set_content(html)
+        metrics = await page.locator(
+            '.session[data-session-key="codex:test:generated"]'
+        ).evaluate(
+            """card => {
+              const project = card.querySelector('.session-project');
+              const title = card.querySelector('.card-title');
+              return {
+                projectText: project.textContent.trim(),
+                projectWidth: project.getBoundingClientRect().width,
+                projectBottom: project.getBoundingClientRect().bottom,
+                titleTop: title.getBoundingClientRect().top,
+                scrollWidth: document.documentElement.scrollWidth,
+                viewportWidth: document.documentElement.clientWidth,
+              };
+            }"""
+        )
+        await browser.close()
+
+    assert metrics["projectText"] == "agentdeck"
+    assert metrics["projectWidth"] >= 72
+    assert metrics["projectBottom"] <= metrics["titleTop"]
+    assert metrics["scrollWidth"] <= metrics["viewportWidth"]
+
+
 async def test_pwa_routes(tmp_path):
     app = _app_with_state(tmp_path)
     async with _client(app) as c:

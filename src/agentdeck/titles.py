@@ -60,6 +60,16 @@ def normalize_generated_title(session: Session, value: object) -> str | None:
         # The stable repo#number identity is reattached by AppState.
         title = re.sub(r"^[A-Za-z0-9_.-]+#\d+\s*(?:·|[-:])\s*", "", title)
         title = _MODE_SUFFIX_RE.sub("", title)
+    if session.project_name:
+        # Project identity is also a deterministic display concern. Keep only
+        # the semantic title if a model repeats the supplied repository context.
+        title = re.sub(
+            rf"^{re.escape(session.project_name)}\s*(?:·|[-:])\s*",
+            "",
+            title,
+            count=1,
+            flags=re.IGNORECASE,
+        )
     if not title:
         return None
     if len(title) > _MAX_TITLE_CHARS:
@@ -177,7 +187,9 @@ class TitleService:
     def _pending_sessions(self) -> list[tuple[Session, str]]:
         pending = []
         for session in self.state.visible_sessions():
-            if not (session.initial_prompt or session.last_prompt):
+            if session.project_name is None or not (
+                session.initial_prompt or session.last_prompt
+            ):
                 continue
             signature = title_evidence_signature(session)
             record = self.state.generated_titles.get(session.key)

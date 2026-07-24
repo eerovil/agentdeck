@@ -62,7 +62,7 @@ See also [provider and session discovery](providers-sessions.md), [owned-agent c
 - Unlike attention triage, title generation does not filter `Session.is_delegated`; visible delegated sessions may receive semantic display titles even though they never receive Deckhand attention cards or pills.
 - Each refresh processes at most `_MAX_BATCH = 4`. `_bounded_context()` supplies the initial prompt, current title, and at most four recent non-subagent user/assistant events within a fixed character budget.
 - `normalize_generated_title()` strips quoting/whitespace, caps at 80 characters, and removes model-supplied issue prefixes or kanban mode suffixes.
-- `src/agentdeck/state.py::generated_display_title()` reattaches stable `repo#number` identity and the native kanban mode suffix. `AppState.set_generated_title()` persists the semantic title and evidence signature, updates the in-memory session, and publishes `sessions`.
+- `src/agentdeck/state.py::generated_display_title()` prefixes every generated title with stable project identity, reattaching `repo#number` and the native kanban mode suffix for issue sessions. Dashboard cards place the project prefix in their existing action row while every other surface uses the same complete display title. `AppState.set_generated_title()` persists the semantic title and evidence signature, updates the in-memory session, and publishes `sessions`.
 - Failed title reads or model calls retain the native/current title; before saving a result, `TitleService.refresh()` rechecks the current session signature to discard stale in-flight output.
 
 ## Events, SSE, and push

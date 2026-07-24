@@ -6,10 +6,15 @@ providers translate their native session sources into these types.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
+
+_ISSUE_URL_RE = re.compile(
+    r"https://github\.com/[^/]+/([^/]+)/(?:issues|pull)/(\d+)"
+)
 
 
 class SessionStatus(StrEnum):
@@ -197,6 +202,40 @@ class Session:
     @property
     def display_title(self) -> str:
         return self.generated_title or self.title or self.session_id[:8]
+
+    @property
+    def project_name(self) -> str | None:
+        """Stable project identity used to prefix generated titles."""
+        match = _ISSUE_URL_RE.match(self.issue_url or "")
+        if match is not None:
+            return match.group(1)
+        if self.cwd is None:
+            return None
+        for candidate in (self.cwd, *self.cwd.parents):
+            if candidate.parent.name == ".worktrees":
+                return candidate.parent.parent.name or None
+            if (candidate / ".git").exists():
+                return candidate.name or None
+        return self.cwd.name or None
+
+    @property
+    def generated_title_subject(self) -> str | None:
+        """Generated title without the project prefix rendered above dashboard cards."""
+        if self.generated_title is None or self.project_name is None:
+            return self.generated_title
+        prefix = re.escape(self.project_name)
+        pattern = (
+            rf"^{prefix}(?=#\d+\s*(?:·|[-:]))"
+            if _ISSUE_URL_RE.match(self.issue_url or "")
+            else rf"^{prefix}\s*(?:·|[-:])\s*"
+        )
+        return re.sub(
+            pattern,
+            "",
+            self.generated_title,
+            count=1,
+            flags=re.IGNORECASE,
+        ).lstrip()
 
     @property
     def is_waiting(self) -> bool:

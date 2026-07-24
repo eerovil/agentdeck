@@ -27,13 +27,23 @@ _KANBAN_MODE_RE = re.compile(r"\s+\((review|merge-fix|merge-arm|resume)\)$", re.
 
 
 def generated_display_title(session: Session, semantic_title: str) -> str:
-    """Attach stable issue identity around a Deckhand-generated semantic title."""
+    """Attach stable project and issue identity to a generated semantic title."""
+    if session.project_name is not None:
+        semantic_title = re.sub(
+            rf"^{re.escape(session.project_name)}\s*(?:·|[-:])\s*",
+            "",
+            semantic_title,
+            count=1,
+            flags=re.IGNORECASE,
+        )
     match = _ISSUE_URL_RE.match(session.issue_url or "")
-    if match is None:
-        return semantic_title
-    suffix_match = _KANBAN_MODE_RE.search(session.title or "")
-    suffix = suffix_match.group(0) if suffix_match else ""
-    return f"{match.group(1)}#{match.group(2)} · {semantic_title}{suffix}"
+    if match is not None:
+        suffix_match = _KANBAN_MODE_RE.search(session.title or "")
+        suffix = suffix_match.group(0) if suffix_match else ""
+        return f"{match.group(1)}#{match.group(2)} · {semantic_title}{suffix}"
+    if session.project_name is not None:
+        return f"{session.project_name} · {semantic_title}"
+    return semantic_title
 
 
 @dataclass(frozen=True)
