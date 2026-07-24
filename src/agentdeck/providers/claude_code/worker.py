@@ -29,6 +29,7 @@ from typing import Any
 
 from ...images import SUPPORTED_IMAGE_MEDIA_TYPES
 from ...models import Account
+from ..instructions import FILE_PRESENTATION_INSTRUCTIONS
 from . import registry
 from .delivery import (
     DeliverResult,
@@ -773,6 +774,8 @@ class ClaudeWorkerHost:
             "--output-format",
             "stream-json",
             "--verbose",
+            "--append-system-prompt",
+            FILE_PRESENTATION_INSTRUCTIONS,
         ]
         if self.interactive_prompts:
             # Route interactive decisions (AskUserQuestion, and — for non-bypass
