@@ -177,6 +177,23 @@ def test_state_roundtrip(tmp_path):
     assert poller.load_state(tmp_path / "bad.json") == {}
 
 
+def test_worker_prompt_requires_screenshots_of_the_feature_in_use(tmp_path):
+    prompt = poller.build_prompt(
+        {
+            "repo": "eerovil/agentdeck",
+            "base_branch": "master",
+            "kanban_dir": str(Path(__file__).parents[1] / "kanban"),
+        },
+        {"number": 155, "title": "Pin messages"},
+        tmp_path,
+        "agent/issue-155-pin-messages",
+    )
+
+    assert "show the feature as clearly as possible in a realistic used state" in prompt
+    assert "A page that merely contains the changed UI is insufficient" in prompt
+    assert "the result after unpinning" in prompt
+
+
 def test_runtime_restart_path_classification():
     assert poller.needs_runtime_restart(["src/agentdeck/runtime.py"])
     assert poller.needs_runtime_restart(["uv.lock"])
