@@ -180,6 +180,32 @@ def _run(
     )
 
 
+def _fetch_base(repo_path: Path, base: str) -> None:
+    """Fetch ``origin/<base>``, self-healing past corrupt remote-tracking refs.
+
+    A leftover ``refs/remotes/origin/...`` whose object is missing locally (e.g.
+    a merged branch that was pruned remotely and GC'd here) makes *every* fetch
+    abort with ``bad object ... does not point to a valid object`` — even a fetch
+    of an unrelated branch, because git validates all existing refs in the
+    transaction. Deleting the dangling tracking ref lets the fetch proceed; the
+    ref re-materializes on the next successful fetch if the branch still exists.
+    """
+    cmd = ["git", "-C", str(repo_path), "fetch", "origin", base]
+    result = _run(cmd, check=False)
+    if result.returncode == 0:
+        return
+    broken = sorted(set(re.findall(r"refs/remotes/\S+", result.stderr)))
+    if not broken:
+        # Not the corrupt-tracking-ref failure — surface it as before.
+        raise subprocess.CalledProcessError(
+            result.returncode, cmd, result.stdout, result.stderr
+        )
+    for ref in broken:
+        _run(["git", "-C", str(repo_path), "update-ref", "-d", ref], check=False)
+        log(f"pruned corrupt remote-tracking ref {ref}")
+    _run(cmd)
+
+
 def list_agent_issues(repo: str, label: str) -> list[dict]:
     out = _run(
         [
@@ -324,7 +350,7 @@ def autodeploy(cfg: dict, *, dry_run: bool = False) -> None:
     remote_ref = f"origin/{base}"
     state_path = Path(deploy_cfg["state_path"])
 
-    _run(["git", "-C", str(repo_path), "fetch", "origin", base])
+    _fetch_base(repo_path, base)
     branch = _run(
         ["git", "-C", str(repo_path), "rev-parse", "--abbrev-ref", "HEAD"]
     ).stdout.strip()
@@ -427,7 +453,7 @@ def create_worktree(repo_path: Path, cfg: dict, number: int, branch: str) -> Pat
     wt = repo_path / cfg["worktrees_root"] / f"issue-{number}"
     base = cfg["base_branch"]
     if not wt.exists():
-        _run(["git", "-C", str(repo_path), "fetch", "origin", base])
+        _fetch_base(repo_path, base)
         # Reuse the branch if a prior (stale) attempt created it; else start fresh.
         exists = _run(
             ["git", "-C", str(repo_path), "rev-parse", "--verify", "--quiet", branch],

@@ -9,6 +9,8 @@ import importlib.util
 import subprocess
 from pathlib import Path
 
+import pytest
+
 _SPEC = importlib.util.spec_from_file_location(
     "kanban_poller", Path(__file__).parents[1] / "kanban" / "poller.py"
 )
@@ -136,6 +138,45 @@ def test_runtime_restart_path_classification():
     assert poller.needs_runtime_restart(["uv.lock"])
     assert not poller.needs_runtime_restart(["src/agentdeck/web/routes_pages.py"])
     assert not poller.needs_runtime_restart(["kanban/README.md"])
+
+
+_BAD_OBJECT_STDERR = (
+    "fatal: bad object refs/remotes/origin/agent/issue-134-done\n"
+    "error: https://github.com/x/y.git did not send all necessary objects\n"
+    "error: refs/remotes/origin/agent/issue-134-done does not point to a valid object!\n"
+)
+
+
+def test_fetch_base_prunes_corrupt_tracking_ref_then_retries(monkeypatch):
+    commands = []
+
+    def fake_run(cmd, *, cwd=None, check=True):
+        commands.append(cmd)
+        # First fetch fails on the dangling ref; the retry (after prune) succeeds.
+        if cmd[-2:] == ["origin", "master"]:
+            fetched = sum(1 for c in commands if c[-2:] == ["origin", "master"])
+            if fetched == 1:
+                return subprocess.CompletedProcess(cmd, 1, "", _BAD_OBJECT_STDERR)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(poller, "_run", fake_run)
+    poller._fetch_base(Path("/repo"), "master")
+
+    deletes = [c for c in commands if c[-3:-1] == ["update-ref", "-d"]]
+    assert deletes == [
+        ["git", "-C", "/repo", "update-ref", "-d",
+         "refs/remotes/origin/agent/issue-134-done"]
+    ]
+    assert sum(1 for c in commands if c[-2:] == ["origin", "master"]) == 2
+
+
+def test_fetch_base_reraises_unrelated_fetch_failure(monkeypatch):
+    def fake_run(cmd, *, cwd=None, check=True):
+        return subprocess.CompletedProcess(cmd, 1, "", "fatal: could not read from remote")
+
+    monkeypatch.setattr(poller, "_run", fake_run)
+    with pytest.raises(subprocess.CalledProcessError):
+        poller._fetch_base(Path("/repo"), "master")
 
 
 def test_autodeploy_defers_runtime_until_chats_are_idle(tmp_path, monkeypatch):
