@@ -73,8 +73,13 @@
   var drag = null;
   var EDGE_PX = 28;
   var COMMIT_RATIO = 0.28;
+  var DIRECTION_LOCK_PX = 8;
+  var VERTICAL_CANCEL_RATIO = 1.5;
 
   function resetDrag() {
+    if (drag) {
+      try { detail.releasePointerCapture(drag.id); } catch (_) {}
+    }
     drag = null;
     body.classList.remove('mobile-stack-dragging');
     detail.style.removeProperty('--mobile-chat-x');
@@ -90,6 +95,10 @@
       startY: event.clientY,
       horizontal: false,
     };
+    // Keep receiving the gesture even when a fast move leaves its initial
+    // target. This does not block vertical scrolling; touch-action still lets
+    // the browser cancel a native pan-y gesture.
+    try { detail.setPointerCapture(event.pointerId); } catch (_) {}
   });
 
   detail.addEventListener('pointermove', function (event) {
@@ -97,11 +106,10 @@
     var dx = Math.max(0, event.clientX - drag.startX);
     var dy = Math.abs(event.clientY - drag.startY);
     if (!drag.horizontal) {
-      if (dy > 10 && dy > dx) { resetDrag(); return; }
-      if (dx < 8 || dx <= dy) return;
+      if (dy > 10 && dy > dx * VERTICAL_CANCEL_RATIO) { resetDrag(); return; }
+      if (dx < DIRECTION_LOCK_PX || dx <= dy) return;
       drag.horizontal = true;
       body.classList.add('mobile-stack-dragging');
-      try { detail.setPointerCapture(event.pointerId); } catch (_) {}
     }
     event.preventDefault();
     detail.style.setProperty('--mobile-chat-x', Math.min(dx, detail.clientWidth) + 'px');
@@ -110,7 +118,9 @@
   function finishDrag(event) {
     if (!drag || event.pointerId !== drag.id) return;
     var dx = Math.max(0, event.clientX - drag.startX);
-    var shouldOpen = drag.horizontal && dx >= detail.clientWidth * COMMIT_RATIO;
+    var dy = Math.abs(event.clientY - drag.startY);
+    var horizontal = drag.horizontal || (dx >= DIRECTION_LOCK_PX && dx > dy);
+    var shouldOpen = horizontal && dx >= detail.clientWidth * COMMIT_RATIO;
     if (shouldOpen) {
       drag = null;
       openList();

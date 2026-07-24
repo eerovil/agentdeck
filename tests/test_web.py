@@ -3042,6 +3042,8 @@ async def test_mobile_chat_layers_over_live_list_and_back_and_swipe_are_instant(
               };
             }"""
         )
+        # A fast swipe can be sampled as only down/up. Gesture ownership must
+        # come from the full displacement, not depend on an intermediate move.
         await page.evaluate(
             """() => {
               const detail = document.querySelector('.session-detail');
@@ -3050,6 +3052,34 @@ async def test_mobile_chat_layers_over_live_list_and_back_and_swipe_are_instant(
                 isPrimary: true, clientX: x, clientY: y,
               }));
               fire('pointerdown', 8, 300);
+              fire('pointerup', 190, 304);
+            }"""
+        )
+        await page.wait_for_function(
+            "location.pathname === '/' && "
+            "document.body.classList.contains('mobile-list-open')"
+        )
+        after_fast_swipe = await page.evaluate(
+            """() => ({
+              path: location.pathname,
+              listOpen: document.body.classList.contains('mobile-list-open'),
+            })"""
+        )
+
+        await page.evaluate("history.forward()")
+        await page.wait_for_function(
+            "location.pathname.includes('/sessions/') && "
+            "!document.body.classList.contains('mobile-list-open')"
+        )
+        await page.evaluate(
+            """() => {
+              const detail = document.querySelector('.session-detail');
+              const fire = (type, x, y) => detail.dispatchEvent(new PointerEvent(type, {
+                bubbles: true, cancelable: true, pointerId: 8, pointerType: 'touch',
+                isPrimary: true, clientX: x, clientY: y,
+              }));
+              fire('pointerdown', 8, 300);
+              fire('pointermove', 20, 314);
               fire('pointermove', 190, 304);
               fire('pointerup', 190, 304);
             }"""
@@ -3088,6 +3118,7 @@ async def test_mobile_chat_layers_over_live_list_and_back_and_swipe_are_instant(
         "dragging": False,
         "inlineTransform": "",
     }
+    assert after_fast_swipe == {"path": "/", "listOpen": True}
     assert after_swipe == {
         "path": "/",
         "listOpen": True,
