@@ -287,6 +287,40 @@ def test_task_notification_renders_as_compact_lifecycle_event(tmp_path):
     assert meta.last_prompt == "hello there"
 
 
+def test_task_notification_after_empty_text_block_is_compact_lifecycle_event(tmp_path):
+    p = tmp_path / "t.jsonl"
+    notification = {
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": ""},
+                {
+                    "type": "text",
+                    "text": TASK_NOTIFICATION["message"]["content"],
+                }
+            ],
+        },
+    }
+    _write(p, [USER, notification])
+
+    events = transcripts.read_events(p).events
+    meta = transcripts.transcript_meta(p)
+
+    assert len(events) == 2
+    update = events[-1]
+    assert update.role == "system"
+    assert update.text == "89 lines changed out of the 90-line range."
+    assert update.tool_name == "subagent"
+    assert update.tool_summary == 'Agent "Translate battle_message 192-281" finished'
+    assert update.subagent_status == "finished"
+    assert update.subagent_id == "a5c85ab59b8b7af55"
+    assert update.subagent_name == "Task"
+    assert update.turn_continues is True
+    assert "<task-notification>" not in update.text
+    assert meta.last_prompt == "hello there"
+
+
 def test_truncated_task_notification_is_hidden_as_protocol_noise(tmp_path):
     p = tmp_path / "t.jsonl"
     truncated = {

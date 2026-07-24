@@ -253,15 +253,21 @@ _TASK_NOTIFICATION_RE = re.compile(
 
 
 def _user_content_text(obj: dict) -> str | None:
-    """First text of a user line's content (string or first text block), or None."""
+    """Plain text of a user line's content, or None."""
     message = obj.get("message")
     content = message.get("content") if isinstance(message, dict) else None
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        for b in content:
-            if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str):
-                return b["text"]
+        texts = [
+            b["text"]
+            for b in content
+            if isinstance(b, dict)
+            and b.get("type") == "text"
+            and isinstance(b.get("text"), str)
+            and b["text"]
+        ]
+        return "\n".join(texts).strip() or None
     return None
 
 
