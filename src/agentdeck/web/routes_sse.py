@@ -31,6 +31,7 @@ from .render import (
     render_composer_controls,
     render_limit_bars,
     render_pending_interaction,
+    render_pinned_messages,
     render_session_done,
     render_session_list,
     render_session_status,
@@ -197,10 +198,11 @@ async def _session_stream(
     last_subagents = None
     last_label = None
     last_can_interrupt = None
+    pins_primed = False
     # The topbar, Deckhand, and desktop session list ride this same stream (see
     # session.html), so the page still holds one socket. Each fragment is
     # re-pushed only when its underlying state changes.
-    with state.bus.subscribe("sessions", "assistant") as sidebar_sub:
+    with state.bus.subscribe("sessions", "assistant", "pins") as sidebar_sub:
         presentation = state.session_presentation()
         yield format_sse("usage", render_limit_bars(templates, accounts, state))
         yield format_sse(
@@ -237,6 +239,7 @@ async def _session_stream(
                     backfill,
                     session_key=session_key,
                     observed_messages=observed_messages,
+                    pinned_seqs={pin.seq for pin in state.pins_for(session_key)},
                 ),
                 event_id=backfill[-1].seq,
             )
@@ -271,6 +274,7 @@ async def _session_stream(
                         new_events,
                         session_key=session_key,
                         observed_messages=observed_messages,
+                        pinned_seqs={pin.seq for pin in state.pins_for(session_key)},
                     ),
                     event_id=new_events[-1].seq,
                 )
@@ -340,8 +344,16 @@ async def _session_stream(
                 last_usage_push = loop.time()
                 yield format_sse("usage", render_limit_bars(templates, accounts, state))
             sidebar_dirty = set()
+            pins_dirty = False
             while (item := sidebar_sub.get_nowait()) is not None:
                 sidebar_dirty.add(item[0])
+                if item == ("pins", session_key):
+                    pins_dirty = True
+            if pins_dirty:
+                pins_primed = True
+                yield format_sse(
+                    "pins", render_pinned_messages(templates, state.pins_for(session_key))
+                )
             if "sessions" in sidebar_dirty or "assistant" in sidebar_dirty:
                 yield format_sse(
                     "sessions",
@@ -372,6 +384,15 @@ async def _session_stream(
                     render_session_done(
                         templates, request.app.state.assistant, session_key
                     ),
+                )
+            # Keep transcript/status/subagent priming ahead of this new fragment
+            # so pin support cannot add latency to the chat's established live
+            # path. The stable <details> already painted on page load; this late
+            # prime reconciles a reconnect that missed a pin change.
+            if not pins_primed:
+                pins_primed = True
+                yield format_sse(
+                    "pins", render_pinned_messages(templates, state.pins_for(session_key))
                 )
             # Snappy while a turn is open/active; back off when idle to save
             # battery (see TAIL_IDLE_INTERVAL_S). `busy` tracks the open turn and

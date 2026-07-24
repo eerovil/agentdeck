@@ -3716,6 +3716,123 @@ async def test_session_detail_renders_transcript(tmp_path):
     assert 'sse-connect="/events/sessions/claude_code:test:sid1?after_seq=2"' in r.text
 
 
+async def test_user_and_agent_message_pins_share_discoverable_api_and_ui(tmp_path):
+    app = _app_with_state(tmp_path, with_transcript=True)
+    session_key = "claude_code:test:sid1"
+    pins_path = f"/api/sessions/{session_key}/pins"
+
+    with app.state.app_state.bus.subscribe("pins") as subscription:
+        async with _client(app) as client:
+            transcript = await client.get(f"/sessions/{session_key}/transcript.json")
+            assert transcript.status_code == 200
+            payload = transcript.json()
+            assert payload["pins_url"] == f"http://t{pins_path}"
+            assert payload["events"][0]["pin_action"] == {
+                "pinned": False,
+                "url": f"http://t{pins_path}/1",
+                "pin_method": "PUT",
+                "unpin_method": "DELETE",
+            }
+
+            user_pin = await client.put(f"{pins_path}/1")
+            agent_pin = await client.put(f"{pins_path}/2")
+            assert user_pin.status_code == agent_pin.status_code == 200
+            assert [user_pin.json()["role"], agent_pin.json()["role"]] == [
+                "user",
+                "assistant",
+            ]
+            assert subscription.get_nowait() == ("pins", session_key)
+            assert subscription.get_nowait() == ("pins", session_key)
+
+            page = await client.get(f"/sessions/{session_key}")
+            assert page.status_code == 200
+            assert "2 pinned" in page.text
+            assert "first question" in page.text
+            assert "an answer here" in page.text
+            assert 'id="event-1"' in page.text
+            assert 'data-pin-seq="1"' in page.text
+            assert 'aria-pressed="true"' in page.text
+
+            listed = await client.get(pins_path)
+            assert [pin["seq"] for pin in listed.json()["pins"]] == [1, 2]
+            assert (await client.put(f"{pins_path}/999")).status_code == 404
+
+            removed = await client.delete(f"{pins_path}/2")
+            assert removed.json() == {
+                "session_key": session_key,
+                "seq": 2,
+                "pinned": False,
+            }
+            assert [
+                pin["seq"] for pin in (await client.get(pins_path)).json()["pins"]
+            ] == [1]
+
+            refreshed = await client.get(f"/sessions/{session_key}/transcript.json")
+            assert refreshed.json()["events"][0]["pin_action"]["pinned"] is True
+            assert refreshed.json()["events"][1]["pin_action"]["pinned"] is False
+
+
+async def test_pin_panel_updates_without_closing_or_disturbing_draft(tmp_path):
+    static_dir = Path(__file__).parents[1] / "src/agentdeck/web/static"
+    pin_script = (static_dir / "message_pins.js").read_text()
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        page = await browser.new_page(viewport={"width": 320, "height": 800})
+        await page.set_content(
+            """
+            <details id="pinned-messages" open><summary>0 pinned</summary></details>
+            <div class="transcript" data-session-key="codex:test:sid">
+              <button data-pin-toggle data-pin-seq="7" aria-pressed="false">📌</button>
+            </div>
+            <form class="inject-form"><textarea>unfinished draft</textarea></form>
+            """
+        )
+        await page.evaluate(
+            """() => {
+              window.requests = [];
+              window.fetch = (url, options) => {
+                window.requests.push({url, method: options.method});
+                return Promise.resolve({ok: true});
+              };
+            }"""
+        )
+        await page.add_script_tag(content=pin_script)
+        await page.locator('[data-pin-toggle][data-pin-seq="7"]').click()
+        await page.wait_for_function(
+            "document.querySelector('[data-pin-seq=\"7\"]')"
+            ".getAttribute('aria-pressed') === 'true'"
+        )
+        await page.evaluate(
+            """() => {
+              document.querySelector('#pinned-messages').innerHTML = `
+                <summary>1 pinned</summary>
+                <article data-pinned-seq="7">
+                  <button data-pin-toggle data-pin-seq="7">📌</button>
+                </article>`;
+            }"""
+        )
+        await page.wait_for_function(
+            "document.querySelector('#pinned-messages [data-pin-seq=\"7\"]')"
+            ".getAttribute('aria-pressed') === 'true'"
+        )
+        result = await page.evaluate(
+            """() => ({
+              requests: window.requests,
+              open: document.querySelector('#pinned-messages').open,
+              draft: document.querySelector('textarea').value,
+            })"""
+        )
+        await browser.close()
+
+    assert result == {
+        "requests": [
+            {"url": "/api/sessions/codex%3Atest%3Asid/pins/7", "method": "PUT"}
+        ],
+        "open": True,
+        "draft": "unfinished draft",
+    }
+
+
 def test_pr_reference_text_uses_conversation_not_system_or_tool_traffic():
     events = [
         TranscriptEvent(seq=1, role="system", text="Memory mentions PR #250."),
@@ -3879,7 +3996,7 @@ async def test_session_detail_uses_responsive_split_view(tmp_path):
         "detailOverflow": "auto",
         "back": "flex",
         "assistantRects": 1,
-        "headerPosition": "static",
+        "headerPosition": "sticky",
     }
     assert narrow == {"pageOverflow": False, "timestampsVisible": True}
 

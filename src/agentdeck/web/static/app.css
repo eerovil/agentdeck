@@ -356,6 +356,8 @@ a.session.opening::after { content: "Opening…"; position: absolute; top: 7px; 
 /* session detail */
 .session-sidebar { display: none; }
 .session-detail { min-width: 0; }
+.session-detail-head { position: sticky; top: 0; z-index: 4; padding-bottom: 1px;
+  border-bottom: 1px solid var(--line); background: var(--bg); }
 .session-sidebar-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
   padding-bottom: 8px; border-bottom: 1px solid var(--line); }
 .session-sidebar-head a { color: var(--fg); font-weight: 700; text-decoration: none; }
@@ -371,6 +373,32 @@ a.session.opening::after { content: "Opening…"; position: absolute; top: 7px; 
 .chip.pr-link.pr-merged { color: #a371f7; }
 .chip.pr-link.pr-closed { color: var(--crit); }
 .todos { margin: 8px 0 14px; }
+
+/* Compact pin shelf: one-line context while collapsed, bounded history when
+   expanded. It lives inside the sticky session header on desktop and mobile. */
+.pinned-messages { margin: 0 0 7px; border: 1px solid var(--line); border-radius: 8px;
+  background: color-mix(in srgb, var(--warn) 5%, var(--panel)); }
+.pinned-messages > summary { display: flex; align-items: center; gap: 8px; min-height: 32px;
+  padding: 5px 8px; overflow: hidden; cursor: pointer; list-style: none; }
+.pinned-messages > summary::-webkit-details-marker { display: none; }
+.pinned-messages > summary::before { content: "▸"; flex: none; color: var(--warn); font-size: 10px; }
+.pinned-messages[open] > summary::before { content: "▾"; }
+.pinned-count { flex: none; color: var(--warn); font-size: 11px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .03em; }
+.pinned-summary-preview { min-width: 0; overflow: hidden; color: var(--muted);
+  font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.pinned-list { display: grid; gap: 5px; max-height: min(38vh, 320px); padding: 0 7px 7px;
+  overflow-y: auto; }
+.pinned-item { min-width: 0; padding: 6px 8px; border: 1px solid var(--line);
+  border-radius: 7px; background: var(--panel); }
+.pinned-item-head { display: flex; align-items: center; gap: 7px; margin-bottom: 2px;
+  color: var(--muted); font-size: 10px; }
+.pinned-item-head a { color: var(--warn); font-weight: 700; text-decoration: none;
+  text-transform: uppercase; }
+.pinned-item-head time { margin-left: auto; }
+.pinned-content { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4; line-clamp: 4; white-space: pre-wrap; overflow-wrap: anywhere;
+  font-size: 12px; line-height: 1.4; }
 .todos h3 { font-size: 12px; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; }
 .todo { font-size: 13px; padding: 3px 0; }
 .todo-status { display: inline-block; min-width: 74px; color: var(--muted); font-size: 11px; }
@@ -423,7 +451,8 @@ a.session.opening::after { content: "Opening…"; position: absolute; top: 7px; 
 #tool-activity { position: absolute; right: 8px; bottom: 8px; z-index: 4;
   max-width: calc(100% - 16px); pointer-events: none; }
 #tool-activity:empty { display: none; }
-.ev { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 10px; background: var(--panel); }
+.ev { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 10px;
+  scroll-margin-top: 150px; background: var(--panel); }
 .ev.assistant { border-left: 3px solid var(--remote); }
 .ev.user { border-left: 3px solid var(--live); }
 .ev.tool { border-left: 3px solid var(--warn); background: var(--panel2); }
@@ -461,6 +490,16 @@ details.ev.tool > .ev-text { margin-top: 6px; max-height: 420px; overflow: auto;
 .ev-head { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px;
   text-transform: uppercase; letter-spacing: .03em; margin-bottom: 4px; }
 .ev-head-meta { display: inline-flex; align-items: baseline; gap: 8px; min-width: 0; margin-left: 8px; }
+.pin-toggle { flex: none; width: 24px; height: 24px; margin: -5px -5px -5px 0; padding: 0;
+  border: 0; border-radius: 6px; color: var(--muted); background: transparent;
+  font: inherit; font-size: 13px; line-height: 24px; cursor: pointer; }
+.pin-toggle[aria-pressed="false"] { filter: grayscale(1); opacity: .55; }
+.pin-toggle:hover, .pin-toggle:focus-visible, .pin-toggle[aria-pressed="true"] {
+  filter: none; opacity: 1; color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 10%, transparent); }
+.pin-toggle:disabled { opacity: .45; cursor: progress; }
+.pinned-remove { width: 22px; height: 22px; margin: -3px -3px -3px 0; font-size: 14px;
+  line-height: 22px; }
 .message-state { margin-left: auto; color: var(--muted); font-size: 10px;
   text-transform: none; letter-spacing: 0; }
 .optimistic-message.sending { opacity: .78; }
@@ -742,8 +781,6 @@ body.bg-paused *, body.bg-paused *::before, body.bg-paused *::after {
   .session-sidebar { display: block; padding-right: 16px; border-right: 1px solid var(--line); }
   .session-sidebar .assistant-panel { margin-bottom: 10px; }
   .session-detail { padding: 0 4px 20px 0; }
-  .session-detail-head { position: sticky; top: 0; z-index: 4; padding-bottom: 1px;
-    border-bottom: 1px solid var(--line); background: var(--bg); }
   .session-detail-head .detail-meta { margin-bottom: 7px; }
   body.session-page .back { display: none; }
   .session-sidebar .card-latest { height: 5.65em; }

@@ -902,6 +902,7 @@ async def test_session_transcript_json_exposes_complete_normalized_history(
         "account_key": "codex:test",
         "working_directory": str(tmp_path),
         "session_url": "http://test/sessions/codex:test:sid",
+        "pins_url": "http://test/api/sessions/codex:test:sid/pins",
         "events": [
             {
                 **json.loads(json.dumps(event, default=lambda value: value.__dict__)),
@@ -909,6 +910,21 @@ async def test_session_transcript_json_exposes_complete_normalized_history(
                     ["http://test/sessions/codex:test:sid/transcript-images/2/0"]
                     if event.seq == 2
                     else []
+                ),
+                **(
+                    {
+                        "pin_action": {
+                            "pinned": False,
+                            "url": (
+                                "http://test/api/sessions/codex:test:sid/pins/"
+                                f"{event.seq}"
+                            ),
+                            "pin_method": "PUT",
+                            "unpin_method": "DELETE",
+                        }
+                    }
+                    if event.seq in {1, 2}
+                    else {}
                 ),
             }
             for event in events

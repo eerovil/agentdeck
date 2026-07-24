@@ -34,11 +34,15 @@
 </div>
 {% endif %}
 {%- elif e.answer -%}
-<div class="ev user{% if e.subagent %} sub{% endif %}"{% if observed_message | default(false) %} data-observed-queue-id="{{ observed_message.id }}"{% if observed_message.client_action_id %} data-observed-action-id="{{ observed_message.client_action_id }}"{% endif %}{% endif %}>
+<div id="event-{{ e.seq }}" class="ev user{% if e.subagent %} sub{% endif %}" data-event-seq="{{ e.seq }}"{% if observed_message | default(false) %} data-observed-queue-id="{{ observed_message.id }}"{% if observed_message.client_action_id %} data-observed-action-id="{{ observed_message.client_action_id }}"{% endif %}{% endif %}>
   <div class="ev-head">
     <span class="ev-role">you</span>
     <span class="ev-head-meta">
       {% if e.ts %}<time class="ev-time" datetime="{{ e.ts.isoformat() }}" title="{{ e.ts | chat_time_title }}">{{ e.ts | chat_time }}</time>{% endif %}
+      <button type="button" class="pin-toggle" data-pin-toggle data-pin-seq="{{ e.seq }}"
+              aria-pressed="{{ 'true' if is_pinned | default(false) else 'false' }}"
+              aria-label="{{ 'Unpin' if is_pinned | default(false) else 'Pin' }} message #{{ e.seq }}"
+              title="{{ 'Unpin' if is_pinned | default(false) else 'Pin' }} message">📌</button>
     </span>
   </div>
   {% if e.text %}<div class="ev-text">{{ e.text }}</div>{% endif %}
@@ -46,12 +50,16 @@
 </div>
 {%- elif e.role == 'tool' or (not e.text and not e.question and not e.tool_name and not e.image_media_types) -%}
 {%- else -%}
-<div class="ev {{ e.role }}{% if e.subagent %} sub{% endif %}"{% if observed_message | default(false) %} data-observed-queue-id="{{ observed_message.id }}"{% if observed_message.client_action_id %} data-observed-action-id="{{ observed_message.client_action_id }}"{% endif %}{% endif %}>
+<div id="event-{{ e.seq }}" class="ev {{ e.role }}{% if e.subagent %} sub{% endif %}" data-event-seq="{{ e.seq }}"{% if observed_message | default(false) %} data-observed-queue-id="{{ observed_message.id }}"{% if observed_message.client_action_id %} data-observed-action-id="{{ observed_message.client_action_id }}"{% endif %}{% endif %}>
   <div class="ev-head">
     <span class="ev-role">{{ e.role }}{% if e.subagent %} · {{ e.subagent }}{% endif %}</span>
     <span class="ev-head-meta">
       {% if e.model %}<span class="ev-model">{{ e.model }}</span>{% endif %}
       {% if e.ts %}<time class="ev-time" datetime="{{ e.ts.isoformat() }}" title="{{ e.ts | chat_time_title }}">{{ e.ts | chat_time }}</time>{% endif %}
+      {% if e.role in ['user', 'assistant'] %}<button type="button" class="pin-toggle" data-pin-toggle data-pin-seq="{{ e.seq }}"
+              aria-pressed="{{ 'true' if is_pinned | default(false) else 'false' }}"
+              aria-label="{{ 'Unpin' if is_pinned | default(false) else 'Pin' }} message #{{ e.seq }}"
+              title="{{ 'Unpin' if is_pinned | default(false) else 'Pin' }} message">📌</button>{% endif %}
     </span>
   </div>
   {% if e.text %}<div class="ev-text">{{ e.text }}</div>{% endif %}

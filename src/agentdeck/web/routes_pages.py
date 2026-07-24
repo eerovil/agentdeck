@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from ..message_pins import event_is_pinnable
 from .deps import (
     get_accounts,
     get_db,
@@ -139,6 +140,7 @@ async def session_transcript(request: Request, session_key: str) -> JSONResponse
     if Capability.TRANSCRIPT not in session.capabilities:
         raise HTTPException(status_code=404, detail="transcript unavailable")
     events = await provider.read_transcript(account, session)
+    pinned_seqs = {pin.seq for pin in get_state(request).pins_for(session.key)}
     encoded_events = []
     for event in events:
         encoded = jsonable_encoder(event)
@@ -153,6 +155,17 @@ async def session_transcript(request: Request, session_key: str) -> JSONResponse
             )
             for index in range(len(event.image_media_types))
         ]
+        if event_is_pinnable(event):
+            encoded["pin_action"] = {
+                "pinned": event.seq in pinned_seqs,
+                "url": str(
+                    request.url_for(
+                        "put_message_pin", session_key=session.key, seq=event.seq
+                    )
+                ),
+                "pin_method": "PUT",
+                "unpin_method": "DELETE",
+            }
         encoded_events.append(encoded)
     response = JSONResponse(
         {
@@ -161,6 +174,9 @@ async def session_transcript(request: Request, session_key: str) -> JSONResponse
             "working_directory": str(session.cwd) if session.cwd else None,
             "session_url": str(
                 request.url_for("session_detail", session_key=session.key)
+            ),
+            "pins_url": str(
+                request.url_for("list_message_pins", session_key=session.key)
             ),
             "events": encoded_events,
         }
@@ -178,6 +194,7 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
     accounts = get_accounts(request)
     state = get_state(request)
     detail = await provider.load_transcript(account, session)
+    pins = state.pins_for(session.key)
     observed_messages = request.app.state.injector.observe_transcript(
         session.key, detail.events
     )
@@ -238,6 +255,8 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
             "session": effective_session,
             "active_subagent_sessions": presentation.active_child_sessions(session),
             "detail": detail,
+            "pins": pins,
+            "pinned_seqs": {pin.seq for pin in pins},
             "transcript_after_seq": max(
                 (event.seq for event in detail.events), default=0
             ),

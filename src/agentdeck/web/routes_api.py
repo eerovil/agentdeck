@@ -1,4 +1,4 @@
-"""Machine-oriented delegation API for local agent-to-agent callers."""
+"""Machine-oriented local API for agents, dispatchers, and dashboard controls."""
 
 from __future__ import annotations
 
@@ -7,10 +7,13 @@ from typing import Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
 
+from ..message_pins import event_is_pinnable, pinned_message_from_event
+from ..models import Capability, PinnedMessage
 from ..providers import PROVIDERS, pending_interaction_for
-from .deps import get_accounts, get_injector, get_state, require_access
+from .deps import get_accounts, get_injector, get_state, require_access, resolve_session
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_access)])
 
@@ -86,6 +89,65 @@ def _interaction_payload(interaction) -> dict | None:
             for question in interaction.questions
         ],
     }
+
+
+def _pin_payload(pin: PinnedMessage) -> dict:
+    payload = jsonable_encoder(pin)
+    payload["pinned"] = True
+    return payload
+
+
+def _require_transcript_session(request: Request, session_key: str):
+    account, session, provider = resolve_session(request, session_key)
+    if Capability.TRANSCRIPT not in session.capabilities:
+        raise HTTPException(status_code=404, detail="transcript unavailable")
+    return account, session, provider
+
+
+# --- message pins ------------------------------------------------------
+# The dashboard and running agents intentionally share this one contract.
+# Transcript JSON advertises the per-event URL and methods so machine callers
+# can discover it without provider-specific instructions.
+
+
+@router.get("/sessions/{session_key}/pins")
+async def list_message_pins(request: Request, session_key: str) -> dict:
+    _require_transcript_session(request, session_key)
+    return {
+        "session_key": session_key,
+        "pins": [_pin_payload(pin) for pin in get_state(request).pins_for(session_key)],
+    }
+
+
+@router.put("/sessions/{session_key}/pins/{seq}")
+async def put_message_pin(request: Request, session_key: str, seq: int) -> dict:
+    account, session, provider = _require_transcript_session(request, session_key)
+    state = get_state(request)
+    existing = next((pin for pin in state.pins_for(session_key) if pin.seq == seq), None)
+    if existing is not None:
+        return _pin_payload(existing)
+
+    events = await provider.read_transcript(account, session)
+    event = next(
+        (
+            candidate
+            for candidate in events
+            if candidate.seq == seq and event_is_pinnable(candidate)
+        ),
+        None,
+    )
+    if event is None:
+        raise HTTPException(status_code=404, detail="pinnable message not found")
+    pin = pinned_message_from_event(session_key, event)
+    state.pin_message(pin)
+    return _pin_payload(pin)
+
+
+@router.delete("/sessions/{session_key}/pins/{seq}")
+async def delete_message_pin(request: Request, session_key: str, seq: int) -> dict:
+    _require_transcript_session(request, session_key)
+    get_state(request).unpin_message(session_key, seq)
+    return {"session_key": session_key, "seq": seq, "pinned": False}
 
 
 # --- deck-owned Claude workers -------------------------------------------
