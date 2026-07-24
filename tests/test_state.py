@@ -32,6 +32,20 @@ def test_named_invalidations_own_event_topics():
     assert events.get_nowait() is None
 
 
+def test_successful_session_scans_advance_an_account_revision():
+    state = AppState()
+
+    with state.bus.subscribe("session_scans") as events:
+        state.sessions_scanned("codex:main")
+        state.sessions_scanned("codex:main")
+
+    assert state.session_scan_revision("codex:main") == 2
+    assert state.session_scan_revision("claude_code:main") == 0
+    assert events.get_nowait() == ("session_scans", "codex:main")
+    assert events.get_nowait() == ("session_scans", "codex:main")
+    assert events.get_nowait() is None
+
+
 class _FakeDb:
     """Records the writes AppState admission performs, with empty loads."""
 

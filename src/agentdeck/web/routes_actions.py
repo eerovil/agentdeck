@@ -522,6 +522,7 @@ async def _new_session_status_response(
             try:
                 sessions = await provider.scan_sessions(account)
                 state.replace_account_sessions(account.key, sessions)
+                state.sessions_scanned(account.key)
             except Exception:  # noqa: BLE001 -- the scan loop will still catch up
                 log.warning(
                     "on-demand scan after new session failed for %s",

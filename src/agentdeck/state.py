@@ -77,6 +77,7 @@ class AppState:
         self.bus = bus or EventBus()
         self.db = db
         self.sessions: dict[str, Session] = {}
+        self.session_scan_revisions: dict[str, int] = {}
         self.usage: dict[str, UsageSnapshot] = {}
         # A usage snapshot is shown as "stale" only once it is older than this
         # (seconds) — data age, not a single failed poll (issue #6). Resolved
@@ -120,6 +121,15 @@ class AppState:
     def assistant_changed(self) -> None:
         """Announce that consumers should render the current Deckhand state."""
         self.bus.publish("assistant")
+
+    def sessions_scanned(self, account_key: str) -> None:
+        """Record one successful authoritative provider scan for ``account_key``."""
+        revision = self.session_scan_revisions.get(account_key, 0) + 1
+        self.session_scan_revisions[account_key] = revision
+        self.bus.publish("session_scans", account_key)
+
+    def session_scan_revision(self, account_key: str) -> int:
+        return self.session_scan_revisions.get(account_key, 0)
 
     # --- sessions -----------------------------------------------------
 

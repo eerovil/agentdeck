@@ -217,6 +217,71 @@ def test_working_session_finishing_triggers_one_refresh(tmp_path):
     assert assistant._working_session_finished([resting]) is False
 
 
+async def test_subagent_discovery_cancels_provisional_parent_handoff(tmp_path):
+    runner = AsyncMock(return_value=_FINISHED)
+    push = _FakePush()
+    state = AppState()
+    parent = _finished(tmp_path, status=SessionStatus.LIVE, thinking=True)
+    state.update_session(parent)
+    assistant = AssistantService(
+        _config(tmp_path),
+        state,
+        runner=runner,
+        context_resolver=_StubResolver(),
+        push=push,
+    )
+
+    assert assistant._working_session_finished(assistant._eligible_sessions()) is False
+    state.update_session(replace(parent, status=SessionStatus.IDLE, thinking=False))
+    assert assistant._working_session_finished(assistant._eligible_sessions()) is True
+
+    # The card is reversible and can render immediately, but push waits for the
+    # next collection cycle to rule out newly launched child work.
+    await assistant.refresh()
+    assert len(assistant.view.insights) == 1
+    runner.assert_awaited_once()
+
+    child = _finished(
+        tmp_path,
+        key="codex:test:child",
+        session_id="child",
+        status=SessionStatus.LIVE,
+        thinking=True,
+        parent_session_key=parent.key,
+        is_delegated=True,
+    )
+    state.update_session(child)
+    state.sessions_scanned(parent.account_key)
+    await _drain(assistant)
+
+    assert push.sent == []
+
+
+async def test_settled_parent_handoff_pushes_once(tmp_path):
+    runner = AsyncMock(return_value=_FINISHED)
+    push = _FakePush()
+    state = AppState()
+    state.update_session(_finished(tmp_path))
+    assistant = AssistantService(
+        _config(tmp_path),
+        state,
+        runner=runner,
+        context_resolver=_StubResolver(),
+        push=push,
+    )
+
+    await assistant.refresh()
+    await asyncio.sleep(0)
+    assert push.sent == []
+    assert assistant._checkpoint_payload()["view"]["insights"] == []
+
+    state.sessions_scanned("codex:test")
+    await _drain(assistant)
+
+    assert push.sent == [("Opened a PR", "Review it", "/sessions/codex:test:thread-1")]
+    assert len(assistant._checkpoint_payload()["view"]["insights"]) == 1
+
+
 async def test_finished_card_drops_once_the_session_works_again(tmp_path):
     # Issue #15 end to end: the review card is shown while resting, then gone
     # once the same session is actively working.
@@ -476,20 +541,19 @@ class _FakePush:
 
 
 def _push_service(tmp_path, push):
-    return AssistantService(
+    service = AssistantService(
         _config(tmp_path),
         AppState(),
         runner=AsyncMock(),
         context_resolver=_StubResolver(),
         push=push,
     )
+    return service
 
 
 async def _drain(svc):
-    for _ in range(200):
-        if not svc._push_tasks:
-            return
-        await asyncio.sleep(0)
+    while svc._push_tasks:
+        await asyncio.gather(*tuple(svc._push_tasks), return_exceptions=True)
 
 
 def _view(*insights):

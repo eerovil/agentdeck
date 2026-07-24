@@ -46,6 +46,7 @@ class Collector:
             try:
                 sessions = await provider.scan_sessions(account)
                 self.state.replace_account_sessions(account.key, sessions)
+                self.state.sessions_scanned(account.key)
             except Exception as exc:  # noqa: BLE001 — a bad scan must not kill the loop
                 log.warning("scan failed for %s: %s", account.key, exc)
             await asyncio.sleep(interval)
