@@ -28,6 +28,29 @@ def test_usage_history_roundtrip(tmp_path):
         db.close()
 
 
+def test_latest_usage_returns_most_recent_snapshot(tmp_path):
+    db = make_db(True, str(tmp_path / "h.db"), 30)
+    try:
+        for pct in (10.0, 20.0, 30.0):
+            db.record_usage(_snap(pct))
+        latest = db.latest_usage("claude_code:main")
+        assert latest is not None
+        assert latest.five_hour_pct == 30.0
+        # Reset times aren't persisted in history.
+        assert latest.five_hour_resets_at is None
+    finally:
+        db.close()
+
+
+def test_latest_usage_none_when_empty(tmp_path):
+    db = make_db(True, str(tmp_path / "h.db"), 30)
+    try:
+        assert db.latest_usage("claude_code:main") is None
+    finally:
+        db.close()
+    assert NullDb().latest_usage("claude_code:main") is None
+
+
 def test_sessions_seen_upsert(tmp_path):
     db = make_db(True, str(tmp_path / "h.db"), 30)
     try:

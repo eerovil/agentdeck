@@ -2,8 +2,34 @@
 
 from __future__ import annotations
 
-from agentdeck.models import Session, SessionStatus
+from datetime import UTC, datetime
+
+from agentdeck.models import Session, SessionStatus, UsageSnapshot
 from agentdeck.state import AppState
+
+
+def _usage(pct: float) -> UsageSnapshot:
+    return UsageSnapshot(
+        account_key="claude_code:main",
+        five_hour_pct=pct,
+        five_hour_resets_at=None,
+        seven_day_pct=None,
+        seven_day_resets_at=None,
+        fetched_at=datetime.now(UTC),
+    )
+
+
+def test_warm_usage_seeds_an_empty_gap():
+    state = AppState()
+    state.warm_usage(_usage(12.0))
+    assert state.usage["claude_code:main"].five_hour_pct == 12.0
+
+
+def test_warm_usage_never_clobbers_a_live_poll():
+    state = AppState()
+    state.set_usage(_usage(50.0))  # a live poll already landed
+    state.warm_usage(_usage(12.0))  # stale warm value must not overwrite it
+    assert state.usage["claude_code:main"].five_hour_pct == 50.0
 
 
 def _session(

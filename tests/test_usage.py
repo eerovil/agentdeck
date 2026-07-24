@@ -202,3 +202,60 @@ async def test_write_shared_cache(account, tmp_path):
     shared_usage.write_shared_cache(snap, account, cache)
     written = (cache / "usage-main.json").read_text()
     assert '"five_hour_pct": 12.0' in written
+
+
+def test_read_shared_cache_round_trips_write(account, tmp_path):
+    snap = usage.parse_usage(account.key, OK_BODY)
+    cache = tmp_path / "cache"
+    shared_usage.write_shared_cache(snap, account, cache)
+    loaded = shared_usage.read_shared_cache(account, cache)
+    assert loaded is not None
+    assert loaded.account_key == account.key
+    assert loaded.five_hour_pct == 12.0
+    assert loaded.seven_day_pct == 5.0
+    assert loaded.five_hour_resets_at == snap.five_hour_resets_at
+    assert loaded.fetched_at == snap.fetched_at
+
+
+def test_read_shared_cache_missing_returns_none(account, tmp_path):
+    assert shared_usage.read_shared_cache(account, tmp_path / "empty") is None
+
+
+class _WarmDb:
+    def __init__(self, snap=None):
+        self._snap = snap
+
+    def latest_usage(self, account_key):
+        return self._snap
+
+
+class _WarmState:
+    def __init__(self, db=None):
+        self.db = db
+        self.usage = {}
+
+    def warm_usage(self, snapshot):
+        self.usage.setdefault(snapshot.account_key, snapshot)
+
+
+def test_warm_usage_state_prefers_cache_over_db(account, tmp_path):
+    cache = tmp_path / "cache"
+    shared_usage.write_shared_cache(usage.parse_usage(account.key, OK_BODY), account, cache)
+    db_snap = usage.parse_usage(account.key, {"five_hour": {"utilization": 99.0}})
+    state = _WarmState(db=_WarmDb(db_snap))
+    shared_usage.warm_usage_state(state, [account], cache)
+    # Cache wins; the DB fallback (99%) is not consulted.
+    assert state.usage[account.key].five_hour_pct == 12.0
+
+
+def test_warm_usage_state_falls_back_to_db(account, tmp_path):
+    db_snap = usage.parse_usage(account.key, {"seven_day": {"utilization": 42.0}})
+    state = _WarmState(db=_WarmDb(db_snap))
+    shared_usage.warm_usage_state(state, [account], tmp_path / "empty")
+    assert state.usage[account.key].seven_day_pct == 42.0
+
+
+def test_warm_usage_state_no_source_leaves_gap(account, tmp_path):
+    state = _WarmState(db=_WarmDb(None))
+    shared_usage.warm_usage_state(state, [account], tmp_path / "empty")
+    assert account.key not in state.usage
