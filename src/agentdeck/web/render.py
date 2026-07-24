@@ -352,17 +352,25 @@ def render_transcript_events(
     *,
     session_key: str | None = None,
     observed_messages: dict | None = None,
+    pinned_seqs: set[int] | None = None,
 ) -> str:
     tmpl = templates.get_template("partials/transcript_event.html")
     observed_messages = observed_messages or {}
+    pinned_seqs = pinned_seqs or set()
     return "".join(
         tmpl.render(
             e=e,
             session_key=session_key,
             observed_message=observed_messages.get(e.seq),
+            is_pinned=e.seq in pinned_seqs,
         )
         for e in events
     )
+
+
+def render_pinned_messages(templates: Jinja2Templates, pins) -> str:
+    """Render only the stable ``<details>`` contents used by page load and SSE."""
+    return templates.get_template("partials/pinned_messages.html").render(pins=pins)
 
 
 def render_session_status(templates: Jinja2Templates, session) -> str:

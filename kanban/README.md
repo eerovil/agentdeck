@@ -46,7 +46,9 @@ systemd timer ─▶ kanban_poll.sh ─(flock)─▶ poller.py
 - **Concurrency:** up to `concurrency` (default 2) workers at once.
 - **Screenshots:** for UI-touching diffs the worker runs `shot.py`, which renders the
   affected pages in-process and uploads PNGs to the `kanban-shots` release, embedding
-  them in the PR.
+  them in the PR. Screenshots are evidence: workers exercise the feature and capture
+  representative used states and meaningful transitions, rather than submitting a
+  generic page that only happens to contain the changed UI.
 
 ## Files
 

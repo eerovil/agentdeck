@@ -2,7 +2,7 @@ import sqlite3
 from datetime import UTC, datetime
 
 from agentdeck.db import Db, NullDb, make_db
-from agentdeck.models import Session, SessionStatus, UsageSnapshot
+from agentdeck.models import PinnedMessage, Session, SessionStatus, UsageSnapshot
 from agentdeck.state import AppState
 
 
@@ -97,6 +97,35 @@ def test_manual_new_chat_cwd_round_trip_survives_reopen(tmp_path):
         assert reopened.load_manual_new_chat_cwd() == "/srv/last"
     finally:
         reopened.close()
+
+
+def test_message_pins_round_trip_and_unpin_survive_reopen(tmp_path):
+    path = tmp_path / "h.db"
+    event_ts = datetime(2026, 7, 24, 10, 30, tzinfo=UTC)
+    pinned_at = datetime(2026, 7, 24, 10, 31, tzinfo=UTC)
+    pin = PinnedMessage(
+        session_key="codex:test:sid",
+        seq=42,
+        role="assistant",
+        content="Keep this decision",
+        event_ts=event_ts,
+        pinned_at=pinned_at,
+    )
+
+    db = Db(path)
+    db.record_message_pin(pin)
+    db.close()
+
+    reopened = Db(path)
+    assert reopened.load_message_pins() == [pin]
+    reopened.delete_message_pin(pin.session_key, pin.seq)
+    reopened.close()
+
+    final = Db(path)
+    try:
+        assert final.load_message_pins() == []
+    finally:
+        final.close()
 
 
 def test_delegated_session_marker_survives_reopen_and_rescan(tmp_path):

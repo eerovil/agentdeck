@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 from .events import EventBus
 from .host_stats import HostStats
-from .models import GeneratedTitle, Session, SessionStatus, UsageSnapshot
+from .models import GeneratedTitle, PinnedMessage, Session, SessionStatus, UsageSnapshot
 
 if TYPE_CHECKING:
     from .db import Db, NullDb
@@ -107,6 +107,10 @@ class AppState:
         self.generated_titles: dict[str, GeneratedTitle] = (
             db.load_generated_titles() if db else {}
         )
+        self.message_pins: dict[str, dict[int, PinnedMessage]] = {}
+        if db is not None:
+            for pin in db.load_message_pins():
+                self.message_pins.setdefault(pin.session_key, {})[pin.seq] = pin
 
     # --- invalidations -------------------------------------------------
 
@@ -121,6 +125,38 @@ class AppState:
     def assistant_changed(self) -> None:
         """Announce that consumers should render the current Deckhand state."""
         self.bus.publish("assistant")
+
+    def pins_changed(self, session_key: str) -> None:
+        """Announce a fresh complete pin projection for one session."""
+        self.bus.publish("pins", session_key)
+
+    # --- pinned messages ---------------------------------------------
+
+    def pins_for(self, session_key: str) -> tuple[PinnedMessage, ...]:
+        return tuple(
+            pin
+            for _, pin in sorted(self.message_pins.get(session_key, {}).items())
+        )
+
+    def pin_message(self, pin: PinnedMessage) -> None:
+        current = self.message_pins.setdefault(pin.session_key, {})
+        if current.get(pin.seq) == pin:
+            return
+        current[pin.seq] = pin
+        if self.db is not None:
+            self.db.record_message_pin(pin)
+        self.pins_changed(pin.session_key)
+
+    def unpin_message(self, session_key: str, seq: int) -> bool:
+        current = self.message_pins.get(session_key)
+        if current is None or current.pop(seq, None) is None:
+            return False
+        if not current:
+            self.message_pins.pop(session_key, None)
+        if self.db is not None:
+            self.db.delete_message_pin(session_key, seq)
+        self.pins_changed(session_key)
+        return True
 
     def sessions_scanned(self, account_key: str) -> None:
         """Record one successful authoritative provider scan for ``account_key``."""

@@ -18,7 +18,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from .models import GeneratedTitle, Session, UsageSnapshot
+from .models import GeneratedTitle, PinnedMessage, Session, UsageSnapshot
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +57,11 @@ class NullDb:
         return None
 
     def record_manual_new_chat_cwd(self, cwd: str) -> None: ...
+    def load_message_pins(self) -> list[PinnedMessage]:
+        return []
+
+    def record_message_pin(self, pin: PinnedMessage) -> None: ...
+    def delete_message_pin(self, session_key: str, seq: int) -> None: ...
     def load_assistant_checkpoint(self) -> dict[str, Any] | None:
         return None
 
@@ -147,6 +152,15 @@ class Db:
                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                     cwd TEXT NOT NULL,
                     updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS message_pins (
+                    session_key TEXT NOT NULL,
+                    event_seq INTEGER NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    event_ts TEXT,
+                    pinned_at TEXT NOT NULL,
+                    PRIMARY KEY (session_key, event_seq)
                 );
                 CREATE TABLE IF NOT EXISTS push_subscriptions (
                     endpoint TEXT PRIMARY KEY,
@@ -346,6 +360,58 @@ class Db:
             " ON CONFLICT(singleton) DO UPDATE SET"
             " cwd=excluded.cwd, updated_at=excluded.updated_at",
             (cwd, datetime.now(UTC).isoformat()),
+        )
+
+    # --- pinned transcript messages ----------------------------------
+
+    def load_message_pins(self) -> list[PinnedMessage]:
+        rows = self._query(
+            "SELECT session_key, event_seq, role, content, event_ts, pinned_at"
+            " FROM message_pins ORDER BY session_key, event_seq"
+        )
+        pins = []
+        for session_key, seq, role, content, event_ts, pinned_at in rows:
+            try:
+                pins.append(
+                    PinnedMessage(
+                        session_key=str(session_key),
+                        seq=int(seq),
+                        role=str(role),
+                        content=str(content),
+                        event_ts=(
+                            datetime.fromisoformat(str(event_ts))
+                            if event_ts is not None
+                            else None
+                        ),
+                        pinned_at=datetime.fromisoformat(str(pinned_at)),
+                    )
+                )
+            except (TypeError, ValueError):
+                log.debug("skipping malformed message pin for %r seq %r", session_key, seq)
+        return pins
+
+    def record_message_pin(self, pin: PinnedMessage) -> None:
+        self._write(
+            "INSERT INTO message_pins"
+            " (session_key, event_seq, role, content, event_ts, pinned_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(session_key, event_seq) DO UPDATE SET"
+            " role=excluded.role, content=excluded.content,"
+            " event_ts=excluded.event_ts, pinned_at=excluded.pinned_at",
+            (
+                pin.session_key,
+                pin.seq,
+                pin.role,
+                pin.content,
+                pin.event_ts.isoformat() if pin.event_ts is not None else None,
+                pin.pinned_at.isoformat(),
+            ),
+        )
+
+    def delete_message_pin(self, session_key: str, seq: int) -> None:
+        self._write(
+            "DELETE FROM message_pins WHERE session_key = ? AND event_seq = ?",
+            (session_key, seq),
         )
 
     def load_assistant_checkpoint(self) -> dict[str, Any] | None:

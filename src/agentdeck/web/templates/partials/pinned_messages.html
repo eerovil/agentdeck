@@ -1,0 +1,19 @@
+<summary>
+  <span class="pinned-count">{{ pins | length }} pinned</span>
+  <span class="pinned-summary-preview">{% if pins %}{{ pins[-1].content }}{% else %}Pin important messages for quick access{% endif %}</span>
+</summary>
+{% if pins %}
+<div class="pinned-list">
+  {% for pin in pins %}
+  <article class="pinned-item" data-pinned-seq="{{ pin.seq }}">
+    <div class="pinned-item-head">
+      <a href="#event-{{ pin.seq }}">{{ 'you' if pin.role == 'user' else pin.role }} · #{{ pin.seq }}</a>
+      {% if pin.event_ts %}<time datetime="{{ pin.event_ts.isoformat() }}" title="{{ pin.event_ts | chat_time_title }}">{{ pin.event_ts | chat_time }}</time>{% endif %}
+      <button type="button" class="pin-toggle pinned-remove" data-pin-toggle data-pin-seq="{{ pin.seq }}"
+              aria-pressed="true" aria-label="Unpin message #{{ pin.seq }}" title="Unpin message">📌</button>
+    </div>
+    <div class="pinned-content">{{ pin.content }}</div>
+  </article>
+  {% endfor %}
+</div>
+{% endif %}

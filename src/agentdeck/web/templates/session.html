@@ -14,6 +14,7 @@
 {% block content %}
 <script src="/static/mobile_session_stack.js?v={{ asset_ver }}" defer></script>
 <script src="/static/session_bottom_follow.js?v={{ asset_ver }}" defer></script>
+<script src="/static/message_pins.js?v={{ asset_ver }}" defer></script>
 <div class="session-layout">
 <aside class="session-sidebar" aria-label="All sessions">
   <div class="session-sidebar-head">
@@ -54,6 +55,9 @@
   {% endfor %}
   {% endif %}
 </div>
+<details id="pinned-messages" class="pinned-messages" sse-swap="pins" hx-swap="innerHTML">
+  {% include "partials/pinned_messages.html" %}
+</details>
 </div>
 
 {% if continue_chat_accounts %}
@@ -102,7 +106,7 @@
     {% include "partials/load_earlier.html" %}
     {% endif %}
     {% set session_key = session.key %}
-    {% for e in detail.events %}{% set observed_message = observed_messages.get(e.seq) %}{% include "partials/transcript_event.html" %}{% endfor %}
+    {% for e in detail.events %}{% set observed_message = observed_messages.get(e.seq) %}{% set is_pinned = e.seq in pinned_seqs %}{% include "partials/transcript_event.html" %}{% endfor %}
     {% for item in pending_messages %}{% include "partials/pending_message.html" %}{% endfor %}
   </div>
 

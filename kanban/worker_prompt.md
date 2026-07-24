@@ -28,8 +28,15 @@ this worktree, never edit the base checkout, never restart or deploy services, n
    in the PR:
    `.venv/bin/python {shot} "/" "/sessions/{{session}}"`
    It renders the pages and prints Markdown image tags (uploaded to the `kanban-shots` release);
-   paste the relevant one(s) into the PR body. If the change is backend-only with no visual surface,
-   write `No visual change` in the PR instead.
+   paste the relevant one(s) into the PR body. Treat screenshots as product evidence, not decoration:
+   show the feature as clearly as possible in a realistic used state, after exercising the actual
+   interaction or data path. A page that merely contains the changed UI is insufficient when the
+   behavior can be demonstrated. Capture the key before/after or expanded/active states when they
+   materially explain the feature (for example: a message pinned with the shelf expanded and its
+   unpin control visible, then the result after unpinning). Assert the intended state is visible before
+   capture. If the route-only helper cannot stage the interaction, use a temporary Playwright script
+   inside this worktree following the same in-process app pattern; never edit outside the worktree.
+   If the change is backend-only with no visual surface, write `No visual change` in the PR instead.
 5. Commit onto `{branch}` (only files for this issue) ending the message with:
    `Co-Authored-By: Claude <noreply@anthropic.com>`
    then push:  `git push -u origin {branch}`

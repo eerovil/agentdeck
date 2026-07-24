@@ -497,6 +497,18 @@ class TranscriptEvent:  # normalized transcript line (parsed from v0.2)
     image_media_types: tuple[str, ...] = ()  # safe raster images on this message
 
 
+@dataclass(frozen=True)
+class PinnedMessage:
+    """Durable snapshot of one pinned, provider-normalized chat message."""
+
+    session_key: str
+    seq: int
+    role: str
+    content: str
+    event_ts: datetime | None
+    pinned_at: datetime
+
+
 @dataclass
 class TranscriptDetail:  # v0.2 — the bundle a session detail page needs
     events: list[TranscriptEvent]  # windowed (most-recent slice) for display

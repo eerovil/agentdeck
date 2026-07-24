@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from agentdeck.models import Session, SessionStatus, UsageSnapshot
+from agentdeck.models import PinnedMessage, Session, SessionStatus, UsageSnapshot
 from agentdeck.state import AppState
 
 
@@ -87,6 +87,13 @@ class _FakeDb:
 
     def load_generated_titles(self) -> dict:
         return {}
+
+    def load_message_pins(self) -> list[PinnedMessage]:
+        return []
+
+    def record_message_pin(self, pin: PinnedMessage) -> None: ...
+
+    def delete_message_pin(self, session_key: str, seq: int) -> None: ...
 
     def record_delegated_session(self, key: str, parent: str | None = None) -> None:
         self.recorded.append((key, parent))

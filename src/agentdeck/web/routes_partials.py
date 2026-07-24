@@ -66,5 +66,11 @@ async def transcript_earlier(request: Request, session_key: str, before: int = 0
         html = templates.get_template("partials/load_earlier.html").render(
             session=session, before=detail.earliest_seq
         )
-    html += render_transcript_events(templates, detail.events, session_key=session_key)
+    pinned_seqs = {pin.seq for pin in get_state(request).pins_for(session_key)}
+    html += render_transcript_events(
+        templates,
+        detail.events,
+        session_key=session_key,
+        pinned_seqs=pinned_seqs,
+    )
     return HTMLResponse(html)
