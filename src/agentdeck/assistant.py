@@ -112,6 +112,7 @@ class AssistantService:
         self._session_watch_task: asyncio.Task | None = None
         self._wake = asyncio.Event()
         self._known_visible_session_keys: set[str] = set()
+        self._known_working_session_keys: set[str] = set()
         self._last_run = 0.0
         self.refresh_status: str | None = None
         self._manual_refresh_pending = False
@@ -690,6 +691,19 @@ class AssistantService:
         carded = {insight.session_key for insight in self.view.insights}
         return any(session.key in carded and session.thinking for session in eligible)
 
+    def _working_session_finished(self, eligible: list[Session]) -> bool:
+        """An active turn just became resting, so triage its handoff now.
+
+        Session events wake the loop, but the regular refresh interval otherwise
+        throttles them. Track only the stable working/not-working edge here so a
+        completed turn can surface attention immediately without making ordinary
+        activity updates trigger repeated classification.
+        """
+        working = {session.key for session in eligible if session.thinking}
+        finished = bool(self._known_working_session_keys - working)
+        self._known_working_session_keys = working
+        return finished
+
     async def _loop(self) -> None:
         loop = asyncio.get_running_loop()
         while True:
@@ -704,7 +718,14 @@ class AssistantService:
             newly_visible = bool(visible_keys - self._known_visible_session_keys)
             self._known_visible_session_keys = visible_keys
             resumed_working = self._carded_session_resumed(eligible)
-            if not self._force and not due and not newly_visible and not resumed_working:
+            finished_working = self._working_session_finished(eligible)
+            if (
+                not self._force
+                and not due
+                and not newly_visible
+                and not resumed_working
+                and not finished_working
+            ):
                 continue
             self._force = False
             manual = self._manual_refresh_pending

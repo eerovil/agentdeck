@@ -34,6 +34,7 @@ See also [provider and session discovery](providers-sessions.md), [owned-agent c
 - `AssistantService._evidence_signature()` includes native title, cwd, question, trimmed last prompt/text, worker type, issue status kind, pending-interaction identity/content, and sorted PR number/status/draft tuples.
 - It deliberately excludes `thinking`, activity timestamps, and subagent churn. These transient values must not invalidate classifier caches, resurrect handled cards, or make pills flicker.
 - Because `thinking` is excluded, `_carded_session_resumed()` explicitly wakes triage when a session backing a visible card resumes work, so a stale finished card drops promptly without needless reclassification.
+- `_working_session_finished()` similarly bypasses the periodic throttle on the working-to-resting edge, so a completed turn surfaces its handoff immediately while ordinary activity events remain throttled.
 - `_message_signature()` is narrower: question, last role, and trimmed last prompt/text. It is the identity for a dismissed question wait and changes on the next conversational turn rather than on git or polling noise.
 - `src/agentdeck/titles.py::title_evidence_signature()` hashes only cleaned initial and latest user prompts. Assistant progress alone must not regenerate a semantic title.
 

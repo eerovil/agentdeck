@@ -179,6 +179,18 @@ def test_carded_session_resuming_work_triggers_a_refresh(tmp_path):
     assert assistant._carded_session_resumed([working]) is False
 
 
+def test_working_session_finishing_triggers_one_refresh(tmp_path):
+    # Issue #134: session events wake the loop, but a completed active turn must
+    # bypass its periodic throttle so Deckhand can surface the finished handoff.
+    assistant = _service(tmp_path, AsyncMock(), state=AppState())
+    working = _finished(tmp_path, status=SessionStatus.LIVE, thinking=True)
+    resting = _finished(tmp_path)
+
+    assert assistant._working_session_finished([working]) is False
+    assert assistant._working_session_finished([resting]) is True
+    assert assistant._working_session_finished([resting]) is False
+
+
 async def test_finished_card_drops_once_the_session_works_again(tmp_path):
     # Issue #15 end to end: the review card is shown while resting, then gone
     # once the same session is actively working.
