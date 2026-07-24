@@ -592,7 +592,7 @@ async def test_session_card_shows_deckhand_status_pill(tmp_path):
     #   working   — a durable verdict but mid-turn (verdict suppressed, no pill)
     #   idle      — resting, never classified ("?")
     #   asking    — a pending question (waiting, straight off the session)
-    #   subagent  — delegated/background chat (never gets a pill)
+    #   subagent  — delegated child reporting through a parent (no own pill)
     sessions = {
         "live": dict(last_role="agent", thinking=False),
         "finished": dict(last_role="agent", thinking=False),
@@ -614,10 +614,13 @@ async def test_session_card_shows_deckhand_status_pill(tmp_path):
                 **extra,
             )
         )
+    app.state.app_state.recorded_delegation_parents[
+        "claude_code:test:subagent"
+    ] = "finished"
     assistant._verdicts = {
         "claude_code:test:finished": ("sig", Verdict("finished", "Opened a PR", "review it")),
         "claude_code:test:working": ("sig", Verdict("finished", "Mid-turn work", "review it")),
-        # Even with a verdict, a delegated chat must never show a pill.
+        # Even with a verdict, a delegated child must never show its own pill.
         "claude_code:test:subagent": ("sig", Verdict("blocked", "Subagent internal step", "")),
     }
     # A manually dismissed chat resolves to a non-attention "done" pill.
@@ -669,7 +672,7 @@ async def test_session_card_shows_deckhand_status_pill(tmp_path):
     assert 'title="Deckhand: Mid-turn work"' not in r.text
     # The retired "review" pill never renders.
     assert "dh-review" not in r.text
-    # A delegated/subagent chat never shows a pill, even with a verdict.
+    # A delegated child never shows its own pill, even with a verdict.
     assert "Session subagent" in r.text  # the card itself renders
     assert 'title="Deckhand: Subagent internal step"' not in r.text
 
@@ -1489,6 +1492,91 @@ async def test_expanded_card_uses_session_preview_and_absolute_file_links(tmp_pa
             "/tmp/report.pdf",
         ],
     ]
+
+
+async def test_transcript_markdown_tables_render_and_stay_within_mobile_message(tmp_path):
+    app = _app_with_state(tmp_path, with_transcript=True)
+    transcript = tmp_path / "projects" / "-tmp" / "sid1.jsonl"
+    lines = [json.loads(line) for line in transcript.read_text().splitlines()]
+    lines[0]["message"]["content"] = (
+        "| Name | Why / note |\n"
+        "| :--- | ---: |\n"
+        "| **Cloud Nine** | idiom kept; `weather` negated |\n"
+        "| Trace | [copy](https://example.test/copy) |\n"
+        "| Unsafe | <img src=x onerror=alert(1)> |\n"
+        "\n"
+        "Ordinary | pipe text\n"
+        "\n"
+        "```md\n"
+        "| fenced | text |\n"
+        "| --- | --- |\n"
+        "```"
+    )
+    transcript.write_text("".join(json.dumps(line) + "\n" for line in lines))
+
+    async with _client(app) as client:
+        response = await client.get("/sessions/claude_code:test:sid1")
+    stylesheet = (
+        Path(__file__).parents[1] / "src/agentdeck/web/static/app.css"
+    ).read_text()
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        results = []
+        for width in (1200, 320):
+            page = await browser.new_page(viewport={"width": width, "height": 800})
+            await page.set_content(response.text)
+            await page.add_style_tag(content=stylesheet)
+            message = page.locator(".ev.user .ev-text")
+            table = message.locator("table")
+            wrapper = message.locator(".md-table-scroll")
+            await table.wait_for()
+            results.append(
+                {
+                    "width": width,
+                    "headers": await table.locator("th").all_text_contents(),
+                    "rows": await table.locator("tbody tr").all_text_contents(),
+                    "strong": await table.locator("strong").all_text_contents(),
+                    "code": await table.locator("code").all_text_contents(),
+                    "link": await table.locator("a").get_attribute("href"),
+                    "alignments": await table.locator("th").evaluate_all(
+                        "cells => cells.map(cell => getComputedStyle(cell).textAlign)"
+                    ),
+                    "tables": await message.locator("table").count(),
+                    "active_html": await table.locator("img, script").count(),
+                    "plain_text": await message.text_content(),
+                    "wrapper_scrolls": await wrapper.evaluate(
+                        "element => element.scrollWidth > element.clientWidth"
+                    ),
+                    "wrapper_inside_viewport": await wrapper.evaluate(
+                        "element => element.getBoundingClientRect().right <= innerWidth"
+                    ),
+                    "page_overflow": await page.evaluate(
+                        "document.documentElement.scrollWidth > window.innerWidth"
+                    ),
+                }
+            )
+            await page.close()
+        await browser.close()
+
+    for result in results:
+        assert result["headers"] == ["Name", "Why / note"]
+        assert result["rows"] == [
+            "Cloud Nineidiom kept; weather negated",
+            "Tracecopy",
+            "Unsafe<img src=x onerror=alert(1)>",
+        ]
+        assert result["strong"] == ["Cloud Nine"]
+        assert result["code"] == ["weather"]
+        assert result["link"] == "https://example.test/copy"
+        assert result["alignments"] == ["left", "right"]
+        assert result["tables"] == 1
+        assert result["active_html"] == 0
+        assert "Ordinary | pipe text" in result["plain_text"]
+        assert "| fenced | text |" in result["plain_text"]
+        assert result["wrapper_scrolls"] is (result["width"] == 320)
+        assert result["wrapper_inside_viewport"] is True
+        assert result["page_overflow"] is False
 
 
 async def test_local_markdown_file_opens_from_absolute_path_with_line_suffix(tmp_path):

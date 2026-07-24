@@ -166,6 +166,41 @@
     });
     return mdAutoLink(s);
   }
+  function mdTableCells(line) {
+    var source = line.trim(), cells = [], cell = '', inCode = false, sawSeparator = false;
+    if (source.indexOf('|') < 0) return null;
+    if (source.charAt(0) === '|') source = source.slice(1);
+    if (source.charAt(source.length - 1) === '|' && source.charAt(source.length - 2) !== '\\') {
+      source = source.slice(0, -1);
+    }
+    for (var i = 0; i < source.length; i++) {
+      var ch = source.charAt(i);
+      if (ch === '\\' && source.charAt(i + 1) === '|') { cell += '|'; i++; continue; }
+      if (ch === '`') inCode = !inCode;
+      if (ch === '|' && !inCode) {
+        cells.push(cell.trim()); cell = ''; sawSeparator = true;
+      } else cell += ch;
+    }
+    cells.push(cell.trim());
+    return sawSeparator ? cells : null;
+  }
+  function mdTableAlignments(cells) {
+    if (!cells) return null;
+    var alignments = [];
+    for (var i = 0; i < cells.length; i++) {
+      var marker = cells[i].trim();
+      if (!/^:?-{3,}:?$/.test(marker)) return null;
+      if (marker.charAt(0) === ':' && marker.charAt(marker.length - 1) === ':') alignments.push('center');
+      else if (marker.charAt(marker.length - 1) === ':') alignments.push('right');
+      else if (marker.charAt(0) === ':') alignments.push('left');
+      else alignments.push('');
+    }
+    return alignments;
+  }
+  function mdTableCell(tag, text, alignment, sessionKey) {
+    var cls = alignment ? ' class="md-align-' + alignment + '"' : '';
+    return '<' + tag + cls + '>' + mdInline(text, sessionKey) + '</' + tag + '>';
+  }
   function mdToHtml(text, sessionKey) {
     var segs = mdEscape(text).split(/```/), out = '';
     for (var i = 0; i < segs.length; i++) {
@@ -178,7 +213,27 @@
         var ln = lines[j], li = ln.match(/^\s*[-*+]\s+(.*)$/), hd = ln.match(/^\s*(#{1,6})\s+(.*)$/);
         if (li) { if (!inList) { buf += '<ul>'; inList = true; } buf += '<li>' + mdInline(li[1], sessionKey) + '</li>'; continue; }
         if (inList) { buf += '</ul>'; inList = false; }
-        if (hd) buf += '<div class="md-h">' + mdInline(hd[2], sessionKey) + '</div>';
+        var headers = mdTableCells(ln);
+        var alignments = j + 1 < lines.length ? mdTableAlignments(mdTableCells(lines[j + 1])) : null;
+        if (headers && alignments && headers.length === alignments.length) {
+          buf += '<div class="md-table-scroll"><table><thead><tr>';
+          for (var k = 0; k < headers.length; k++) {
+            buf += mdTableCell('th', headers[k], alignments[k], sessionKey);
+          }
+          buf += '</tr></thead><tbody>';
+          j++; // delimiter row
+          while (j + 1 < lines.length) {
+            var row = mdTableCells(lines[j + 1]);
+            if (!row) break;
+            j++;
+            buf += '<tr>';
+            for (var c = 0; c < headers.length; c++) {
+              buf += mdTableCell('td', row[c] || '', alignments[c], sessionKey);
+            }
+            buf += '</tr>';
+          }
+          buf += '</tbody></table></div>';
+        } else if (hd) buf += '<div class="md-h">' + mdInline(hd[2], sessionKey) + '</div>';
         else if (ln.trim() === '') buf += '<br>';
         else buf += mdInline(ln, sessionKey) + '<br>';
       }

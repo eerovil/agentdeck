@@ -14,7 +14,7 @@ See also [provider and session discovery](providers-sessions.md), [owned-agent c
 
 ## Deterministic-first attention triage
 
-- `AssistantService._eligible_sessions()` starts from `AppState.visible_sessions()` and excludes every `Session.is_delegated` session; delegated/background agents report through their parent.
+- `AssistantService._eligible_sessions()` starts from one `AppState.session_presentation()` snapshot. Delegated children with a visible parent report through that parent, while a top-level machine-started session has no other operator-facing handoff and remains eligible for Deckhand.
 - `_triage_sessions()` keeps every session with a question or provider `PendingInteraction`, then fills the configured `max_sessions` window by most-recent activity.
 - `refresh()` resolves `GitContext` first, computes a stable evidence signature, and calls `triage.structured_trigger()` before considering any model call.
 - `structured_trigger()` returns the first applicable card, in this order: pending approval/question/browser action; `Session.question`; an open kanban issue whose final text says `claude:blocked`; a resting session with an open non-draft PR; a thinking session silent for `HANG_AFTER_S`.
@@ -38,12 +38,12 @@ See also [provider and session discovery](providers-sessions.md), [owned-agent c
 - `_message_signature()` is narrower: question, last role, and trimmed last prompt/text. It is the identity for a dismissed question wait and changes on the next conversational turn rather than on git or polling noise.
 - `src/agentdeck/titles.py::title_evidence_signature()` hashes only cleaned initial and latest user prompts. Assistant progress alone must not regenerate a semantic title.
 
-## Delegated-session exclusion
+## Delegated-session eligibility
 
 - `src/agentdeck/state.py::AppState.mark_delegated_session()` records the child key (and optional raw parent id) in the DB, marks an already-scanned session delegated, and publishes `sessions`.
 - `AppState.replace_account_sessions()` and `update_session()` reapply persisted delegation markers on rescans/restarts. See [owned-agent control](owned-agent-control.md) for how parents and worker children are established.
-- `AssistantService.refresh()` prunes cached contexts/verdicts to non-delegated live keys and removes persisted handled state when a previously handled session is now authoritatively delegated.
-- `src/agentdeck/web/render.py::deckhand_pill()` returns no pill for delegated sessions even if stale status data exists.
+- `AssistantService.refresh()` prunes cached contexts/verdicts to Deckhand-eligible keys and removes persisted handled state when a previously handled session becomes an ineligible delegated child.
+- `AssistantService.deckhand_statuses()` passes the same graph-aware eligibility decision into the pure pill resolver, so a child never gets its own stale status while a completed top-level delegation can show its handoff.
 
 ## Persistence, dismissal, and rendered status
 

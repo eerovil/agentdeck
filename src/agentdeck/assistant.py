@@ -260,11 +260,18 @@ class AssistantService:
         return selected
 
     def _eligible_sessions(self) -> list[Session]:
-        """Operator-owned chats only; delegated/background agents report to parents."""
+        """Chats with their own operator-facing Deckhand handoff.
+
+        A delegated child reports through its visible parent. A machine-started
+        chat with no visible parent is itself top-level, though, so suppressing
+        it would leave its completed handoff with nowhere to appear.
+        """
+        presentation = self.state.session_presentation()
+        top_level_keys = {session.key for session in presentation.top_level}
         return [
             session
-            for session in self.state.session_presentation().visible
-            if not session.is_delegated
+            for session in presentation.visible
+            if not session.is_delegated or session.key in top_level_keys
         ]
 
     @staticmethod
@@ -375,15 +382,13 @@ class AssistantService:
     async def refresh(self, *, manual: bool = False) -> None:
         sessions = self._triage_sessions()
         resolved = await self.context_resolver.resolve(sessions)
-        live_keys = {
-            session.key for session in self.state.sessions.values() if not session.is_delegated
-        }
-        delegated_handled = set(self.dismissals.insight_keys()) - live_keys
+        eligible_keys = {session.key for session in self._eligible_sessions()}
+        delegated_handled = set(self.dismissals.insight_keys()) - eligible_keys
         for session_key in delegated_handled & self.state.delegated_session_keys:
             self.dismissals.drop_insight(session_key)
-        self.contexts = {k: v for k, v in self.contexts.items() if k in live_keys}
+        self.contexts = {k: v for k, v in self.contexts.items() if k in eligible_keys}
         self.contexts.update(resolved)
-        self._verdicts = {k: v for k, v in self._verdicts.items() if k in live_keys}
+        self._verdicts = {k: v for k, v in self._verdicts.items() if k in eligible_keys}
 
         now = datetime.now(UTC)
         account = self._account()
@@ -661,6 +666,7 @@ class AssistantService:
         verdicts = self._session_verdicts()
         handled = self._handled_keys()
         live_by_key = {insight.session_key: insight for insight in self.view.insights}
+        eligible_keys = {session.key for session in self._eligible_sessions()}
         statuses: dict[str, DeckhandStatus] = {}
         for session in sessions:
             key = session.key
@@ -668,6 +674,7 @@ class AssistantService:
             context = self.contexts.get(key)
             status = resolve_deckhand_status(
                 session,
+                eligible=key in eligible_keys,
                 verdict=verdicts.get(key),
                 dismissed=key in handled,
                 dismissed_headline=(

@@ -303,6 +303,7 @@ class DeckhandStatus:
 def resolve_deckhand_status(
     session: Session,
     *,
+    eligible: bool,
     verdict: Verdict | None,
     dismissed: bool,
     dismissed_headline: str | None,
@@ -318,14 +319,15 @@ def resolve_deckhand_status(
     re-asserts last, so a fresh blocked/waiting is never hidden by shipped/done.
 
     The final pill precedence over that layered status and the Session's own
-    facts: a background chat carries no pill; an explicit ``done`` beats a pending
-    question (the dismissal is kept current by the message signature); a pending
-    question is otherwise always ``waiting`` (read straight off the session, so a
-    stale view can't drop it); else the layered status, but a non-live one is
-    hidden mid-turn since it judged an earlier turn; a resting unclassified chat
-    is ``unknown``; a working chat with nothing live shows no pill.
+    facts: an ineligible child chat carries no pill; an explicit ``done`` beats a
+    pending question (the dismissal is kept current by the message signature); a
+    pending question is otherwise always ``waiting`` (read straight off the
+    session, so a stale view can't drop it); else the layered status, but a
+    non-live one is hidden mid-turn since it judged an earlier turn; a resting
+    unclassified chat is ``unknown``; a working chat with nothing live shows no
+    pill.
     """
-    if session.is_delegated:
+    if not eligible:
         return None
     state = headline = None
     live = False
