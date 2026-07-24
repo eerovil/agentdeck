@@ -121,7 +121,8 @@
   {% include "partials/session_done_button.html" %}
 </div>
 
-<div id="pending-interaction-slot" sse-swap="interaction" hx-swap="innerHTML">
+<div id="pending-interaction-slot" sse-swap="interaction" hx-swap="innerHTML"
+     data-refresh-url="/partials/sessions/{{ session.key }}/interaction">
 {% set interaction = pending_interaction %}
 {% set session_key = session.key %}
 {% include "partials/pending_interaction.html" %}

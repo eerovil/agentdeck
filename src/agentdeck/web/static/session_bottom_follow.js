@@ -147,11 +147,11 @@
 
     function revealInteraction(event) {
       // The pending-interaction widget arrives over its own `interaction` SSE
-      // topic (see routes_sse), which fires htmx:sseMessage on the slot. When a
-      // real prompt appears — a question or an approval, both carry the answer
-      // form — bring it into view so the reader sees what needs answering, even
-      // if they had scrolled up into history. The cleared state is an empty
-      // section with no form, and must not scroll.
+      // topic or through a one-shot PWA foreground reconciliation. When a real
+      // prompt appears — a question or an approval, both carry the answer form —
+      // bring it into view so the reader sees what needs answering, even if they
+      // had scrolled up into history. The cleared state is an empty section with
+      // no form, and must not scroll.
       if (!event.target || event.target.id !== 'pending-interaction-slot') return;
       var section = event.target.querySelector('#pending-interaction');
       if (!section || !section.querySelector('form[data-agentdeck-action="interaction"]')) {
@@ -165,6 +165,7 @@
 
     document.body.addEventListener('htmx:beforeSwap', beforeTranscriptSwap);
     document.body.addEventListener('htmx:afterSwap', afterTranscriptSwap);
+    document.body.addEventListener('htmx:afterSwap', revealInteraction);
     // The SSE extension uses its own lifecycle events instead of the ordinary
     // before/afterSwap pair.
     document.body.addEventListener('htmx:sseBeforeMessage', beforeTranscriptSwap);
