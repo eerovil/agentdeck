@@ -232,11 +232,26 @@
     // fragments (~1.5s cadence) to a hidden client, holding the radio awake — the
     // main background drain. So close the stream when hidden and re-open it when
     // shown. We reconnect via htmx.reconnectSSE (NOT location.reload) so unsent
-    // composer text, scroll, and the in-JS feed survive; the re-primed stream only
-    // re-pushes display fragments, never the textarea or a pending interaction.
+    // composer text, scroll, and the in-JS feed survive. The stream deliberately
+    // does not re-push an unchanged pending interaction, so reconcile that one
+    // slot separately by interaction ID: a question created while hidden appears,
+    // while an unchanged form keeps its selected/typed answer.
     // Also pause continuous CSS animations so a hidden PWA stops driving the
     // compositor.
     function applyBgPause() { document.body.classList.toggle('bg-paused', document.hidden); }
+    function refreshPendingInteraction() {
+      var slot = document.getElementById('pending-interaction-slot');
+      if (!slot || !slot.dataset.refreshUrl) return;
+      var current = slot.querySelector('input[name="interaction_id"]');
+      var url = new URL(slot.dataset.refreshUrl, document.baseURI);
+      url.searchParams.set('known_interaction_id', current ? current.value : '');
+      try {
+        htmx.ajax('GET', url.pathname + url.search, {
+          target: '#pending-interaction-slot',
+          swap: 'innerHTML'
+        });
+      } catch (_) {}
+    }
     applyBgPause();
     document.addEventListener('visibilitychange', function () {
       applyBgPause();
@@ -252,6 +267,7 @@
         lastMsgAt = Date.now();
         try { htmx.reconnectSSE(document.body); } catch (_) { location.reload(); }
       }
+      refreshPendingInteraction();
       setTimeout(recover, 2000);
     });
     // And a watchdog while visible, to catch a socket that silently died mid-use

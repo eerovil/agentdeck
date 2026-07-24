@@ -304,17 +304,27 @@ async def interrupt_turn(request: Request, session_key: str) -> HTMLResponse:
 
 
 @router.get("/partials/sessions/{session_key}/interaction", response_class=HTMLResponse)
-async def pending_interaction(request: Request, session_key: str) -> HTMLResponse:
+async def pending_interaction(
+    request: Request,
+    session_key: str,
+    known_interaction_id: str | None = None,
+) -> Response:
     # The detail page renders this section server-side and keeps it live over SSE
     # (the `interaction` event, pushed only when the pending interaction actually
     # changes — see routes_sse). This endpoint is the on-demand render used by the
     # answer POST's swap target.
     account, session, provider = resolve_session(request, session_key)
-    return _render_interaction(
+    interaction = provider.pending_interaction(account, session)
+    interaction_id = interaction.id if interaction is not None else ""
+    if known_interaction_id is not None and known_interaction_id == interaction_id:
+        return Response(status_code=204, headers={"Cache-Control": "no-cache"})
+    response = _render_interaction(
         request,
         session_key,
-        provider.pending_interaction(account, session),
+        interaction,
     )
+    response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 @router.post("/sessions/{session_key}/interaction", response_class=HTMLResponse)

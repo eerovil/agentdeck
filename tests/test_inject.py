@@ -2148,12 +2148,167 @@ async def test_interaction_widget_is_sse_driven_not_polled(tmp_path, monkeypatch
     )
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         page = await client.get("/sessions/codex:test:sid")
+        unchanged = await client.get(
+            "/partials/sessions/codex:test:sid/interaction",
+            params={"known_interaction_id": "tok-1"},
+        )
+        stale = await client.get(
+            "/partials/sessions/codex:test:sid/interaction",
+            params={"known_interaction_id": ""},
+        )
     assert page.status_code == 200
+    assert unchanged.status_code == 204
+    assert stale.status_code == 200
+    assert "Which database should we use?" in stale.text
     assert 'sse-swap="interaction"' in page.text
     assert "Which database should we use?" in page.text
-    # No self-poll: neither the interval trigger nor a GET back to the poll URL.
+    # No self-poll: the partial URL is inert until the PWA foreground handler
+    # requests one ID-keyed reconciliation.
     assert 'hx-trigger="every 2s"' not in page.text
-    assert "/partials/sessions/codex:test:sid/interaction" not in page.text
+    assert (
+        'data-refresh-url="/partials/sessions/codex:test:sid/interaction"' in page.text
+    )
+    assert 'hx-get="/partials/sessions/codex:test:sid/interaction"' not in page.text
+
+
+async def test_pwa_foreground_reconciles_question_without_wiping_answer(
+    tmp_path, monkeypatch
+):
+    # Issue #131: a question can appear while an installed PWA is backgrounded.
+    # Foregrounding must render it even though the reconnected SSE stream seeds
+    # its interaction ID from current server state. A later foreground with the
+    # same question must not replace the form and wipe the user's answer.
+    app = _web_app(tmp_path)
+    session = app.state.app_state.sessions["codex:test:sid"]
+    session.capabilities = frozenset(
+        {Capability.TRANSCRIPT, Capability.INJECT, Capability.INTERACT}
+    )
+    question = _question_interaction(
+        "tok-1", "Database", "Which database should we use?", "Postgres", "SQLite"
+    )
+    from agentdeck.providers import PROVIDERS
+
+    box = {"pending": None}
+    provider = PROVIDERS["codex"]
+    monkeypatch.setattr(
+        provider, "pending_interaction", lambda account, candidate: box["pending"]
+    )
+
+    static_dir = Path(__file__).parents[1] / "src/agentdeck/web/static"
+    scripts = {
+        "/static/htmx.min.js": (static_dir / "htmx.min.js").read_text(),
+        "/static/sse.js": (static_dir / "sse.js").read_text(),
+        "/static/session_bottom_follow.js": (
+            static_dir / "session_bottom_follow.js"
+        ).read_text(),
+    }
+    requests: list[str] = []
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://agentdeck.test"
+    ) as client:
+        initial = await client.get("/sessions/codex:test:sid")
+
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            context = await browser.new_context(
+                viewport={"width": 320, "height": 800}, service_workers="block"
+            )
+            page = await context.new_page()
+            await page.add_init_script(
+                """
+                window.__agentdeckHidden = false;
+                Object.defineProperty(document, 'hidden', {
+                  configurable: true,
+                  get: () => window.__agentdeckHidden
+                });
+                Object.defineProperty(document, 'visibilityState', {
+                  configurable: true,
+                  get: () => window.__agentdeckHidden ? 'hidden' : 'visible'
+                });
+                window.__eventSources = [];
+                window.__scrolls = [];
+                Element.prototype.scrollIntoView = function (opts) {
+                  window.__scrolls.push({id: this.id, behavior: opts && opts.behavior});
+                };
+                class FakeEventSource extends EventTarget {
+                  static CONNECTING = 0;
+                  static OPEN = 1;
+                  static CLOSED = 2;
+                  constructor(url) {
+                    super();
+                    this.url = url;
+                    this.readyState = FakeEventSource.OPEN;
+                    window.__eventSources.push(this);
+                    queueMicrotask(() => { if (this.onopen) this.onopen(new Event('open')); });
+                  }
+                  close() { this.readyState = FakeEventSource.CLOSED; }
+                }
+                window.EventSource = FakeEventSource;
+                """
+            )
+
+            async def serve(route):
+                request = route.request
+                relative = request.url.removeprefix("http://agentdeck.test")
+                path = relative.split("?", 1)[0]
+                requests.append(relative)
+                if path == "/sessions/codex:test:sid":
+                    await route.fulfill(
+                        status=200, content_type="text/html", body=initial.text
+                    )
+                elif path in scripts:
+                    await route.fulfill(
+                        status=200, content_type="text/javascript", body=scripts[path]
+                    )
+                elif path == "/partials/sessions/codex:test:sid/interaction":
+                    response = await client.get(relative)
+                    await route.fulfill(
+                        status=response.status_code,
+                        content_type="text/html",
+                        body=response.text,
+                    )
+                else:
+                    await route.fulfill(status=204, body="")
+
+            await page.route("http://agentdeck.test/**", serve)
+            await page.goto("http://agentdeck.test/sessions/codex:test:sid")
+            await page.wait_for_function("window.__eventSources.length === 1")
+            assert await page.locator("#pending-interaction").count() == 1
+            assert await page.locator("#pending-interaction form").count() == 0
+
+            await page.evaluate(
+                "window.__agentdeckHidden = true; "
+                "document.dispatchEvent(new Event('visibilitychange'))"
+            )
+            box["pending"] = question
+            await page.evaluate(
+                "window.__agentdeckHidden = false; "
+                "document.dispatchEvent(new Event('visibilitychange'))"
+            )
+            await page.wait_for_selector("text=Which database should we use?")
+            assert await page.evaluate("window.__eventSources.length") == 2
+            await page.wait_for_function(
+                "window.__scrolls.some(item => item.id === 'pending-interaction')"
+            )
+
+            radio = page.locator('input[name="answer__database"][value="Postgres"]')
+            other = page.locator('input[name="other__database"]')
+            await radio.check()
+            await other.fill("Keep this typed answer")
+
+            await page.evaluate(
+                "window.__agentdeckHidden = true; "
+                "document.dispatchEvent(new Event('visibilitychange')); "
+                "window.__agentdeckHidden = false; "
+                "document.dispatchEvent(new Event('visibilitychange'))"
+            )
+            await page.wait_for_function("window.__eventSources.length === 3")
+            assert await radio.is_checked()
+            assert await other.input_value() == "Keep this typed answer"
+            assert any("known_interaction_id=" in request for request in requests)
+            assert any("known_interaction_id=tok-1" in request for request in requests)
+            await browser.close()
 
 
 async def test_interaction_selection_survives_live_updates_e2e(tmp_path, monkeypatch):
