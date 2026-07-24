@@ -8,6 +8,11 @@ from agentdeck.git_context import GitContextResolver, github_repository
 from agentdeck.models import Session, SessionStatus
 
 
+@pytest.fixture(autouse=True)
+def _isolated_github_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENTDECK_GITHUB_CACHE", str(tmp_path / "github.sqlite3"))
+
+
 def _session(tmp_path, *, initial_prompt=None, last_text=None, issue_url=None):
     return Session(
         key="codex:test:thread-1",
@@ -506,7 +511,8 @@ async def test_explicit_pr_failure_retains_cached_context_and_retries(tmp_path, 
     resolver = GitContextResolver()
     resolver._git = "git"
     resolver._gh = "gh"
-    resolver.OPEN_TTL_S = 0
+    resolver._metadata.OPEN_TTL_S = 0
+    resolver._metadata.FAILURE_BACKOFF_S = 0
     github_calls = 0
 
     async def fake_run(*args):
