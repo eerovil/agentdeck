@@ -1441,6 +1441,91 @@ async def test_transcript_plain_web_urls_render_as_safe_links(tmp_path):
         assert result["code_text"] == "https://example.test/code"
 
 
+async def test_transcript_markdown_tables_render_and_stay_within_mobile_message(tmp_path):
+    app = _app_with_state(tmp_path, with_transcript=True)
+    transcript = tmp_path / "projects" / "-tmp" / "sid1.jsonl"
+    lines = [json.loads(line) for line in transcript.read_text().splitlines()]
+    lines[0]["message"]["content"] = (
+        "| Name | Why / note |\n"
+        "| :--- | ---: |\n"
+        "| **Cloud Nine** | idiom kept; `weather` negated |\n"
+        "| Trace | [copy](https://example.test/copy) |\n"
+        "| Unsafe | <img src=x onerror=alert(1)> |\n"
+        "\n"
+        "Ordinary | pipe text\n"
+        "\n"
+        "```md\n"
+        "| fenced | text |\n"
+        "| --- | --- |\n"
+        "```"
+    )
+    transcript.write_text("".join(json.dumps(line) + "\n" for line in lines))
+
+    async with _client(app) as client:
+        response = await client.get("/sessions/claude_code:test:sid1")
+    stylesheet = (
+        Path(__file__).parents[1] / "src/agentdeck/web/static/app.css"
+    ).read_text()
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        results = []
+        for width in (1200, 320):
+            page = await browser.new_page(viewport={"width": width, "height": 800})
+            await page.set_content(response.text)
+            await page.add_style_tag(content=stylesheet)
+            message = page.locator(".ev.user .ev-text")
+            table = message.locator("table")
+            wrapper = message.locator(".md-table-scroll")
+            await table.wait_for()
+            results.append(
+                {
+                    "width": width,
+                    "headers": await table.locator("th").all_text_contents(),
+                    "rows": await table.locator("tbody tr").all_text_contents(),
+                    "strong": await table.locator("strong").all_text_contents(),
+                    "code": await table.locator("code").all_text_contents(),
+                    "link": await table.locator("a").get_attribute("href"),
+                    "alignments": await table.locator("th").evaluate_all(
+                        "cells => cells.map(cell => getComputedStyle(cell).textAlign)"
+                    ),
+                    "tables": await message.locator("table").count(),
+                    "active_html": await table.locator("img, script").count(),
+                    "plain_text": await message.text_content(),
+                    "wrapper_scrolls": await wrapper.evaluate(
+                        "element => element.scrollWidth > element.clientWidth"
+                    ),
+                    "wrapper_inside_viewport": await wrapper.evaluate(
+                        "element => element.getBoundingClientRect().right <= innerWidth"
+                    ),
+                    "page_overflow": await page.evaluate(
+                        "document.documentElement.scrollWidth > window.innerWidth"
+                    ),
+                }
+            )
+            await page.close()
+        await browser.close()
+
+    for result in results:
+        assert result["headers"] == ["Name", "Why / note"]
+        assert result["rows"] == [
+            "Cloud Nineidiom kept; weather negated",
+            "Tracecopy",
+            "Unsafe<img src=x onerror=alert(1)>",
+        ]
+        assert result["strong"] == ["Cloud Nine"]
+        assert result["code"] == ["weather"]
+        assert result["link"] == "https://example.test/copy"
+        assert result["alignments"] == ["left", "right"]
+        assert result["tables"] == 1
+        assert result["active_html"] == 0
+        assert "Ordinary | pipe text" in result["plain_text"]
+        assert "| fenced | text |" in result["plain_text"]
+        assert result["wrapper_scrolls"] is (result["width"] == 320)
+        assert result["wrapper_inside_viewport"] is True
+        assert result["page_overflow"] is False
+
+
 async def test_local_markdown_file_opens_from_absolute_path_with_line_suffix(tmp_path):
     app = _app_with_state(tmp_path)
     handoff = tmp_path / "handoff.md"
