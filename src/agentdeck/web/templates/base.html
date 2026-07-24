@@ -295,8 +295,8 @@
     function latestOf(box) {
       return { prompt: (box.dataset.prompt || '').trim(), text: (box.dataset.text || '').trim() };
     }
-    function renderInto(el, text, md, cursor) {
-      if (md) { el.innerHTML = mdToHtml(text); el.setAttribute('data-md', ''); }
+    function renderInto(el, text, md, cursor, sessionKey) {
+      if (md) { el.innerHTML = mdToHtml(text, sessionKey); el.setAttribute('data-md', ''); }
       else { el.textContent = text; }
       if (cursor) { var c = document.createElement('span'); c.className = 'type-caret'; el.appendChild(c); }
     }
@@ -304,7 +304,7 @@
       var ov = inner.scrollHeight - box.clientHeight;
       inner.style.transform = ov > 6 ? 'translateY(' + (-ov) + 'px)' : '';
     }
-    function renderFeed(inner, arr, md, key) {
+    function renderFeed(inner, arr, md, key, sessionKey) {
       inner.textContent = '';
       var t = typing.get(key), found = false;
       if (t) t.el = null;
@@ -320,9 +320,9 @@
           found = true;
           t.el = txt; t.box = inner.parentElement; t.inner = inner; t.md = md; t.full = m.text;
           var n = Math.floor(t.shown);
-          renderInto(txt, m.text.slice(0, n), md, n < m.text.length);
+          renderInto(txt, m.text.slice(0, n), md, n < m.text.length, sessionKey);
         } else {
-          renderInto(txt, m.text, md, false);
+          renderInto(txt, m.text, md, false, sessionKey);
         }
         line.appendChild(arrow); line.appendChild(txt);
         inner.appendChild(line);
@@ -369,6 +369,7 @@
         if (!inner) return;
         var card = box.closest('a.session');
         var key = card ? card.getAttribute('href') : null;
+        var sessionKey = card ? card.getAttribute('data-session-key') : null;
         if (!key) return;
         var known = lastSeen.has(key);            // seen this session before this render?
         var cur = latestOf(box);
@@ -408,7 +409,9 @@
         // Start/continue the typewriter — but never on first load or when the
         // card is expanded (reading mode shows the full text at once).
         if (typeEntry && known && !expanded.has(key)) {
-          typing.set(key, { entry: typeEntry, full: typeEntry.text, shown: typeFrom });
+          typing.set(key, {
+            entry: typeEntry, full: typeEntry.text, shown: typeFrom, sessionKey: sessionKey
+          });
         }
         // Re-apply the (client-only) expanded state, which survives list swaps.
         if (card.classList.contains('expanded') !== expanded.has(key)) {
@@ -416,7 +419,7 @@
         }
         if (expanded.has(key)) typing.delete(key);
 
-        renderFeed(inner, arr, expanded.has(key), key);
+        renderFeed(inner, arr, expanded.has(key), key, sessionKey);
         inner.style.transform = '';
         if (expanded.has(key)) { box.scrollTop = box.scrollHeight; return; }
         box.scrollTop = 0;   // clear scroll left over from expanded mode, else the
@@ -440,7 +443,7 @@
         if (!t.el || t.full == null) return;
         t.shown = Math.min(t.full.length, t.shown + CHARS_PER_MS * dt);
         var n = Math.floor(t.shown);
-        renderInto(t.el, t.full.slice(0, n), t.md, n < t.full.length);
+        renderInto(t.el, t.full.slice(0, n), t.md, n < t.full.length, t.sessionKey);
         if (t.box && t.inner) toBottom(t.box, t.inner);
         if (n >= t.full.length) typing.delete(key);
       });

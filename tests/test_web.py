@@ -1441,6 +1441,56 @@ async def test_transcript_plain_web_urls_render_as_safe_links(tmp_path):
         assert result["code_text"] == "https://example.test/code"
 
 
+async def test_expanded_card_uses_session_preview_and_absolute_file_links(tmp_path):
+    app = _app_with_state(tmp_path)
+    app.state.app_state.update_session(
+        Session(
+            key="claude_code:test:sid1",
+            account_key="claude_code:test",
+            session_id="sid1",
+            status=SessionStatus.LIVE,
+            title="Generated files",
+            last_text=(
+                "[Open preview](report/index.html) "
+                "[Open report](/tmp/report.pdf)"
+            ),
+        )
+    )
+    async with _client(app) as client:
+        response = await client.get("/")
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        results = []
+        for width in (1200, 320):
+            page = await browser.new_page(viewport={"width": width, "height": 800})
+            await page.set_content(response.text)
+            card = page.locator(
+                'a.session[data-session-key="claude_code:test:sid1"]'
+            )
+            await card.locator(".expand-btn").click()
+            links = card.locator(".latest-line.agent a")
+            await links.first.wait_for()
+            results.append(
+                await links.evaluate_all(
+                    "links => links.map(link => link.getAttribute('href'))"
+                )
+            )
+            await page.close()
+        await browser.close()
+
+    assert results == [
+        [
+            "/sessions/claude_code%3Atest%3Asid1/preview/report/index.html",
+            "/tmp/report.pdf",
+        ],
+        [
+            "/sessions/claude_code%3Atest%3Asid1/preview/report/index.html",
+            "/tmp/report.pdf",
+        ],
+    ]
+
+
 async def test_local_markdown_file_opens_from_absolute_path_with_line_suffix(tmp_path):
     app = _app_with_state(tmp_path)
     handoff = tmp_path / "handoff.md"
