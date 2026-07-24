@@ -32,6 +32,7 @@ See also [provider and session discovery](providers-sessions.md), [owned-agent c
 ## Evidence and lifecycle signatures
 
 - `AssistantService._evidence_signature()` includes native title, cwd, question, trimmed last prompt/text, worker type, issue status kind, pending-interaction identity/content, and sorted PR number/status/draft tuples.
+- A failed GitHub lookup is incomplete context, not an empty PR set. Warm refreshes retain the last complete context; after a web restart the restored signature protects done markers until GitHub returns authoritative PR data.
 - It deliberately excludes `thinking`, activity timestamps, and subagent churn. These transient values must not invalidate classifier caches, resurrect handled cards, or make pills flicker.
 - Because `thinking` is excluded, `_carded_session_resumed()` explicitly wakes triage when a session backing a visible card resumes work, so a stale finished card drops promptly without needless reclassification.
 - `_working_session_finished()` similarly bypasses the periodic throttle on the working-to-resting edge, so a completed turn surfaces its handoff immediately while ordinary activity events remain throttled.

@@ -102,6 +102,7 @@ class GitContext:
     branch: str | None
     dirty: bool
     pull_requests: tuple[PullRequestContext, ...] = ()
+    pulls_complete: bool = True
 
     @property
     def reviewable_pull(self) -> PullRequestContext | None:
@@ -112,7 +113,7 @@ class GitContext:
     def is_shipped(self) -> bool:
         """Has resolved PRs and every one is terminal. An empty set is NOT
         shipped — a session with no PRs stays eligible for a finished card."""
-        if not self.pull_requests:
+        if not self.pulls_complete or not self.pull_requests:
             return False
         return all(pull.is_terminal for pull in self.pull_requests)
 
@@ -127,6 +128,7 @@ class GitContext:
             "branch": self.branch,
             "dirty": self.dirty,
             "pull_requests": [pull.as_json() for pull in self.pull_requests],
+            "pulls_complete": self.pulls_complete,
         }
 
 
@@ -250,14 +252,33 @@ class GitContextResolver:
         # checkout while the PR is in a nested app repo. Try both for bare numbers.
         repository = checkout or referenced
         pull_repositories = list(dict.fromkeys(r for r in (checkout, referenced) if r))
+        ref_groups = self._explicit_ref_groups(session, pull_repositories)
+        refs = list(dict.fromkeys(ref for group in ref_groups for ref in group))
+        branch_lookup = bool(
+            repository and branch and branch not in _DEFAULT_BRANCHES
+        )
 
         pulls: dict[tuple[str, int], PullRequestContext] = {}
+        pulls_complete = self._gh is not None or not (refs or branch_lookup)
         if self._gh is not None:
-            refs = self._explicit_refs(session, pull_repositories)
             resolved = await asyncio.gather(
                 *(self._pull_for_ref(repo, number) for repo, number in refs)
             )
-            explicit_pulls = tuple(pull for pull in resolved if pull is not None)
+            by_ref = dict(zip(refs, resolved, strict=True))
+            explicit_pulls = tuple(
+                pull for pull, _complete in resolved if pull is not None
+            )
+            # URL/qualified references are singleton groups and must resolve.
+            # A bare ``PR #123`` is an alternative group: one successful candidate
+            # repository makes expected misses in the others harmless.
+            pulls_complete = all(
+                all(by_ref[ref][1] for ref in group)
+                or any(
+                    pull is not None and complete
+                    for pull, complete in (by_ref[ref] for ref in group)
+                )
+                for group in ref_groups
+            )
             for pull in explicit_pulls:
                 pulls[(pull.repository.lower(), pull.number)] = pull
 
@@ -279,14 +300,19 @@ class GitContextResolver:
             # Long-lived default branches may themselves be the head of a
             # promotion PR (for example master -> staging). Such a PR belongs
             # to the repository, not to every chat sharing its checkout.
-            if not pulls and repository and branch and branch not in _DEFAULT_BRANCHES:
-                for pull in await self._pulls_for_branch(repository, branch):
+            if not pulls and branch_lookup:
+                assert repository is not None and branch is not None
+                branch_pulls, branch_complete = await self._pulls_for_branch(
+                    repository, branch
+                )
+                pulls_complete = pulls_complete and branch_complete
+                for pull in branch_pulls:
                     pulls[(pull.repository.lower(), pull.number)] = pull
 
         ordered = tuple(sorted(pulls.values(), key=lambda pull: pull.number, reverse=True))
         if not git_found and repository is None and not ordered:
             return None
-        return GitContext(repository, branch, dirty, ordered)
+        return GitContext(repository, branch, dirty, ordered, pulls_complete)
 
     @staticmethod
     def _repository_from_session(session: Session) -> str | None:
@@ -305,16 +331,8 @@ class GitContextResolver:
         return f"{match.group(1)}/{match.group(2)}" if match else None
 
     @staticmethod
-    def _explicit_refs(
-        session: Session, repositories: str | list[str] | None
-    ) -> list[tuple[str, int]]:
-        if repositories is None:
-            candidates: list[str] = []
-        elif isinstance(repositories, str):
-            candidates = [repositories]
-        else:
-            candidates = repositories
-        text = "\n".join(
+    def _reference_text(session: Session) -> str:
+        return "\n".join(
             value
             for value in (
                 session.initial_prompt,
@@ -325,29 +343,72 @@ class GitContextResolver:
             )
             if value
         )
-        refs: list[tuple[str, int]] = []
+
+    @classmethod
+    def _bare_pr_numbers(cls, session: Session) -> list[int]:
+        return list(
+            dict.fromkeys(
+                int(match.group(1))
+                for match in _PR_NUMBER_RE.finditer(cls._reference_text(session))
+            )
+        )
+
+    @classmethod
+    def _explicit_ref_groups(
+        cls, session: Session, repositories: str | list[str] | None
+    ) -> list[tuple[tuple[str, int], ...]]:
+        if repositories is None:
+            candidates: list[str] = []
+        elif isinstance(repositories, str):
+            candidates = [repositories]
+        else:
+            candidates = repositories
+        text = cls._reference_text(session)
+        groups: list[tuple[tuple[str, int], ...]] = []
         # Full URLs carry their own repo — always authoritative.
-        refs.extend(
-            (f"{m.group(1)}/{m.group(2)}", int(m.group(3))) for m in _PR_URL_RE.finditer(text)
+        groups.extend(
+            ((f"{m.group(1)}/{m.group(2)}", int(m.group(3))),)
+            for m in _PR_URL_RE.finditer(text)
         )
         # Kanban handoffs commonly use ``PR: owner/repo#123`` instead of a URL.
         # Preserve that repository rather than trying the number against the
         # worker's shared checkout or issue-tracker repository.
-        refs.extend(
-            (m.group(1), int(m.group(2))) for m in _QUALIFIED_PR_RE.finditer(text)
+        groups.extend(
+            ((m.group(1), int(m.group(2))),)
+            for m in _QUALIFIED_PR_RE.finditer(text)
         )
         # A bare "PR #123" has no repo; try each candidate (checkout + referenced).
-        bare_numbers = [int(m.group(1)) for m in _PR_NUMBER_RE.finditer(text)]
-        for repository in candidates:
-            refs.extend((repository, number) for number in bare_numbers)
-        unique: dict[tuple[str, int], None] = {}
-        for repo, number in refs:
-            unique.setdefault((repo, number), None)
-        return list(unique)[: GitContextResolver.MAX_EXPLICIT_REFS]
+        bare_numbers = cls._bare_pr_numbers(session)
+        groups.extend(
+            tuple((repository, number) for repository in candidates)
+            for number in bare_numbers
+            if candidates
+        )
+
+        # Bound unique API calls while preserving shared refs in every semantic
+        # group (for example the same PR named both by URL and bare number).
+        selected: set[tuple[str, int]] = set()
+        bounded: list[tuple[tuple[str, int], ...]] = []
+        for group in groups:
+            kept: list[tuple[str, int]] = []
+            for ref in dict.fromkeys(group):
+                if ref in selected or len(selected) < cls.MAX_EXPLICIT_REFS:
+                    selected.add(ref)
+                    kept.append(ref)
+            if kept:
+                bounded.append(tuple(kept))
+        return bounded
+
+    @classmethod
+    def _explicit_refs(
+        cls, session: Session, repositories: str | list[str] | None
+    ) -> list[tuple[str, int]]:
+        groups = cls._explicit_ref_groups(session, repositories)
+        return list(dict.fromkeys(ref for group in groups for ref in group))
 
     async def _pulls_for_branch(
         self, repository: str, branch: str
-    ) -> tuple[PullRequestContext, ...]:
+    ) -> tuple[tuple[PullRequestContext, ...], bool]:
         key = (repository.lower(), branch)
         lock = self._branch_locks.setdefault(key, asyncio.Lock())
         async with lock:
@@ -361,7 +422,7 @@ class GitContextResolver:
                     else self.OPEN_TTL_S
                 )
                 if now - fetched_at < ttl:
-                    return pulls
+                    return (pulls, True)
             assert self._gh is not None
             code, output = await self._run(
                 self._gh,
@@ -378,23 +439,31 @@ class GitContextResolver:
                 "--json",
                 _PR_FIELDS,
             )
-            pulls: tuple[PullRequestContext, ...] = ()
-            if code == 0:
-                try:
-                    values = json.loads(output)
-                    if isinstance(values, list):
-                        pulls = tuple(
-                            pull
-                            for value in values
-                            if isinstance(value, dict)
-                            if (pull := _pull_request(repository, value)) is not None
-                        )
-                except ValueError:
-                    pass
+            try:
+                values = json.loads(output) if code == 0 else None
+                if not isinstance(values, list):
+                    raise ValueError("GitHub PR list was unavailable")
+                parsed = tuple(
+                    _pull_request(repository, value)
+                    for value in values
+                    if isinstance(value, dict)
+                )
+                if len(parsed) != len(values) or any(pull is None for pull in parsed):
+                    raise ValueError("GitHub PR list was incomplete")
+                pulls = tuple(pull for pull in parsed if pull is not None)
+            except (TypeError, ValueError):
+                log.debug(
+                    "Deckhand PR lookup unavailable for %s branch %s; retaining cache",
+                    repository,
+                    branch,
+                )
+                return ((cached[1] if cached is not None else ()), False)
             self._branch_cache[key] = (now, pulls)
-            return pulls
+            return (pulls, True)
 
-    async def _pull_for_ref(self, repository: str, number: int) -> PullRequestContext | None:
+    async def _pull_for_ref(
+        self, repository: str, number: int
+    ) -> tuple[PullRequestContext | None, bool]:
         key = (repository.lower(), number)
         lock = self._ref_locks.setdefault(key, asyncio.Lock())
         async with lock:
@@ -410,7 +479,7 @@ class GitContextResolver:
                     else self.OPEN_TTL_S
                 )
                 if now - fetched_at < ttl:
-                    return pull
+                    return (pull, True)
             assert self._gh is not None
             code, output = await self._run(
                 self._gh,
@@ -422,13 +491,17 @@ class GitContextResolver:
                 "--json",
                 _PR_FIELDS,
             )
-            pull = None
-            if code == 0:
-                try:
-                    value = json.loads(output)
-                    if isinstance(value, dict):
-                        pull = _pull_request(repository, value)
-                except ValueError:
-                    pass
+            try:
+                value = json.loads(output) if code == 0 else None
+                pull = _pull_request(repository, value) if isinstance(value, dict) else None
+                if pull is None:
+                    raise ValueError("GitHub PR was unavailable")
+            except (TypeError, ValueError):
+                log.debug(
+                    "Deckhand PR lookup unavailable for %s#%s; retaining cache",
+                    repository,
+                    number,
+                )
+                return ((cached[1] if cached is not None else None), False)
             self._ref_cache[key] = (now, pull)
-            return pull
+            return (pull, True)
