@@ -294,7 +294,13 @@ async def test_settled_parent_handoff_pushes_once(tmp_path):
     state.sessions_scanned("codex:test")
     await _drain(assistant)
 
-    assert push.sent == [("Opened a PR", "Review it", "/sessions/codex:test:thread-1")]
+    assert push.sent == [
+        (
+            "Build the prototype",
+            "Opened a PR — Review it",
+            "/sessions/codex:test:thread-1",
+        )
+    ]
     assert len(assistant._checkpoint_payload()["view"]["insights"]) == 1
 
 
@@ -652,10 +658,10 @@ class _FakePush:
         return 1
 
 
-def _push_service(tmp_path, push):
+def _push_service(tmp_path, push, *, state=None):
     service = AssistantService(
         _config(tmp_path),
-        AppState(),
+        state or AppState(),
         runner=AsyncMock(),
         context_resolver=_StubResolver(),
         push=push,
@@ -702,6 +708,33 @@ async def test_new_deckhand_insight_triggers_one_push_and_dedupes(tmp_path):
     await _drain(svc)
     assert push.sent[1] == ("PR #9 ready for review", "look", "/sessions/codex:test:b")
     assert len(push.sent) == 2
+
+
+async def test_push_uses_session_title_and_keeps_attention_reason_in_body(tmp_path):
+    push = _FakePush()
+    state = AppState()
+    state.update_session(
+        Session(
+            key="codex:test:a",
+            account_key="codex:test",
+            session_id="a",
+            status=SessionStatus.IDLE,
+            title="Native title",
+            generated_title="Canonical session title",
+        )
+    )
+    svc = _push_service(tmp_path, push, state=state)
+
+    _commit(svc, AssistantInsight("codex:test:a", "waiting", "Approval needed", "Run tests"))
+    await _drain(svc)
+
+    assert push.sent == [
+        (
+            "Canonical session title",
+            "Approval needed — Run tests",
+            "/sessions/codex:test:a",
+        )
+    ]
 
 
 async def test_changed_headline_notifies_again(tmp_path):

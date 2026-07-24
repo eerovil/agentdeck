@@ -16,26 +16,28 @@
   </div>
   {% endif %}
   {% for insight in assistant_insights %}
+  {% set attention_title = assistant_session_title or insight.headline %}
   <article class="assistant-chat-detail insight-{{ insight.kind }}">
     <div class="assistant-chat-title">
       <span class="assistant-kind">{{ insight.kind }}</span>
-      <strong>{{ insight.headline }}</strong>
+      <strong>{{ attention_title }}</strong>
       <form hx-post="/assistant/handle" hx-swap="none" hx-disabled-elt="find button">
         <input type="hidden" name="session_key" value="{{ insight.session_key }}">
-        <button type="submit" aria-label="Mark {{ insight.headline }} done">Mark done</button>
+        <button type="submit" aria-label="Mark {{ attention_title }} done">Mark done</button>
       </form>
     </div>
     <p>{{ insight.detail }}</p>
   </article>
   {% endfor %}
   {% if assistant_handled %}
+  {% set handled_title = assistant_session_title or assistant_handled.headline %}
   <article class="assistant-chat-detail assistant-chat-handled">
     <div class="assistant-chat-title">
       <span class="assistant-kind">done</span>
-      <strong>{{ assistant_handled.headline }}</strong>
+      <strong>{{ handled_title }}</strong>
       <form hx-post="/assistant/unhandle" hx-swap="none" hx-disabled-elt="find button">
         <input type="hidden" name="session_key" value="{{ assistant_handled.session_key }}">
-        <button type="submit" aria-label="Undo marking {{ assistant_handled.headline }} done">Undo</button>
+        <button type="submit" aria-label="Undo marking {{ handled_title }} done">Undo</button>
       </form>
     </div>
   </article>

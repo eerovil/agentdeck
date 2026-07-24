@@ -53,6 +53,7 @@ See also [provider and session discovery](providers-sessions.md), [owned-agent c
 - Other insight dismissals persist the full evidence signature plus kind/headline/detail. `_apply_handled()` hides them while evidence is unchanged and restores them automatically after material evidence changes.
 - `unhandle()` deletes persistence and immediately restores a still-current saved insight; it also requests a refresh. `handled_items` intentionally exposes only the most recent item as the sidebar undo surface while older rows remain persisted.
 - `src/agentdeck/web/routes_actions.py::{handle_assistant_insight,unhandle_assistant_insight}` are same-origin-checked POST actions used by the sidebar, session details, and bottom transcript done/undo control.
+- Attention cards, handled rows, session details, and push notifications identify the chat with its current `Session.display_title`; the insight headline remains supporting triage context rather than a second user-facing chat title.
 - `src/agentdeck/web/render.py::session_deckhand_status()` applies low-to-high precedence: durable verdict, manual `done`, derived `merged`, live attention. `deckhand_pill()` additionally suppresses non-live stale status while a session is working and reads a pending question directly as `waiting`.
 
 ## Generated titles

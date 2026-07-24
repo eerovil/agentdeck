@@ -237,8 +237,16 @@ def render_assistant(
 ) -> str:
     return templates.get_template("partials/assistant_panel.html").render(
         assistant=assistant,
+        assistant_session_titles=assistant_session_titles(assistant),
         working_count=presentation.working_count,
     )
+
+
+def assistant_session_titles(assistant) -> dict[str, str]:
+    """Current canonical display title for each Deckhand-visible session."""
+    return {
+        key: session.display_title for key, session in assistant.state.sessions.items()
+    }
 
 
 def assistant_insights_for_session(assistant, session_key: str) -> tuple:
@@ -251,6 +259,7 @@ def render_assistant_session(templates: Jinja2Templates, assistant, session_key:
     return templates.get_template("partials/assistant_session_details.html").render(
         assistant_insights=assistant_insights_for_session(assistant, session_key),
         assistant_handled=assistant.handled_insight(session_key),
+        assistant_session_title=assistant_session_titles(assistant).get(session_key),
         git_context=assistant.contexts.get(session_key),
     )
 
@@ -312,6 +321,7 @@ def session_list_context(
         "queue_summaries": session_queue_summaries(presentation.visible, injector),
         "assistant": assistant,
         "assistant_sessions": assistant.state.sessions,
+        "assistant_session_titles": assistant_session_titles(assistant),
         "working_count": presentation.working_count,
     }
 

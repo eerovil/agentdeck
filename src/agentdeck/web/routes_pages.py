@@ -285,6 +285,7 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
                 assistant, session.key
             ),
             "assistant_handled": assistant.handled_insight(session.key),
+            "assistant_session_title": effective_session.display_title,
             "session_handled": assistant.is_handled(session.key),
             "session_waiting": session.is_waiting,
             "continue_chat_accounts": (

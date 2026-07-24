@@ -624,10 +624,19 @@ class AssistantService:
                 await self._wait_for_session_scan(session.account_key, scan_revision)
                 if not self._push_is_current_and_resting(insight):
                     return False
+            current_session = self.state.sessions.get(insight.session_key)
+            title = (
+                current_session.display_title if current_session else insight.headline
+            )
+            body = insight.headline if current_session else ""
+            if body and insight.detail:
+                body += f" — {insight.detail}"
+            elif insight.detail:
+                body = insight.detail
             await asyncio.to_thread(
                 self.push.send_to_all,
-                insight.headline,
-                insight.detail or "",
+                title,
+                body,
                 f"/sessions/{insight.session_key}",
             )
             return True
