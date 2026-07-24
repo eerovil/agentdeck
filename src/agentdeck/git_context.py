@@ -10,7 +10,9 @@ import re
 import shutil
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
+from .github_cache import GitHubMetadata, GitHubMetadataCache
 from .models import Session
 
 log = logging.getLogger(__name__)
@@ -169,19 +171,18 @@ class GitContextResolver:
     GitHub calls are cached more aggressively, with terminal PRs treated as stable.
     """
 
-    OPEN_TTL_S = 60.0
-    TERMINAL_TTL_S = 3600.0
-    NEGATIVE_TTL_S = 300.0
     COMMAND_TIMEOUT_S = 6.0
     MAX_EXPLICIT_REFS = 10
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        cache_path: Path | None = None,
+        metadata_cache: GitHubMetadataCache | None = None,
+    ) -> None:
         self._git = shutil.which("git")
         self._gh = shutil.which("gh")
-        self._branch_cache: dict[tuple[str, str], tuple[float, tuple[PullRequestContext, ...]]] = {}
-        self._ref_cache: dict[tuple[str, int], tuple[float, PullRequestContext | None]] = {}
-        self._branch_locks: dict[tuple[str, str], asyncio.Lock] = {}
-        self._ref_locks: dict[tuple[str, int], asyncio.Lock] = {}
+        self._metadata = metadata_cache or GitHubMetadataCache(cache_path)
         self._command_limit = asyncio.Semaphore(6)
 
     async def _run(self, *args: str) -> tuple[int, str]:
@@ -215,15 +216,31 @@ class GitContextResolver:
             return (1, "")
         return (code, stdout.decode("utf-8", "replace"))
 
-    async def resolve(self, sessions: list[Session]) -> dict[str, GitContext]:
-        rows = await asyncio.gather(*(self._resolve_session(session) for session in sessions))
+    async def resolve(
+        self, sessions: list[Session], *, force: bool = False
+    ) -> dict[str, GitContext]:
+        fresh_after = time.time() if force else None
+        rows = await asyncio.gather(
+            *(
+                self._resolve_session(
+                    session, force=force, fresh_after=fresh_after
+                )
+                for session in sessions
+            )
+        )
         return {
             session.key: context
             for session, context in zip(sessions, rows, strict=True)
             if context is not None
         }
 
-    async def _resolve_session(self, session: Session) -> GitContext | None:
+    async def _resolve_session(
+        self,
+        session: Session,
+        *,
+        force: bool = False,
+        fresh_after: float | None = None,
+    ) -> GitContext | None:
         branch = None
         dirty = False
         referenced = self._repository_from_session(session)
@@ -262,7 +279,12 @@ class GitContextResolver:
         pulls_complete = self._gh is not None or not (refs or branch_lookup)
         if self._gh is not None:
             resolved = await asyncio.gather(
-                *(self._pull_for_ref(repo, number) for repo, number in refs)
+                *(
+                    self._pull_for_ref(
+                        repo, number, force=force, fresh_after=fresh_after
+                    )
+                    for repo, number in refs
+                )
             )
             by_ref = dict(zip(refs, resolved, strict=True))
             explicit_pulls = tuple(
@@ -303,7 +325,10 @@ class GitContextResolver:
             if not pulls and branch_lookup:
                 assert repository is not None and branch is not None
                 branch_pulls, branch_complete = await self._pulls_for_branch(
-                    repository, branch
+                    repository,
+                    branch,
+                    force=force,
+                    fresh_after=fresh_after,
                 )
                 pulls_complete = pulls_complete and branch_complete
                 for pull in branch_pulls:
@@ -407,22 +432,14 @@ class GitContextResolver:
         return list(dict.fromkeys(ref for group in groups for ref in group))
 
     async def _pulls_for_branch(
-        self, repository: str, branch: str
+        self,
+        repository: str,
+        branch: str,
+        *,
+        force: bool = False,
+        fresh_after: float | None = None,
     ) -> tuple[tuple[PullRequestContext, ...], bool]:
-        key = (repository.lower(), branch)
-        lock = self._branch_locks.setdefault(key, asyncio.Lock())
-        async with lock:
-            now = time.monotonic()
-            cached = self._branch_cache.get(key)
-            if cached is not None:
-                fetched_at, pulls = cached
-                ttl = (
-                    self.TERMINAL_TTL_S
-                    if pulls and all(pull.is_terminal for pull in pulls)
-                    else self.OPEN_TTL_S
-                )
-                if now - fetched_at < ttl:
-                    return (pulls, True)
+        async def fetch() -> GitHubMetadata | None:
             assert self._gh is not None
             code, output = await self._run(
                 self._gh,
@@ -453,33 +470,46 @@ class GitContextResolver:
                 pulls = tuple(pull for pull in parsed if pull is not None)
             except (TypeError, ValueError):
                 log.debug(
-                    "Deckhand PR lookup unavailable for %s branch %s; retaining cache",
+                    "Deckhand PR lookup unavailable for %s branch %s",
                     repository,
                     branch,
                 )
-                return ((cached[1] if cached is not None else ()), False)
-            self._branch_cache[key] = (now, pulls)
-            return (pulls, True)
+                return None
+            return GitHubMetadata(
+                values,
+                terminal=bool(pulls) and all(pull.is_terminal for pull in pulls),
+            )
+
+        lookup = await self._metadata.resolve(
+            f"pr-branch:v1:{repository.lower()}:{branch}",
+            fetch,
+            force=force,
+            fresh_after=fresh_after,
+        )
+        try:
+            values = lookup.value
+            if not isinstance(values, list):
+                raise ValueError("GitHub PR list cache was incomplete")
+            parsed = tuple(
+                _pull_request(repository, value)
+                for value in values
+                if isinstance(value, dict)
+            )
+            if len(parsed) != len(values) or any(pull is None for pull in parsed):
+                raise ValueError("GitHub PR list cache was incomplete")
+        except (TypeError, ValueError):
+            return ((), False)
+        return (tuple(pull for pull in parsed if pull is not None), lookup.complete)
 
     async def _pull_for_ref(
-        self, repository: str, number: int
+        self,
+        repository: str,
+        number: int,
+        *,
+        force: bool = False,
+        fresh_after: float | None = None,
     ) -> tuple[PullRequestContext | None, bool]:
-        key = (repository.lower(), number)
-        lock = self._ref_locks.setdefault(key, asyncio.Lock())
-        async with lock:
-            now = time.monotonic()
-            cached = self._ref_cache.get(key)
-            if cached is not None:
-                fetched_at, pull = cached
-                ttl = (
-                    self.NEGATIVE_TTL_S
-                    if pull is None
-                    else self.TERMINAL_TTL_S
-                    if pull.is_terminal
-                    else self.OPEN_TTL_S
-                )
-                if now - fetched_at < ttl:
-                    return (pull, True)
+        async def fetch() -> GitHubMetadata | None:
             assert self._gh is not None
             code, output = await self._run(
                 self._gh,
@@ -498,10 +528,19 @@ class GitContextResolver:
                     raise ValueError("GitHub PR was unavailable")
             except (TypeError, ValueError):
                 log.debug(
-                    "Deckhand PR lookup unavailable for %s#%s; retaining cache",
+                    "Deckhand PR lookup unavailable for %s#%s",
                     repository,
                     number,
                 )
-                return ((cached[1] if cached is not None else None), False)
-            self._ref_cache[key] = (now, pull)
-            return (pull, True)
+                return None
+            return GitHubMetadata(value, terminal=pull.is_terminal)
+
+        lookup = await self._metadata.resolve(
+            f"pr-ref:v1:{repository.lower()}:{number}",
+            fetch,
+            force=force,
+            fresh_after=fresh_after,
+        )
+        value = lookup.value
+        pull = _pull_request(repository, value) if isinstance(value, dict) else None
+        return (pull, lookup.complete and pull is not None)

@@ -6,6 +6,7 @@ dispatched — with no gh/git/uv/delegate I/O. The side-effecting wrappers
 """
 
 import importlib.util
+import json
 import subprocess
 from pathlib import Path
 
@@ -62,6 +63,49 @@ def test_prd_issue_numbers_from_body_and_branch():
         {"body": "fixes #9 and Resolved #10", "headRefName": "feature/x"},
     ]
     assert poller.prd_issue_numbers(prs) == {12, 7, 9, 10}
+
+
+def test_board_snapshot_fetches_issues_and_pulls_with_one_github_call(monkeypatch):
+    calls = []
+    payload = {
+        "data": {
+            "repository": {
+                "issues": {
+                    "nodes": [
+                        {
+                            "number": 153,
+                            "title": "Reduce API use",
+                            "updatedAt": "2026-07-24T08:00:00Z",
+                            "author": {"login": "eerovil"},
+                            "labels": {"nodes": [{"name": "agent"}]},
+                        }
+                    ]
+                },
+                "pullRequests": {
+                    "nodes": [
+                        {
+                            "number": 154,
+                            "body": "Closes #153",
+                            "headRefName": "agent/issue-153-api",
+                        }
+                    ]
+                },
+            }
+        }
+    }
+
+    def fake_run(cmd, *, cwd=None, check=True):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(poller, "_run", fake_run)
+
+    issues, pulls = poller.fetch_board_snapshot("eerovil/agentdeck", "agent")
+
+    assert len(calls) == 1
+    assert calls[0][:3] == ["gh", "api", "graphql"]
+    assert issues[0]["labels"] == [{"name": "agent"}]
+    assert pulls[0]["headRefName"] == "agent/issue-153-api"
 
 
 def test_select_skips_prd_done_and_inflight():

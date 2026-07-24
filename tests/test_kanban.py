@@ -136,19 +136,22 @@ def test_negative_cache_retries_after_ttl(tmp_path, monkeypatch):
     import asyncio
 
     # Miss is cached; not retried before NEG_TTL_S.
-    assert asyncio.run(cache.resolve_missing([ref], now=0.0)) is True
+    assert asyncio.run(cache.resolve_missing([ref], now=1.0)) is True
     assert cache.get(ref) is None
-    assert asyncio.run(cache.resolve_missing([ref], now=cache.NEG_TTL_S - 1)) is False
+    assert asyncio.run(
+        cache.resolve_missing([ref], now=cache.FAILURE_BACKOFF_S)
+    ) is False
 
-    # After the negative TTL it retries, and now succeeds.
+    # After the transient-failure backoff it retries, and now succeeds.
     result["rec"] = {"title": "Recovered title", "state": "closed", "state_reason": "completed"}
-    assert asyncio.run(cache.resolve_missing([ref], now=cache.NEG_TTL_S + 1)) is True
+    recovered_at = 1.0 + cache.FAILURE_BACKOFF_S + 1
+    assert asyncio.run(cache.resolve_missing([ref], now=recovered_at)) is True
     assert cache.get(ref) == "Recovered title"
     assert cache.get_status(ref) == ("closed", "done")
     # Terminal state uses the long TTL: past OPEN_TTL_S but under TERMINAL_TTL_S
     # it must NOT re-poll (an open issue would have).
-    later = cache.NEG_TTL_S + 1 + cache.OPEN_TTL_S + 60
-    assert cache.OPEN_TTL_S < (later - (cache.NEG_TTL_S + 1)) < cache.TERMINAL_TTL_S
+    later = recovered_at + cache.OPEN_TTL_S + 60
+    assert cache.OPEN_TTL_S < (later - recovered_at) < cache.TERMINAL_TTL_S
     assert asyncio.run(cache.resolve_missing([ref], now=later)) is False
 
 

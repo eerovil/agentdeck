@@ -206,24 +206,58 @@ def _fetch_base(repo_path: Path, base: str) -> None:
     _run(cmd)
 
 
-def list_agent_issues(repo: str, label: str) -> list[dict]:
-    out = _run(
-        [
-            "gh", "issue", "list", "-R", repo, "--label", label, "--state", "open",
-            "--limit", "100", "--json", "number,title,labels,updatedAt,author",
-        ]
-    ).stdout
-    return json.loads(out or "[]")
+_BOARD_QUERY = """
+query($owner: String!, $name: String!, $label: String!) {
+  repository(owner: $owner, name: $name) {
+    issues(first: 100, states: OPEN, labels: [$label]) {
+      nodes {
+        number
+        title
+        updatedAt
+        author { login }
+        labels(first: 100) { nodes { name } }
+      }
+    }
+    pullRequests(first: 100, states: OPEN) {
+      nodes { number body headRefName }
+    }
+  }
+}
+"""
 
 
-def list_open_prs(repo: str) -> list[dict]:
+def fetch_board_snapshot(repo: str, label: str) -> tuple[list[dict], list[dict]]:
+    """Fetch labelled issues and open PRs in one live GraphQL request."""
+    try:
+        owner, name = repo.split("/", 1)
+    except ValueError as exc:
+        raise ValueError(f"invalid GitHub repository {repo!r}") from exc
     out = _run(
         [
-            "gh", "pr", "list", "-R", repo, "--state", "open",
-            "--limit", "100", "--json", "number,body,headRefName",
+            "gh",
+            "api",
+            "graphql",
+            "-f",
+            f"owner={owner}",
+            "-f",
+            f"name={name}",
+            "-f",
+            f"label={label}",
+            "-f",
+            f"query={_BOARD_QUERY}",
         ]
     ).stdout
-    return json.loads(out or "[]")
+    payload = json.loads(out)
+    repository = payload["data"]["repository"]
+    issues = repository["issues"]["nodes"]
+    pulls = repository["pullRequests"]["nodes"]
+    if not isinstance(issues, list) or not isinstance(pulls, list):
+        raise ValueError("GitHub board snapshot was incomplete")
+    for issue in issues:
+        labels = issue.get("labels") if isinstance(issue, dict) else None
+        if isinstance(labels, dict):
+            issue["labels"] = labels.get("nodes", [])
+    return (issues, pulls)
 
 
 def load_state(path: Path) -> dict:
@@ -534,10 +568,8 @@ def main(argv: list[str] | None = None) -> int:
     state = load_state(state_path)
     # Public repo: only ever act on issues WE opened (their body is the worker's
     # prompt). Filter by author before anything else touches them.
-    candidates = by_allowed_author(
-        list_agent_issues(cfg["repo"], cfg["label"]), cfg.get("allowed_authors")
-    )
-    open_prs = list_open_prs(cfg["repo"])
+    issues, open_prs = fetch_board_snapshot(cfg["repo"], cfg["label"])
+    candidates = by_allowed_author(issues, cfg.get("allowed_authors"))
     prd = prd_issue_numbers(open_prs)
 
     # An issue whose PR is now open graduates to `done` so it's never re-picked.

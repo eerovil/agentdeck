@@ -27,6 +27,8 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+from agentdeck.github_cache import GitHubMetadata, GitHubMetadataCache
+
 log = logging.getLogger(__name__)
 
 # "Run the kanban-worker skill for ScandinavianOutdoor/store#2728."
@@ -119,68 +121,41 @@ def status_label(rec: dict | None) -> tuple[str, str] | None:
 
 
 class KanbanTitleCache:
-    """Disk-backed ``owner/repo#n`` → issue title + GitHub state cache, resolved
-    via ``gh api``.
+    """Shared ``owner/repo#n`` → issue title + GitHub state resolver.
 
-    Held on the (singleton) provider so it persists across scans; mirrored to a
-    JSON file so it survives restarts. Titles rarely change, but state does, so
-    the refresh TTL is state-aware: open issues re-poll often, terminal ones
-    (closed/merged) rarely, and a failed lookup backs off further still.
+    The host-level metadata cache survives restarts and coordinates production
+    with staging. Titles rarely change, but state does, so open items use the
+    shared five-minute TTL while closed/merged items remain long-lived.
     """
 
-    # Re-poll an *open* issue's state at most this often (state can change).
-    OPEN_TTL_S = 180
-    # A closed/merged issue is effectively terminal — re-check rarely.
-    TERMINAL_TTL_S = 3600
-    # Re-try a failed lookup no sooner than this (avoid hammering on 404/offline).
-    NEG_TTL_S = 6 * 3600
+    OPEN_TTL_S = GitHubMetadataCache.OPEN_TTL_S
+    TERMINAL_TTL_S = GitHubMetadataCache.TERMINAL_TTL_S
+    NEG_TTL_S = GitHubMetadataCache.NEGATIVE_TTL_S
+    FAILURE_BACKOFF_S = GitHubMetadataCache.FAILURE_BACKOFF_S
     # Per-scan bound on new gh calls so a cold cache can't stall one scan.
     MAX_FETCH_PER_SWEEP = 8
     FETCH_TIMEOUT_S = 6.0
 
     def __init__(self, path: Path | None = None) -> None:
-        self.path = path or (Path("~/.cache/agentdeck").expanduser() / "kanban_titles.json")
-        self._cache: dict[str, dict] = {}
+        self._metadata = GitHubMetadataCache(path)
         self._gh = shutil.which("gh")
-        self._load()
 
-    def _load(self) -> None:
-        try:
-            data = json.loads(self.path.read_text())
-            if isinstance(data, dict):
-                self._cache = data
-        except (OSError, ValueError):
-            self._cache = {}
+    @staticmethod
+    def _cache_key(ref: KanbanRef) -> str:
+        return f"issue:v1:{ref.key.lower()}"
 
-    def _save(self) -> None:
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(self._cache))
-            tmp.replace(self.path)
-        except OSError as exc:
-            log.debug("kanban cache save failed: %s", exc)
+    def _record(self, ref: KanbanRef) -> dict | None:
+        value = self._metadata.peek(self._cache_key(ref)).value
+        return value if isinstance(value, dict) else None
 
     def get(self, ref: KanbanRef) -> str | None:
         """Cached issue title if known, else None (unresolved or a cached miss)."""
-        rec = self._cache.get(ref.key)
+        rec = self._record(ref)
         return (rec or {}).get("title") or None
 
     def get_status(self, ref: KanbanRef) -> tuple[str, str] | None:
         """(text, kind) GitHub-state badge for the ref, or None if unresolved."""
-        return status_label(self._cache.get(ref.key))
-
-    def _needs_fetch(self, ref: KanbanRef, now: float) -> bool:
-        rec = self._cache.get(ref.key)
-        if rec is None:
-            return True
-        age = now - rec.get("fetched_at", 0.0)
-        if not rec.get("title"):  # a cached miss
-            return age > self.NEG_TTL_S
-        state = rec.get("state")
-        if state and state != "open":  # terminal (closed/merged)
-            return age > self.TERMINAL_TTL_S
-        return age > self.OPEN_TTL_S  # open, or a legacy record with no state yet
+        return status_label(self._record(ref))
 
     async def resolve_missing(self, refs: list[KanbanRef], now: float) -> bool:
         """Fetch title + state for up to ``MAX_FETCH_PER_SWEEP`` stale/unknown
@@ -191,24 +166,29 @@ class KanbanTitleCache:
         """
         if self._gh is None:
             return False
-        pending: dict[str, KanbanRef] = {}
-        for ref in refs:
-            if ref.key not in pending and self._needs_fetch(ref, now):
-                pending[ref.key] = ref
-        batch = list(pending.values())[: self.MAX_FETCH_PER_SWEEP]
-        if not batch:
+        unique = {self._cache_key(ref): ref for ref in refs}
+        if not unique:
             return False
-        results = await asyncio.gather(*(self._fetch(ref) for ref in batch))
-        for ref, rec in results:
-            if rec is not None:
-                self._cache[ref.key] = {**rec, "fetched_at": now}
-            elif (self._cache.get(ref.key) or {}).get("title"):
-                # Transient failure — keep the good data, just back off normally.
-                self._cache[ref.key]["fetched_at"] = now
-            else:
-                self._cache[ref.key] = {"fetched_at": now}  # negative cache
-        self._save()
-        return True
+
+        attempted = False
+
+        def request(ref: KanbanRef):
+            async def fetch() -> GitHubMetadata | None:
+                nonlocal attempted
+                attempted = True
+                _ref, rec = await self._fetch(ref)
+                if rec is None:
+                    return None
+                return GitHubMetadata(rec, terminal=rec.get("state") == "closed")
+
+            return fetch
+
+        results = await self._metadata.resolve_many(
+            [(key, request(ref)) for key, ref in unique.items()],
+            now=now,
+            max_refreshes=self.MAX_FETCH_PER_SWEEP,
+        )
+        return attempted or any(result.refreshed for result in results.values())
 
     async def _fetch(self, ref: KanbanRef) -> tuple[KanbanRef, dict | None]:
         assert self._gh is not None

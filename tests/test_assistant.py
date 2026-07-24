@@ -23,8 +23,10 @@ class _StubResolver:
 
     def __init__(self, contexts=None):
         self._contexts = contexts or {}
+        self.forces = []
 
-    async def resolve(self, sessions):
+    async def resolve(self, sessions, *, force=False):
+        self.forces.append(force)
         return dict(self._contexts)
 
 
@@ -72,6 +74,20 @@ async def test_structured_question_card_skips_the_model(tmp_path):
 
     assert [i.headline for i in assistant.view.insights] == ["Asked you a question"]
     runner.assert_not_awaited()
+
+
+async def test_manual_refresh_bypasses_github_metadata_ttl(tmp_path):
+    resolver = _StubResolver()
+    assistant = AssistantService(
+        _config(tmp_path),
+        AppState(),
+        runner=AsyncMock(),
+        context_resolver=resolver,
+    )
+
+    await assistant.refresh(manual=True)
+
+    assert resolver.forces == [True]
 
 
 async def test_finished_agent_flagged_by_the_model_becomes_a_card(tmp_path):

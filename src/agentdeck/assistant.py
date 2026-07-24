@@ -401,7 +401,7 @@ class AssistantService:
 
     async def refresh(self, *, manual: bool = False) -> None:
         sessions = self._triage_sessions()
-        resolved = await self.context_resolver.resolve(sessions)
+        resolved = await self.context_resolver.resolve(sessions, force=manual)
         eligible_keys = {session.key for session in self._eligible_sessions()}
         delegated_handled = set(self.dismissals.insight_keys()) - eligible_keys
         for session_key in delegated_handled & self.state.delegated_session_keys:
