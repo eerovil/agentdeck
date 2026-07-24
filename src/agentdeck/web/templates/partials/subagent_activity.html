@@ -23,18 +23,19 @@
     </div>
   {% endfor %}
   {% for child in active_sessions %}
-    <div class="subagent-row working">
+    <a class="subagent-row working" href="/sessions/{{ child.key }}"
+       data-agentdeck-action="open_session">
       <span class="subagent-state" aria-hidden="true"></span>
       <div class="subagent-copy">
         <div class="subagent-name">
-          <strong><a href="/sessions/{{ child.key }}" data-agentdeck-action="open_session">{{ child.display_title }}</a></strong>
+          <strong>{{ child.display_title }}</strong>
           {% if child.worker_type or child.kind %}<span>{{ child.worker_type or child.kind }}</span>{% endif %}
           <span class="subagent-status">working</span>
         </div>
         {% if child.activity %}<div class="subagent-task" title="{{ child.activity }}">{{ child.activity }}</div>{% endif %}
       </div>
       {% if child.last_activity %}<time class="subagent-age" datetime="{{ child.last_activity.isoformat() }}" title="{{ child.last_activity | chat_time_title }}">{{ child.last_activity | reltime_ago }}</time>{% endif %}
-    </div>
+    </a>
   {% endfor %}
   </div>
 </section>
