@@ -7,6 +7,7 @@ from pathlib import Path
 
 from agentdeck.models import Account
 from agentdeck.providers.claude_code.worker import ClaudeWorkerHost
+from agentdeck.providers.instructions import FILE_PRESENTATION_INSTRUCTIONS
 
 
 class FakeStdin:
@@ -510,6 +511,16 @@ async def test_command_enables_stdio_permission_prompt(tmp_path):
     args = spawned[0]["args"]
     assert "--permission-prompt-tool" in args
     assert args[args.index("--permission-prompt-tool") + 1] == "stdio"
+    await host.stop()
+
+
+async def test_command_explains_file_preview_and_download_links(tmp_path):
+    host, spawned = _host(tmp_path)
+    await host.deliver("issue-1", "start", cwd=str(tmp_path))
+    args = spawned[0]["args"]
+    assert args[args.index("--append-system-prompt") + 1] == (
+        FILE_PRESENTATION_INSTRUCTIONS
+    )
     await host.stop()
 
 

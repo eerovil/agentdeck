@@ -15,6 +15,7 @@ from agentdeck.providers.codex.appserver import (
     CodexAppServer,
     _turn_input,
 )
+from agentdeck.providers.instructions import FILE_PRESENTATION_INSTRUCTIONS
 
 
 def _server(tmp_path: Path) -> CodexAppServer:
@@ -315,6 +316,7 @@ async def test_owned_thread_start_steer_and_interrupt(tmp_path):
             "approvalPolicy": "on-request",
         },
     )
+    assert FILE_PRESENTATION_INSTRUCTIONS in calls[0][1]["developerInstructions"]
     assert server.active_turn("thread-1") == "turn-1"
     assert calls[1] == (
         "turn/start",

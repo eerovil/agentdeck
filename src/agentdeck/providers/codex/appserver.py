@@ -20,6 +20,7 @@ from ...models import (
     InteractionQuestion,
     PendingInteraction,
 )
+from ..instructions import FILE_PRESENTATION_INSTRUCTIONS
 from . import (
     APPROVALS_REVIEWER_CONFIG_OVERRIDE,
     NETWORK_ACCESS_CONFIG_OVERRIDE,
@@ -40,7 +41,7 @@ request and your stated commitments. Do not end a turn after a tool call without
 either continuing the remaining work or sending a user-facing final response.
 Every turn must conclude with a final response that summarizes the outcome; if
 blocked, explain the blocker and what is needed to proceed.
-""".strip()
+""".strip() + f"\n\n{FILE_PRESENTATION_INSTRUCTIONS}"
 
 # The app-server emits one JSON-RPC message per stdout line. asyncio's default
 # StreamReader limit is 64 KiB, so a single large event (e.g. a big tool result)
