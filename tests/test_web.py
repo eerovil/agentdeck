@@ -3098,6 +3098,13 @@ async def test_mobile_fast_swipe_toward_earlier_messages_jumps_to_top(tmp_path):
               const transcript = document.querySelector('.transcript');
               const frame = () => new Promise(requestAnimationFrame);
               const settle = async () => { await frame(); await frame(); };
+              const waitForTop = async () => {
+                for (let index = 0; index < 120; index += 1) {
+                  if (detail.scrollTop <= 1) return detail.scrollTop;
+                  await frame();
+                }
+                return detail.scrollTop;
+              };
               const fireTouch = (type, x, y, identifier) => {
                 const touch = new Touch({
                   identifier, target: detail,
@@ -3127,11 +3134,31 @@ async def test_mobile_fast_swipe_toward_earlier_messages_jumps_to_top(tmp_path):
               detail.scrollTo(0, detail.scrollHeight);
               await settle();
               const initial = detail.scrollTop;
+              const nativeScrollTo = detail.scrollTo.bind(detail);
+              const topScrolls = [];
+              detail.scrollTo = (...args) => {
+                if (typeof args[0] === 'object') topScrolls.push(args[0]);
+                nativeScrollTo(...args);
+              };
               const opposite = await swipe([160, 330], [160, 170], 20, 1);
               const horizontal = await swipe([40, 200], [220, 210], 20, 2);
-              const slow = await swipe([160, 170], [160, 330], 320, 3);
-              const fast = await swipe([160, 170], [160, 330], 20, 4);
-              return {initial, opposite, horizontal, slow, fast};
+              const shortFast = await swipe([160, 170], [160, 330], 20, 3);
+              const longSlow = await swipe([160, 60], [160, 340], 300, 4);
+
+              detail.scrollTo(0, detail.clientHeight * 1.5);
+              await settle();
+              const nearTopStart = detail.scrollTop;
+              const nearTop = await swipe([160, 60], [160, 340], 20, 5);
+
+              detail.scrollTo(0, detail.scrollHeight);
+              await settle();
+              const beforeFast = detail.scrollTop;
+              const smoothStart = await swipe([160, 60], [160, 340], 20, 6);
+              const fast = await waitForTop();
+              return {
+                initial, opposite, horizontal, shortFast, longSlow,
+                nearTopStart, nearTop, beforeFast, smoothStart, fast, topScrolls,
+              };
             }"""
         )
         await browser.close()
@@ -3139,8 +3166,13 @@ async def test_mobile_fast_swipe_toward_earlier_messages_jumps_to_top(tmp_path):
     assert result["initial"] > 1000
     assert result["opposite"] == result["initial"]
     assert result["horizontal"] == result["initial"]
-    assert result["slow"] == result["initial"]
-    assert result["fast"] == 0
+    assert result["shortFast"] == result["initial"]
+    assert result["longSlow"] == result["initial"]
+    assert result["nearTop"] == result["nearTopStart"]
+    assert result["beforeFast"] == result["initial"]
+    assert 0 < result["smoothStart"] < result["beforeFast"]
+    assert result["fast"] <= 1
+    assert result["topScrolls"] == [{"top": 0, "behavior": "smooth"}]
 
 
 async def test_subagent_count_renders_on_card_and_detail_header(tmp_path):
