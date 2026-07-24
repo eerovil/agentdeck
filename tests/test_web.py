@@ -592,7 +592,7 @@ async def test_session_card_shows_deckhand_status_pill(tmp_path):
     #   working   — a durable verdict but mid-turn (verdict suppressed, no pill)
     #   idle      — resting, never classified ("?")
     #   asking    — a pending question (waiting, straight off the session)
-    #   subagent  — delegated/background chat (never gets a pill)
+    #   subagent  — delegated child reporting through a parent (no own pill)
     sessions = {
         "live": dict(last_role="agent", thinking=False),
         "finished": dict(last_role="agent", thinking=False),
@@ -614,10 +614,13 @@ async def test_session_card_shows_deckhand_status_pill(tmp_path):
                 **extra,
             )
         )
+    app.state.app_state.recorded_delegation_parents[
+        "claude_code:test:subagent"
+    ] = "finished"
     assistant._verdicts = {
         "claude_code:test:finished": ("sig", Verdict("finished", "Opened a PR", "review it")),
         "claude_code:test:working": ("sig", Verdict("finished", "Mid-turn work", "review it")),
-        # Even with a verdict, a delegated chat must never show a pill.
+        # Even with a verdict, a delegated child must never show its own pill.
         "claude_code:test:subagent": ("sig", Verdict("blocked", "Subagent internal step", "")),
     }
     # A manually dismissed chat resolves to a non-attention "done" pill.
@@ -669,7 +672,7 @@ async def test_session_card_shows_deckhand_status_pill(tmp_path):
     assert 'title="Deckhand: Mid-turn work"' not in r.text
     # The retired "review" pill never renders.
     assert "dh-review" not in r.text
-    # A delegated/subagent chat never shows a pill, even with a verdict.
+    # A delegated child never shows its own pill, even with a verdict.
     assert "Session subagent" in r.text  # the card itself renders
     assert 'title="Deckhand: Subagent internal step"' not in r.text
 
