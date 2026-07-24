@@ -20,6 +20,7 @@ from .config import AppConfig
 from .db import make_db
 from .inject import InjectionService
 from .providers.codex.runtime_client import runtime_socket_path
+from .providers.usage import shared_cache_dir, warm_usage_state
 from .push import PushService
 from .state import AppState
 from .titles import TitleService
@@ -95,6 +96,14 @@ def create_app(config: AppConfig) -> FastAPI:
             transport=httpx.AsyncHTTPTransport(uds=str(runtime_socket_path())),
             base_url="http://agentdeck-runtime",
             timeout=httpx.Timeout(30.0, read=None),
+        )
+        # Warm the usage bars from the last persisted snapshot before the live
+        # poller starts, so a web restart shows aged bars instead of blank "no
+        # usage data yet" until the first poll lands (minutes, under 429 backoff).
+        warm_usage_state(
+            state,
+            app.state.accounts,
+            shared_cache_dir(config.usage.shared_cache_dir),
         )
         push.start()
         await collector.start()

@@ -29,6 +29,9 @@ class NullDb:
     enabled = False
 
     def record_usage(self, snapshot: UsageSnapshot) -> None: ...
+    def latest_usage(self, account_key: str) -> UsageSnapshot | None:
+        return None
+
     def recent_five_hour(self, account_key: str, limit: int = 24) -> list[float]:
         return []
 
@@ -222,6 +225,31 @@ class Db:
                 snapshot.five_hour_pct,
                 snapshot.seven_day_pct,
             ),
+        )
+
+    def latest_usage(self, account_key: str) -> UsageSnapshot | None:
+        """Most recent persisted snapshot for warming state on startup. Reset
+        times aren't stored in history, so they come back ``None`` — the live
+        poller fills them on its first success."""
+        rows = self._query(
+            "SELECT ts, five_hour_pct, seven_day_pct FROM usage_history"
+            " WHERE account_key = ? ORDER BY ts DESC LIMIT 1",
+            (account_key,),
+        )
+        if not rows:
+            return None
+        ts, five, seven = rows[0]
+        try:
+            fetched = datetime.fromisoformat(ts)
+        except (TypeError, ValueError):
+            return None
+        return UsageSnapshot(
+            account_key=account_key,
+            five_hour_pct=five,
+            five_hour_resets_at=None,
+            seven_day_pct=seven,
+            seven_day_resets_at=None,
+            fetched_at=fetched,
         )
 
     def recent_five_hour(self, account_key: str, limit: int = 24) -> list[float]:

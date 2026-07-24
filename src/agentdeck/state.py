@@ -460,6 +460,13 @@ class AppState:
             self.db.record_usage(snapshot)
         self.usage_changed()
 
+    def warm_usage(self, snapshot: UsageSnapshot) -> None:
+        """Seed a persisted snapshot at startup without re-recording it to
+        history. ``setdefault`` so a live poll that already landed wins; a stale
+        warm value only fills the gap until the first successful poll, and
+        age-based staleness in the render marks it accordingly."""
+        self.usage.setdefault(snapshot.account_key, snapshot)
+
     def mark_usage_stale(self, account_key: str) -> None:
         snap = self.usage.get(account_key)
         if snap is not None and not snap.stale:

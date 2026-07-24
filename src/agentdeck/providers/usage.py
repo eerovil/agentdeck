@@ -20,6 +20,7 @@ import os
 import random
 import tempfile
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 from pathlib import Path
 
 from ..models import Account, UsageSnapshot
@@ -66,6 +67,56 @@ def write_shared_cache(snapshot: UsageSnapshot, account: Account, cache_dir: Pat
                 os.unlink(tmp)
     except OSError as exc:
         log.warning("could not write shared usage cache for %s: %s", account.key, exc)
+
+
+def _parse_iso(value: object) -> datetime | None:
+    """Decode an ISO timestamp write_shared_cache emitted, tolerant of junk."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def read_shared_cache(account: Account, cache_dir: Path) -> UsageSnapshot | None:
+    """Reconstruct the last snapshot ``write_shared_cache`` persisted for this
+    account, or ``None`` if it is absent or unreadable. The read counterpart of
+    ``write_shared_cache``, used to warm in-memory state on startup so a web
+    restart shows aged bars instead of blank "no usage data yet" until the first
+    live poll (which, under usage-endpoint 429 backoff, can be minutes)."""
+    path = cache_dir / f"usage-{account.label}.json"
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    fetched = _parse_iso(raw.get("fetched_at"))
+    if fetched is None:
+        return None
+    return UsageSnapshot(
+        account_key=account.key,
+        five_hour_pct=raw.get("five_hour_pct"),
+        five_hour_resets_at=_parse_iso(raw.get("five_hour_resets_at")),
+        seven_day_pct=raw.get("seven_day_pct"),
+        seven_day_resets_at=_parse_iso(raw.get("seven_day_resets_at")),
+        fetched_at=fetched,
+    )
+
+
+def warm_usage_state(state, accounts: list[Account], cache_dir: Path) -> None:
+    """Seed each account's usage bars at startup from its last persisted snapshot:
+    the shared cache first (full fidelity, incl. reset times), else the history
+    DB (percentages only — reset times aren't stored). Age-based staleness then
+    renders anything old as "stale · updated …" on its own. Runs before the live
+    poller starts, so a restart never blanks the bars."""
+    for account in accounts:
+        snap = read_shared_cache(account, cache_dir)
+        if snap is None and state.db is not None:
+            snap = state.db.latest_usage(account.key)
+        if snap is not None:
+            state.warm_usage(snap)
 
 
 class UsagePoller:
