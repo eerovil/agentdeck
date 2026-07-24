@@ -262,6 +262,7 @@ def test_resolve_deckhand_status_precedence():
     )
 
     def resolve(session, **kw):
+        kw.setdefault("eligible", not session.is_delegated)
         kw.setdefault("verdict", None)
         kw.setdefault("dismissed", False)
         kw.setdefault("dismissed_headline", None)
@@ -275,8 +276,8 @@ def test_resolve_deckhand_status_precedence():
     finished = Verdict("finished", "Finished the work", "")
     blocked = Verdict("blocked", "Old blocked turn", "")
 
-    # A background/delegated chat never carries a pill.
-    assert resolve(_session(is_delegated=True), verdict=finished) is None
+    # A child chat that reports through a parent never carries its own pill.
+    assert resolve(_session(is_delegated=True), eligible=False, verdict=finished) is None
     # A pending question -> waiting, read straight off the session.
     p = resolve(_session(question="Which option?"))
     assert (p.state, p.label) == ("waiting", "waiting")

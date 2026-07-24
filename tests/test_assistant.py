@@ -109,7 +109,8 @@ async def test_finished_agent_without_a_pr_still_shows_a_finished_card(tmp_path)
 async def test_delegated_agents_are_not_triaged_or_counted(tmp_path):
     runner = AsyncMock(return_value=_ATTENTION)
     state = AppState()
-    state.update_session(_finished(tmp_path, key="codex:test:operator"))
+    parent = _finished(tmp_path, key="codex:test:operator")
+    state.update_session(parent)
     state.update_session(
         _finished(
             tmp_path,
@@ -119,6 +120,7 @@ async def test_delegated_agents_are_not_triaged_or_counted(tmp_path):
             last_text="Investigated the issue but made no changes.",
         )
     )
+    state.recorded_delegation_parents["codex:test:subagent"] = parent.session_id
     assistant = _service(tmp_path, runner, state=state)
 
     await assistant.refresh()
@@ -129,12 +131,36 @@ async def test_delegated_agents_are_not_triaged_or_counted(tmp_path):
     ]
     assert assistant.analysis_session_count == 1
     assert assistant.total_session_count == 1
+    child = state.sessions["codex:test:subagent"]
+    assert child.key not in assistant.deckhand_statuses([child])
+
+
+async def test_finished_top_level_delegation_gets_attention_and_status(tmp_path):
+    # Issue #134: a machine-started session with no visible parent is itself the
+    # operator's top-level chat. Once resting, it must not disappear merely
+    # because its durable provenance still says it was delegated.
+    runner = AsyncMock(return_value=_FINISHED_NO_PR)
+    state = AppState()
+    session = _finished(tmp_path, is_delegated=True)
+    state.update_session(session)
+    assistant = _service(tmp_path, runner, state=state)
+
+    await assistant.refresh()
+
+    runner.assert_awaited_once()
+    assert [insight.session_key for insight in assistant.view.insights] == [session.key]
+    assert assistant.deckhand_statuses([session])[session.key].state == "finished"
 
 
 async def test_delegated_agent_is_removed_from_old_handled_state(tmp_path):
     state = AppState()
+    parent = _finished(
+        tmp_path, key="codex:test:operator", session_id="operator", thinking=True
+    )
     session = _finished(tmp_path, is_delegated=True)
+    state.update_session(parent)
     state.update_session(session)
+    state.recorded_delegation_parents[session.key] = parent.session_id
     assistant = _service(tmp_path, AsyncMock(), state=state)
     assistant.dismissals.dismiss_insight(
         session.key,
@@ -526,24 +552,28 @@ def test_deckhand_statuses_gathers_and_resolves(tmp_path):
     from agentdeck.models import Session, SessionStatus
     from agentdeck.triage import AssistantInsight, AssistantView, Verdict
 
-    svc = _service(tmp_path, AsyncMock())
-
     def sess(key, **kw):
         return Session(
             key=key, account_key="codex:test", session_id=key,
             status=SessionStatus.IDLE, show_when_idle=True, **kw,
         )
 
+    sessions = [sess("v"), sess("i"), sess("none"), sess("q", question="Which?")]
+    state = AppState()
+    for session in sessions:
+        state.update_session(session)
+    svc = _service(tmp_path, AsyncMock(), state=state)
+
     svc._verdicts = {"v": ("sig", Verdict("finished", "All shipped", ""))}
     svc.view = AssistantView(
         state="ready", insights=(AssistantInsight("i", "waiting", "Asked", "d"),)
     )
-    statuses = svc.deckhand_statuses(
-        [sess("v"), sess("i"), sess("none"), sess("q", question="Which?")]
-    )
+    statuses = svc.deckhand_statuses(sessions)
     assert statuses["v"].state == "finished"  # durable verdict, resting
     assert statuses["i"].state == "waiting"  # live attention view
     assert statuses["none"].state == "unknown"  # resting, unclassified
     assert statuses["q"].state == "waiting"  # pending question off the session
     # A working, unclassified session yields no pill (absent key).
-    assert "w" not in svc.deckhand_statuses([sess("w", thinking=True)])
+    working = sess("w", thinking=True)
+    state.update_session(working)
+    assert "w" not in svc.deckhand_statuses([working])
