@@ -102,6 +102,7 @@ class AssistantService:
         self.push = push
         # Fire-and-forget push sends (issue #7/#13); kept referenced until done.
         self._push_tasks: set[asyncio.Task] = set()
+        self._pending_pushes: dict[tuple[str, str], asyncio.Task] = {}
         self.runner = runner
         self.context_resolver = context_resolver or GitContextResolver()
         self.contexts: dict[str, GitContext] = {}
@@ -170,10 +171,19 @@ class AssistantService:
             log.warning("Ignoring invalid Deckhand checkpoint")
 
     def _checkpoint_payload(self) -> dict[str, Any]:
+        checkpoint_insights = tuple(
+            insight
+            for insight in self.view.insights
+            if (insight.session_key, insight.headline) not in self._pending_pushes
+        )
         return {
             "version": 6,
             "view": {
-                "summary": self.view.summary,
+                "summary": (
+                    self.view.summary
+                    if len(checkpoint_insights) == len(self.view.insights)
+                    else tracking_summary(len(checkpoint_insights))
+                ),
                 "insights": [
                     {
                         "session_key": insight.session_key,
@@ -181,7 +191,7 @@ class AssistantService:
                         "headline": insight.headline,
                         "detail": insight.detail,
                     }
-                    for insight in self.view.insights
+                    for insight in checkpoint_insights
                 ],
                 "analyzed_at": (
                     self.view.analyzed_at.isoformat() if self.view.analyzed_at else None
@@ -527,28 +537,100 @@ class AssistantService:
         if not (self.push and self.push.enabled):
             return
         seen = {(i.session_key, i.headline) for i in old.insights}
+        current = {(i.session_key, i.headline) for i in new.insights}
+        for identity, task in tuple(self._pending_pushes.items()):
+            if identity not in current:
+                del self._pending_pushes[identity]
+                task.cancel()
         for insight in new.insights:
             if (insight.session_key, insight.headline) in seen:
                 continue
             self._dispatch_push(insight)
 
+    def _push_needs_settle(self, insight: AssistantInsight) -> bool:
+        """Whether a resting handoff could still gain newly scanned child work."""
+        session = self.state.sessions.get(insight.session_key)
+        return bool(
+            session is not None
+            and not session.thinking
+            and not session.stalled
+            and insight.kind != "waiting"
+        )
+
+    def _push_is_current_and_resting(self, insight: AssistantInsight) -> bool:
+        identity = (insight.session_key, insight.headline)
+        if identity not in {
+            (current.session_key, current.headline) for current in self.view.insights
+        }:
+            return False
+        session = self.state.sessions.get(insight.session_key)
+        if session is None:
+            return False
+        return not self.state.session_presentation().display(session).thinking
+
+    async def _wait_for_session_scan(self, account_key: str, revision: int) -> None:
+        """Wait for a successful full scan after ``revision`` without a race."""
+        with self.state.bus.subscribe("session_scans") as subscription:
+            while self.state.session_scan_revision(account_key) <= revision:
+                await subscription.get()
+
     def _dispatch_push(self, insight: AssistantInsight) -> None:
         # send_to_all is blocking (HTTP to each push service), so run it off the
         # event loop and don't await — a slow push service can't stall triage.
+        identity = (insight.session_key, insight.headline)
+        settle = self._push_needs_settle(insight)
+        if settle and identity in self._pending_pushes:
+            return
+        session = self.state.sessions.get(insight.session_key)
+        if settle:
+            assert session is not None
+        scan_revision = (
+            self.state.session_scan_revision(session.account_key)
+            if settle
+            else 0
+        )
+
+        async def send() -> bool:
+            if settle:
+                await self._wait_for_session_scan(session.account_key, scan_revision)
+                if not self._push_is_current_and_resting(insight):
+                    return False
+            await asyncio.to_thread(
+                self.push.send_to_all,
+                insight.headline,
+                insight.detail or "",
+                f"/sessions/{insight.session_key}",
+            )
+            return True
+
         try:
             task = asyncio.create_task(
-                asyncio.to_thread(
-                    self.push.send_to_all,
-                    insight.headline,
-                    insight.detail or "",
-                    f"/sessions/{insight.session_key}",
-                ),
+                send(),
                 name=f"push:{insight.session_key}",
             )
         except RuntimeError:  # no running loop (e.g. a synchronous unit test)
             return
         self._push_tasks.add(task)
-        task.add_done_callback(self._push_tasks.discard)
+        if settle:
+            self._pending_pushes[identity] = task
+
+        def done(completed: asyncio.Task) -> None:
+            self._push_tasks.discard(completed)
+            if self._pending_pushes.get(identity) is completed:
+                del self._pending_pushes[identity]
+            if completed.cancelled():
+                return
+            try:
+                sent = completed.result()
+            except Exception as exc:  # noqa: BLE001 -- background push failure is non-fatal
+                log.warning("Deckhand push failed for %s: %s", insight.session_key, exc)
+                return
+            if sent:
+                # Pending cards are excluded from checkpoints so a web restart
+                # retries the scan barrier instead of losing the notification.
+                self._save_checkpoint()
+
+        task.add_done_callback(done)
 
     # --- handled / undo ------------------------------------------------
 
