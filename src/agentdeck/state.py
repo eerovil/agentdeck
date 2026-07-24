@@ -55,6 +55,22 @@ class SessionPresentation:
         """Whether embedded or nested subagent work makes ``session`` active."""
         return session.key in self._working_through_subagents
 
+    def active_child_sessions(self, session: Session) -> tuple[Session, ...]:
+        """Active child Sessions not already represented as embedded progress.
+
+        Codex native subagents can appear through both ``Session.subagents`` and
+        the relationship graph. Delegated Sessions have only the graph entry.
+        Keeping this projection here gives session detail and its SSE fragment
+        the same authoritative children as the dashboard without duplicating a
+        native subagent row.
+        """
+        embedded_ids = {agent.agent_id for agent in session.subagents}
+        return tuple(
+            child
+            for child in self.children_of.get(session.key, ())
+            if child.thinking and child.session_id not in embedded_ids
+        )
+
 
 class AppState:
     def __init__(self, bus: EventBus | None = None, db: Db | NullDb | None = None):

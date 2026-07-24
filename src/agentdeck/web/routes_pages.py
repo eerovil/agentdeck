@@ -236,6 +236,7 @@ async def session_detail(request: Request, session_key: str) -> HTMLResponse:
         "session.html",
         {
             "session": effective_session,
+            "active_subagent_sessions": presentation.active_child_sessions(session),
             "detail": detail,
             "transcript_after_seq": max(
                 (event.seq for event in detail.events), default=0

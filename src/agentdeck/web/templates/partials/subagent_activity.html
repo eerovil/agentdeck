@@ -1,8 +1,10 @@
-{% if s.subagents %}
-<section class="subagent-activity{% if s.subagent_count %} active{% endif %}" aria-label="Subagent progress">
+{% set active_sessions = active_subagent_sessions | default(()) %}
+{% set working_count = s.subagent_count + (active_sessions | length) %}
+{% if s.subagents or active_sessions %}
+<section class="subagent-activity{% if working_count %} active{% endif %}" aria-label="Subagent progress">
   <div class="subagent-activity-head">
     <span>Subagents</span>
-    {% if s.subagent_count %}<span>{{ s.subagent_count }} working</span>{% else %}<span>recently finished</span>{% endif %}
+    {% if working_count %}<span>{{ working_count }} working</span>{% else %}<span>recently finished</span>{% endif %}
   </div>
   <div class="subagent-list">
   {% for agent in s.subagents %}
@@ -18,6 +20,20 @@
         {% if agent.result and agent.status not in ('working', 'quiet') %}<div class="subagent-result" title="{{ agent.result }}">{{ agent.result }}</div>{% endif %}
       </div>
       {% if agent.updated_at %}<time class="subagent-age" datetime="{{ agent.updated_at.isoformat() }}" title="{{ agent.updated_at | chat_time_title }}">{{ agent.updated_at | reltime_ago }}</time>{% endif %}
+    </div>
+  {% endfor %}
+  {% for child in active_sessions %}
+    <div class="subagent-row working">
+      <span class="subagent-state" aria-hidden="true"></span>
+      <div class="subagent-copy">
+        <div class="subagent-name">
+          <strong><a href="/sessions/{{ child.key }}" data-agentdeck-action="open_session">{{ child.display_title }}</a></strong>
+          {% if child.worker_type or child.kind %}<span>{{ child.worker_type or child.kind }}</span>{% endif %}
+          <span class="subagent-status">working</span>
+        </div>
+        {% if child.activity %}<div class="subagent-task" title="{{ child.activity }}">{{ child.activity }}</div>{% endif %}
+      </div>
+      {% if child.last_activity %}<time class="subagent-age" datetime="{{ child.last_activity.isoformat() }}" title="{{ child.last_activity | chat_time_title }}">{{ child.last_activity | reltime_ago }}</time>{% endif %}
     </div>
   {% endfor %}
   </div>

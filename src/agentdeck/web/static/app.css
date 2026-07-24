@@ -399,6 +399,8 @@ a.session.opening::after { content: "Opening…"; position: absolute; top: 7px; 
 .subagent-name { display: flex; align-items: baseline; gap: 6px; min-width: 0;
   font-size: 11px; line-height: 1.25; }
 .subagent-name strong { color: var(--fg); }
+.subagent-name strong a { color: inherit; text-decoration: none; }
+.subagent-name strong a:hover, .subagent-name strong a:focus-visible { color: var(--remote); }
 .subagent-name > span { color: var(--muted); }
 .subagent-name .subagent-status { margin-left: auto; color: var(--wt-cloud);
   text-transform: uppercase; font-size: 9px; font-weight: 700; letter-spacing: .03em; }
