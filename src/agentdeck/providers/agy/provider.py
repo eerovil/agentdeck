@@ -11,6 +11,8 @@ from ...models import (
     Capability,
     Session,
     SessionStatus,
+    TokenTotals,
+    TranscriptDetail,
     TranscriptEvent,
     UsageSnapshot,
 )
@@ -133,3 +135,20 @@ class AgyProvider(SessionProvider):
 
     async def fetch_usage(self, account: Account) -> UsageSnapshot | None:
         return None
+
+    async def load_transcript(
+        self, account: Account, session: Session, before_seq: int | None = None
+    ) -> TranscriptDetail:
+        events = await self.read_transcript(account, session)
+        total_events = len(events)
+        if before_seq is not None:
+            events = [e for e in events if e.seq < before_seq]
+        window = events[-400:]
+        return TranscriptDetail(
+            events=window,
+            tokens=TokenTotals(),
+            model=None,
+            todos=[],
+            total_events=total_events,
+            earliest_seq=window[0].seq if window else 0,
+        )

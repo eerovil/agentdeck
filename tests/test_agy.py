@@ -107,3 +107,9 @@ async def test_agy_read_transcript(tmp_path: Path):
     assert events[0].text == "First message"
     assert events[1].role == "assistant"
     assert events[1].text == "Response text"
+
+    detail = await provider.load_transcript(account, sessions[0])
+    assert len(detail.events) == 2
+    assert detail.total_events == 2
+    assert detail.earliest_seq == 1
+
