@@ -3314,6 +3314,14 @@ async def test_nested_subagents_collapse_by_default_with_toggle(tmp_path):
     assert 'aria-label="Subagent progress"' in detail.text
     assert "Scout the parser" in detail.text
     assert "Audit the boundary" in detail.text
+    assert (
+        '<a class="subagent-row working" '
+        'href="/sessions/claude_code:test:childA"' in detail.text
+    )
+    assert (
+        '<a class="subagent-row working" '
+        'href="/sessions/claude_code:test:childB"' in detail.text
+    )
     assert "1 working" in text
 
 
