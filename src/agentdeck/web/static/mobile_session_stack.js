@@ -127,8 +127,8 @@
   // so ordinary reading, horizontal Back swipes, and slow repositioning retain
   // their native behavior.
   var topSwipe = null;
-  var TOP_SWIPE_MIN_DISTANCE_PX = 120;
-  var TOP_SWIPE_MIN_VELOCITY_PX_MS = 0.75;
+  var TOP_SWIPE_MIN_DISTANCE_PX = 220;
+  var TOP_SWIPE_MIN_VELOCITY_PX_MS = 1.25;
   var TOP_SWIPE_VERTICAL_RATIO = 1.5;
 
   detail.addEventListener('touchstart', function (event) {
@@ -158,12 +158,15 @@
     var dy = touch.clientY - topSwipe.startY;
     var elapsed = Math.max(1, event.timeStamp - topSwipe.startedAt);
     topSwipe = null;
-    if (detail.scrollTop <= detail.clientHeight ||
+    if (detail.scrollTop <= detail.clientHeight * 2 ||
         dy < TOP_SWIPE_MIN_DISTANCE_PX ||
         dy < dx * TOP_SWIPE_VERTICAL_RATIO ||
         dy / elapsed < TOP_SWIPE_MIN_VELOCITY_PX_MS) return;
 
-    detail.scrollTo(0, 0);
+    detail.scrollTo({
+      top: 0,
+      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+    });
   }, {passive: true});
 
   detail.addEventListener('touchcancel', function () {
