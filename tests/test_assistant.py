@@ -413,6 +413,102 @@ async def test_handle_hides_card_until_evidence_changes(tmp_path):
     assert not assistant.dismissals.is_dismissed("codex:test:thread-1")
 
 
+async def test_done_pr_stays_dismissed_when_github_is_unavailable_after_restart(tmp_path):
+    path = tmp_path / "agentdeck.db"
+    session = _finished(tmp_path, last_text="Opened PR #151 for review.")
+    pull = PullRequestContext(
+        repository="eerovil/agentdeck",
+        number=151,
+        title="Keep done sessions dismissed",
+        url="https://github.com/eerovil/agentdeck/pull/151",
+        status="open",
+    )
+    trusted = GitContext("eerovil/agentdeck", "fix/deckhand", False, (pull,))
+    config = _config(tmp_path, max_sessions=1)
+
+    state = AppState(db=Db(path))
+    state.update_session(session)
+    first = AssistantService(
+        config,
+        state,
+        runner=AsyncMock(return_value=_FINISHED),
+        context_resolver=_StubResolver({session.key: trusted}),
+    )
+    await first.refresh()
+    assert [item.headline for item in first.view.insights] == [
+        "PR #151 ready for review"
+    ]
+    assert first.handle(session.key) is True
+
+    # A newer session can push this handled one outside the capped triage window.
+    # Its dismissal remains durable even though the checkpoint no longer carries
+    # its signature.
+    state.update_session(
+        _finished(
+            tmp_path,
+            key="codex:test:newer",
+            session_id="newer",
+            last_activity=datetime.now(UTC),
+        )
+    )
+    await first.refresh()
+    assert session.key not in first._signatures
+    assert first.dismissals.is_dismissed(session.key)
+
+    unavailable = GitContext(
+        "eerovil/agentdeck", "fix/deckhand", False, (), pulls_complete=False
+    )
+    resolver = _StubResolver({session.key: unavailable})
+    state2 = AppState(db=Db(path))
+    state2.update_session(session)
+    second = AssistantService(
+        config,
+        state2,
+        runner=AsyncMock(return_value=_FINISHED),
+        context_resolver=resolver,
+    )
+
+    await second.refresh()
+    assert second.view.insights == ()
+    assert second.is_handled(session.key)
+
+    resolver._contexts[session.key] = trusted
+    await second.refresh()
+    assert second.view.insights == ()
+    assert second.is_handled(session.key)
+
+
+def test_incomplete_pr_context_only_reuses_previous_pr_evidence(tmp_path):
+    assistant = _service(tmp_path, AsyncMock())
+    session = _finished(tmp_path, last_text="Opened PR #151 for review.")
+    pull = PullRequestContext(
+        repository="eerovil/agentdeck",
+        number=151,
+        title="Keep done sessions dismissed",
+        url="https://github.com/eerovil/agentdeck/pull/151",
+        status="open",
+    )
+    trusted = GitContext("eerovil/agentdeck", "fix/deckhand", False, (pull,))
+    unavailable = GitContext(
+        "eerovil/agentdeck", "fix/deckhand", False, (), pulls_complete=False
+    )
+    previous = assistant._evidence_signature(session, trusted, None)
+
+    assert (
+        assistant._evidence_signature(
+            session, unavailable, None, previous_signature=previous
+        )
+        == previous
+    )
+    changed = replace(session, last_text="A new problem appeared.")
+    assert (
+        assistant._evidence_signature(
+            changed, unavailable, None, previous_signature=previous
+        )
+        != previous
+    )
+
+
 async def test_unhandle_restores_card_immediately(tmp_path):
     runner = AsyncMock(return_value=_ATTENTION)
     state = AppState()

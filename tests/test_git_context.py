@@ -196,6 +196,101 @@ async def test_resolves_explicit_pr_number_when_branch_has_no_pr(tmp_path, monke
     assert (pull.number, pull.status, pull.draft) == (92, "open", True)
 
 
+async def test_bare_pr_candidate_miss_does_not_make_resolved_context_incomplete(
+    tmp_path, monkeypatch
+):
+    resolver = GitContextResolver()
+    resolver._git = "git"
+    resolver._gh = "gh"
+
+    async def fake_run(*args):
+        if "status" in args:
+            return (0, "## master...origin/master\n")
+        if "remote" in args:
+            return (0, "https://github.com/ScandinavianOutdoor/docker.git\n")
+        if args[1:3] == ("pr", "view"):
+            repository = args[5]
+            if repository == "ScandinavianOutdoor/docker":
+                return (1, "")
+            assert repository == "ScandinavianOutdoor/tilhi"
+            return (
+                0,
+                json.dumps(
+                    {
+                        "number": 1657,
+                        "title": "Ready for review",
+                        "url": "https://github.com/ScandinavianOutdoor/tilhi/pull/1657",
+                        "state": "OPEN",
+                        "isDraft": False,
+                        "mergedAt": None,
+                        "headRefName": "fix/deckhand",
+                        "baseRefName": "master",
+                    }
+                ),
+            )
+        raise AssertionError(args)
+
+    monkeypatch.setattr(resolver, "_run", fake_run)
+    session = _session(
+        tmp_path,
+        issue_url="https://github.com/ScandinavianOutdoor/tilhi/issues/151",
+        last_text="Opened PR #1657 for review.",
+    )
+
+    context = (await resolver.resolve([session]))[session.key]
+
+    assert [pull.number for pull in context.pull_requests] == [1657]
+    assert context.pulls_complete is True
+
+
+async def test_failed_qualified_ref_is_not_masked_by_same_number_bare_ref(
+    tmp_path, monkeypatch
+):
+    resolver = GitContextResolver()
+    resolver._git = "git"
+    resolver._gh = "gh"
+
+    async def fake_run(*args):
+        if "status" in args:
+            return (0, "## feature...origin/feature\n")
+        if "remote" in args:
+            return (0, "https://github.com/acme/checkout.git\n")
+        if args[1:3] == ("pr", "view"):
+            repository = args[5]
+            if repository == "other/repo":
+                return (1, "")
+            assert repository == "acme/checkout"
+            return (
+                0,
+                json.dumps(
+                    {
+                        "number": 151,
+                        "title": "Checkout PR",
+                        "url": "https://github.com/acme/checkout/pull/151",
+                        "state": "OPEN",
+                        "isDraft": False,
+                        "mergedAt": None,
+                        "headRefName": "feature",
+                        "baseRefName": "master",
+                    }
+                ),
+            )
+        raise AssertionError(args)
+
+    monkeypatch.setattr(resolver, "_run", fake_run)
+    session = _session(
+        tmp_path,
+        last_text=(
+            "Opened PR #151 and also https://github.com/other/repo/pull/151."
+        ),
+    )
+
+    context = (await resolver.resolve([session]))[session.key]
+
+    assert [pull.repository for pull in context.pull_requests] == ["acme/checkout"]
+    assert context.pulls_complete is False
+
+
 async def test_explicit_merged_pr_outranks_unrelated_shared_checkout_branch(tmp_path, monkeypatch):
     resolver = GitContextResolver()
     resolver._git = "git"
@@ -405,6 +500,55 @@ async def test_gh_command_retries_without_failed_environment_token(monkeypatch):
     assert (code, output) == (0, "[]")
     assert calls[0] is None
     assert "GH_TOKEN" not in calls[1]
+
+
+async def test_explicit_pr_failure_retains_cached_context_and_retries(tmp_path, monkeypatch):
+    resolver = GitContextResolver()
+    resolver._git = "git"
+    resolver._gh = "gh"
+    resolver.OPEN_TTL_S = 0
+    github_calls = 0
+
+    async def fake_run(*args):
+        nonlocal github_calls
+        if "status" in args:
+            return (0, "## master...origin/master\n")
+        if "remote" in args:
+            return (0, "https://github.com/eerovil/agentdeck.git\n")
+        if args[1:3] == ("pr", "view"):
+            github_calls += 1
+            if github_calls == 2:
+                return (1, "")  # e.g. GitHub API rate limiting
+            return (
+                0,
+                json.dumps(
+                    {
+                        "number": 151,
+                        "title": "Keep done sessions dismissed",
+                        "url": "https://github.com/eerovil/agentdeck/pull/151",
+                        "state": "OPEN",
+                        "isDraft": False,
+                        "mergedAt": None,
+                        "headRefName": "fix/deckhand",
+                        "baseRefName": "master",
+                    }
+                ),
+            )
+        raise AssertionError(args)
+
+    monkeypatch.setattr(resolver, "_run", fake_run)
+    session = _session(tmp_path, last_text="Opened PR #151 for review.")
+
+    first = (await resolver.resolve([session]))[session.key]
+    unavailable = (await resolver.resolve([session]))[session.key]
+    recovered = (await resolver.resolve([session]))[session.key]
+
+    assert [pull.number for pull in first.pull_requests] == [151]
+    assert unavailable.pull_requests == first.pull_requests
+    assert unavailable.pulls_complete is False
+    assert recovered.pull_requests == first.pull_requests
+    assert recovered.pulls_complete is True
+    assert github_calls == 3  # the failure was not negative-cached
 
 
 def _pull(status: str, *, draft: bool = False):

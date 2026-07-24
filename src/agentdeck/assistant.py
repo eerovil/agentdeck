@@ -318,6 +318,8 @@ class AssistantService:
         session: Session,
         context: GitContext | None,
         interaction: PendingInteraction | None,
+        *,
+        previous_signature: str | None = None,
     ) -> str:
         """Stable identity of a session's material state (excludes transient liveness).
 
@@ -325,6 +327,18 @@ class AssistantService:
         Thinking/activity/subagent churn is deliberately excluded so cards neither
         flicker nor get reclassified on poll noise.
         """
+        prs = (
+            sorted((p.number, p.status, p.draft) for p in context.pull_requests)
+            if context is not None
+            else []
+        )
+        if context is not None and not context.pulls_complete and previous_signature:
+            try:
+                previous_prs = json.loads(previous_signature).get("prs")
+                if isinstance(previous_prs, list):
+                    prs = previous_prs
+            except (AttributeError, TypeError, ValueError):
+                pass
         stable = {
             "title": session.title,
             "cwd": str(session.cwd) if session.cwd else None,
@@ -335,11 +349,7 @@ class AssistantService:
             "worker_type": session.worker_type,
             "issue_status_kind": session.issue_status_kind,
             "interaction": self._interaction_signature(interaction),
-            "prs": (
-                sorted((p.number, p.status, p.draft) for p in context.pull_requests)
-                if context is not None
-                else []
-            ),
+            "prs": prs,
         }
         return json.dumps(stable, sort_keys=True, default=str, separators=(",", ":"))
 
@@ -397,7 +407,13 @@ class AssistantService:
         for session_key in delegated_handled & self.state.delegated_session_keys:
             self.dismissals.drop_insight(session_key)
         self.contexts = {k: v for k, v in self.contexts.items() if k in eligible_keys}
-        self.contexts.update(resolved)
+        for key, context in resolved.items():
+            # A failed GitHub lookup is not evidence that a PR disappeared. Keep
+            # the last authoritative context in a warm process; after a restart,
+            # the restored signature below protects persisted dismissals until a
+            # complete lookup succeeds.
+            if context.pulls_complete or key not in self.contexts:
+                self.contexts[key] = context
         self._verdicts = {k: v for k, v in self._verdicts.items() if k in eligible_keys}
 
         now = datetime.now(UTC)
@@ -410,7 +426,15 @@ class AssistantService:
         for session in sessions:
             context = self.contexts.get(session.key)
             interaction = self._interaction(session)
-            signature = self._evidence_signature(session, context, interaction)
+            signature = self._evidence_signature(
+                session,
+                context,
+                interaction,
+                previous_signature=(
+                    self._signatures.get(session.key)
+                    or self.dismissals.insight_signature(session.key)
+                ),
+            )
             signatures[session.key] = signature
 
             card = structured_trigger(
