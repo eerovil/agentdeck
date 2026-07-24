@@ -495,6 +495,19 @@ details.ev.tool > .ev-text { margin-top: 6px; max-height: 420px; overflow: auto;
 [data-md] a { color: var(--remote); }
 [data-md] .md-h { font-weight: 700; margin: 5px 0 2px; }
 [data-md] strong { font-weight: 700; }
+[data-md] .md-table-scroll, .local-markdown .md-table-scroll { max-width: 100%; margin: 6px 0;
+  overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; }
+[data-md] table, .local-markdown table { width: 100%; min-width: 420px; border-collapse: collapse;
+  font-size: .95em; }
+[data-md] th, [data-md] td, .local-markdown th, .local-markdown td { padding: 6px 8px;
+  border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); text-align: left;
+  vertical-align: top; }
+[data-md] th, .local-markdown th { background: var(--panel2); font-weight: 700; }
+[data-md] th:last-child, [data-md] td:last-child,
+.local-markdown th:last-child, .local-markdown td:last-child { border-right: 0; }
+[data-md] tbody tr:last-child td, .local-markdown tbody tr:last-child td { border-bottom: 0; }
+[data-md] .md-align-center, .local-markdown .md-align-center { text-align: center; }
+[data-md] .md-align-right, .local-markdown .md-align-right { text-align: right; }
 .load-earlier { display: block; width: 100%; padding: 8px; margin-bottom: 4px; cursor: pointer;
   background: var(--panel2); color: var(--fg); border: 1px solid var(--line); border-radius: var(--radius); }
 
