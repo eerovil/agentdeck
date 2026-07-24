@@ -374,11 +374,11 @@ a.session.opening::after { content: "Opening…"; position: absolute; top: 7px; 
 .chip.pr-link.pr-closed { color: var(--crit); }
 .todos { margin: 8px 0 14px; }
 
-/* Compact sticky pin shelf: one-line context while collapsed, bounded history
-   when expanded. The rest of the session header scrolls normally. */
-.pinned-messages { position: sticky; top: 0; z-index: 4; margin: 0 0 7px;
-  border: 1px solid var(--line); border-radius: 8px;
+/* Compact pin shelf: one-line context while collapsed, bounded history when
+   expanded. It becomes sticky only while it contains pinned context. */
+.pinned-messages { margin: 0 0 7px; border: 1px solid var(--line); border-radius: 8px;
   background: color-mix(in srgb, var(--warn) 5%, var(--panel)); }
+.pinned-messages:has(.pinned-item) { position: sticky; top: 0; z-index: 4; }
 .pinned-messages > summary { display: flex; align-items: center; gap: 8px; min-height: 32px;
   padding: 5px 8px; overflow: hidden; cursor: pointer; list-style: none; }
 .pinned-messages > summary::-webkit-details-marker { display: none; }

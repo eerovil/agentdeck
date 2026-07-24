@@ -3842,6 +3842,35 @@ async def test_pin_panel_updates_without_closing_or_disturbing_draft(tmp_path):
     }
 
 
+async def test_pin_shelf_is_sticky_only_while_it_contains_pins(tmp_path):
+    app = _app_with_state(tmp_path, with_transcript=True)
+    async with _client(app) as client:
+        response = await client.get("/sessions/claude_code:test:sid1")
+
+    css = (Path(__file__).parents[1] / "src/agentdeck/web/static/app.css").read_text()
+    html = response.text.replace("</head>", f"<style>{css}</style></head>")
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        page = await browser.new_page(viewport={"width": 320, "height": 800})
+        await page.set_content(html)
+        positions = await page.locator("#pinned-messages").evaluate(
+            """panel => {
+              const position = () => getComputedStyle(panel).position;
+              const empty = position();
+              panel.insertAdjacentHTML(
+                'beforeend',
+                '<div class="pinned-list"><article class="pinned-item">Pinned</article></div>'
+              );
+              const pinned = position();
+              panel.querySelector('.pinned-list').remove();
+              return {empty, pinned, emptyAgain: position()};
+            }"""
+        )
+        await browser.close()
+
+    assert positions == {"empty": "static", "pinned": "sticky", "emptyAgain": "static"}
+
+
 def test_pr_reference_text_uses_conversation_not_system_or_tool_traffic():
     events = [
         TranscriptEvent(seq=1, role="system", text="Memory mentions PR #250."),
@@ -3905,6 +3934,8 @@ async def test_session_detail_uses_responsive_split_view(tmp_path):
         ),
     )
     async with _client(app) as client:
+        pin = await client.put("/api/sessions/claude_code:test:sid1/pins/1")
+        assert pin.status_code == 200
         response = await client.get("/sessions/claude_code:test:sid1")
 
     assert 'class="session-page session-stack-page"' in response.text
