@@ -82,6 +82,12 @@ provider = "codex"
 label = "codex"
 config_dir = "~/.codex"
 
+# Antigravity CLI (agy) transcripts under ~/.gemini/antigravity-cli/brain/
+#[[accounts]]
+#provider = "agy"
+#label = "agy"
+#config_dir = "~/.gemini/antigravity-cli"
+
 #[[accounts]]
 #provider = "claude_code"
 #label = "alt"

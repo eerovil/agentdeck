@@ -1,6 +1,7 @@
 """Provider registry. The web layer resolves providers only through this."""
 
 from ..models import Account, PendingInteraction, Session
+from .agy.provider import AgyProvider
 from .base import SessionProvider
 from .claude_code.provider import ClaudeCodeProvider
 from .codex.provider import CodexProvider
@@ -8,6 +9,7 @@ from .codex.provider import CodexProvider
 PROVIDERS: dict[str, SessionProvider] = {
     ClaudeCodeProvider.provider_id: ClaudeCodeProvider(),
     CodexProvider.provider_id: CodexProvider(),
+    AgyProvider.provider_id: AgyProvider(),
 }
 
 
