@@ -356,7 +356,7 @@ a.session.opening::after { content: "Opening…"; position: absolute; top: 7px; 
 /* session detail */
 .session-sidebar { display: none; }
 .session-detail { min-width: 0; }
-.session-detail-head { position: sticky; top: 0; z-index: 4; padding-bottom: 1px;
+.session-detail-head { padding-bottom: 1px;
   border-bottom: 1px solid var(--line); background: var(--bg); }
 .session-sidebar-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
   padding-bottom: 8px; border-bottom: 1px solid var(--line); }
@@ -374,9 +374,10 @@ a.session.opening::after { content: "Opening…"; position: absolute; top: 7px; 
 .chip.pr-link.pr-closed { color: var(--crit); }
 .todos { margin: 8px 0 14px; }
 
-/* Compact pin shelf: one-line context while collapsed, bounded history when
-   expanded. It lives inside the sticky session header on desktop and mobile. */
-.pinned-messages { margin: 0 0 7px; border: 1px solid var(--line); border-radius: 8px;
+/* Compact sticky pin shelf: one-line context while collapsed, bounded history
+   when expanded. The rest of the session header scrolls normally. */
+.pinned-messages { position: sticky; top: 0; z-index: 4; margin: 0 0 7px;
+  border: 1px solid var(--line); border-radius: 8px;
   background: color-mix(in srgb, var(--warn) 5%, var(--panel)); }
 .pinned-messages > summary { display: flex; align-items: center; gap: 8px; min-height: 32px;
   padding: 5px 8px; overflow: hidden; cursor: pointer; list-style: none; }

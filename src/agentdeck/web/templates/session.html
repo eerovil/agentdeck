@@ -55,10 +55,11 @@
   {% endfor %}
   {% endif %}
 </div>
+</div>
+
 <details id="pinned-messages" class="pinned-messages" sse-swap="pins" hx-swap="innerHTML">
   {% include "partials/pinned_messages.html" %}
 </details>
-</div>
 
 {% if continue_chat_accounts %}
 <div class="continue-chat">

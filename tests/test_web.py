@@ -3959,6 +3959,11 @@ async def test_session_detail_uses_responsive_split_view(tmp_path):
                     document.querySelector('#sessions').getBoundingClientRect().top,
                 headerPosition: getComputedStyle(document.querySelector('.session-detail-head'))
                     .position,
+                pinnedPosition: getComputedStyle(document.querySelector('#pinned-messages'))
+                    .position,
+                pinnedInsideHeader: !!document.querySelector(
+                    '.session-detail-head #pinned-messages'
+                ),
                 prLinksVisible: [...document.querySelectorAll('.pr-link')].every(link => {
                     const linkRect = link.getBoundingClientRect();
                     const detailRect = document.querySelector('.session-detail')
@@ -3978,6 +3983,11 @@ async def test_session_detail_uses_responsive_split_view(tmp_path):
                 assistantRects: document.querySelector('#assistant-panel').getClientRects().length,
                 headerPosition: getComputedStyle(document.querySelector('.session-detail-head'))
                     .position,
+                pinnedPosition: getComputedStyle(document.querySelector('#pinned-messages'))
+                    .position,
+                pinnedInsideHeader: !!document.querySelector(
+                    '.session-detail-head #pinned-messages'
+                ),
             })"""
         )
         await page.set_viewport_size({"width": 320, "height": 800})
@@ -4001,7 +4011,9 @@ async def test_session_detail_uses_responsive_split_view(tmp_path):
     assert desktop["back"] == "none"
     assert desktop["assistantRects"] == 1
     assert desktop["assistantAboveSessions"] is True
-    assert desktop["headerPosition"] == "sticky"
+    assert desktop["headerPosition"] == "static"
+    assert desktop["pinnedPosition"] == "sticky"
+    assert desktop["pinnedInsideHeader"] is False
     assert desktop["prLinksVisible"] is True
     assert mobile == {
         "sidebar": "block",
@@ -4009,7 +4021,9 @@ async def test_session_detail_uses_responsive_split_view(tmp_path):
         "detailOverflow": "auto",
         "back": "flex",
         "assistantRects": 1,
-        "headerPosition": "sticky",
+        "headerPosition": "static",
+        "pinnedPosition": "sticky",
+        "pinnedInsideHeader": False,
     }
     assert narrow == {"pageOverflow": False, "timestampsVisible": True}
 
