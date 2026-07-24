@@ -282,6 +282,7 @@ async def _session_stream(
                     last_activity_t = loop.time() - _progress_age_s(last_ev)
             current = state.sessions.get(session_key) or session
             presentation = state.session_presentation()
+            active_child_sessions = presentation.active_child_sessions(current)
             live = current.status == SessionStatus.LIVE
             age = loop.time() - last_activity_t
             streaming = live and age < THINKING_OFF_S
@@ -306,10 +307,14 @@ async def _session_stream(
                 last_subagent_count = current.subagent_count
                 snap = replace(current, thinking=busy)
                 yield format_sse("status", render_session_status(templates, snap))
-            if current.subagents != last_subagents:
-                last_subagents = current.subagents
+            subagents = (current.subagents, active_child_sessions)
+            if subagents != last_subagents:
+                last_subagents = subagents
                 yield format_sse(
-                    "subagents", render_subagent_activity(templates, current)
+                    "subagents",
+                    render_subagent_activity(
+                        templates, current, active_child_sessions
+                    ),
                 )
             can_interrupt = Capability.INTERRUPT in current.capabilities
             if can_interrupt != last_can_interrupt:

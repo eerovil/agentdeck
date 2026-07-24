@@ -359,8 +359,13 @@ def render_session_status(templates: Jinja2Templates, session) -> str:
     return templates.get_template("partials/session_status.html").render(s=session)
 
 
-def render_subagent_activity(templates: Jinja2Templates, session) -> str:
-    return templates.get_template("partials/subagent_activity.html").render(s=session)
+def render_subagent_activity(
+    templates: Jinja2Templates, session, active_child_sessions=()
+) -> str:
+    return templates.get_template("partials/subagent_activity.html").render(
+        s=session,
+        active_subagent_sessions=active_child_sessions,
+    )
 
 
 def render_composer_controls(templates: Jinja2Templates, session) -> str:

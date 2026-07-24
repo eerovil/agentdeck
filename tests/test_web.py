@@ -2628,6 +2628,46 @@ def test_session_presentation_includes_embedded_subagents_in_parent_activity():
     assert presentation.has_working_subagent(parent) is True
 
 
+def test_active_child_sessions_excludes_duplicate_embedded_subagent():
+    from agentdeck.state import AppState
+
+    state = AppState()
+    parent = Session(
+        key="codex:test:parent",
+        account_key="codex:test",
+        session_id="parent",
+        status=SessionStatus.LIVE,
+        subagent_count=1,
+        subagents=(
+            SubagentProgress(agent_id="native", status="working"),
+        ),
+    )
+    native_child = Session(
+        key="codex:test:native",
+        account_key="codex:test",
+        session_id="native",
+        status=SessionStatus.LIVE,
+        thinking=True,
+        parent_session_key=parent.key,
+    )
+    delegated_child = Session(
+        key="codex:test:delegated",
+        account_key="codex:test",
+        session_id="delegated",
+        status=SessionStatus.LIVE,
+        thinking=True,
+    )
+    for session in (parent, native_child, delegated_child):
+        state.update_session(session)
+    state.mark_delegated_session(delegated_child.key, parent_session_id=parent.session_id)
+
+    presentation = state.session_presentation()
+
+    assert presentation.active_child_sessions(parent) == (
+        presentation.display(delegated_child),
+    )
+
+
 def test_session_tree_nests_cross_provider_delegation():
     from agentdeck.state import AppState
 
@@ -3239,6 +3279,9 @@ async def test_nested_subagents_collapse_by_default_with_toggle(tmp_path):
     assert "Audit the boundary" in text
     assert 'data-working="1"' in _session_card(text, "claude_code:test:sid1")
     assert '<span class="status-tag thinking">thinking</span>' in detail.text
+    assert 'aria-label="Subagent progress"' in detail.text
+    assert "Scout the parser" in detail.text
+    assert "Audit the boundary" in detail.text
     assert "1 working" in text
 
 
@@ -3810,14 +3853,16 @@ async def test_session_sse_marks_parent_working_for_active_child(tmp_path):
     try:
         events = [
             await asyncio.wait_for(gen.__anext__(), timeout=5.0)
-            for _ in range(6)
+            for _ in range(7)
         ]
     finally:
         await gen.aclose()
 
-    status = events[-1]
+    status, subagents = events[-2:]
     assert "event: status" in status
     assert 'status-tag thinking' in status
+    assert "event: subagents" in subagents
+    assert "child" in subagents
 
 
 async def test_dead_subagents_drop_from_the_session_card(tmp_path):
