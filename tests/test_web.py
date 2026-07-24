@@ -116,11 +116,15 @@ def test_session_list_context_owns_full_page_and_fragment_keys(tmp_path):
         "queue_summaries",
         "assistant",
         "assistant_sessions",
+        "assistant_session_titles",
         "working_count",
     }
     assert context["sessions"] == presentation.top_level
     assert context["selected_session_key"] == "claude_code:test:sid1"
     assert context["assistant_sessions"] is state.sessions
+    assert context["assistant_session_titles"] == {
+        "claude_code:test:sid1": "Hello World Session"
+    }
 
 
 async def test_healthz(tmp_path):
@@ -264,6 +268,10 @@ async def test_orchestration_assistant_fits_mobile_and_desktop(tmp_path):
     assert "This agent is waiting for an explicit architecture decision." not in response.text
     assert "Another active session is changing the same service." not in response.text
     assert response.text.count('data-agentdeck-action="open_deckhand_chat"') == 2
+    panel = response.text.split('id="assistant-panel"', 1)[1].split("</section>", 1)[0]
+    assert panel.count("<strong>Hello World Session</strong>") == 2
+    assert "Storm · Elasticsearch" not in panel
+    assert "Avoid overlapping deploys" not in panel
 
     static_dir = Path(__file__).parents[1] / "src/agentdeck/web/static"
     css = (static_dir / "app.css").read_text()
@@ -359,7 +367,8 @@ async def test_orchestration_assistant_item_can_be_marked_handled(tmp_path):
     assert response.status_code == 200
     assert 'class="assistant-insight-link"' not in response.text
     assert 'aria-label="Most recently completed Deckhand item"' in response.text
-    assert "Choose one owner" in response.text
+    assert "Hello World Session" in response.text
+    assert "Choose one owner" not in response.text
     assert "Undo" in response.text
     assert "Nothing needs your attention right now." in response.text
     assert assistant.dismissals.insight_signature("claude_code:test:sid1") == evidence
@@ -367,7 +376,7 @@ async def test_orchestration_assistant_item_can_be_marked_handled(tmp_path):
     async with _client(app) as client:
         handled_page = await client.get("/sessions/claude_code:test:sid1")
     assert "Two chats overlap." not in handled_page.text
-    assert "Undo marking Choose one owner done" in handled_page.text
+    assert "Undo marking Hello World Session done" in handled_page.text
 
     css = (Path(__file__).parents[1] / "src/agentdeck/web/static/app.css").read_text()
     html = response.text.replace("</head>", f"<style>{css}</style></head>")
@@ -395,7 +404,7 @@ async def test_orchestration_assistant_item_can_be_marked_handled(tmp_path):
     async with _client(app) as client:
         restored_page = await client.get("/sessions/claude_code:test:sid1")
     assert "Two chats overlap." in restored_page.text
-    assert "Mark Choose one owner done" in restored_page.text
+    assert "Mark Hello World Session done" in restored_page.text
 
 
 async def test_transcript_bottom_deckhand_done_button_toggles_with_insight(tmp_path):
@@ -3789,13 +3798,17 @@ async def test_session_detail_uses_responsive_split_view(tmp_path):
     assert response.text.index('id="assistant-panel"') < response.text.index('id="sessions"')
     panel_start = response.text.index('id="assistant-panel"')
     panel_end = response.text.index("</section>", panel_start)
-    assert "Confirm the database choice" in response.text[panel_start:panel_end]
+    assert "Hello World Session" in response.text[panel_start:panel_end]
+    assert "Confirm the database choice" not in response.text[panel_start:panel_end]
     assert (
         "The agent needs the database decision before it can continue."
         not in response.text[panel_start:panel_end]
     )
     assert 'id="assistant-session-details"' in response.text
     assert 'class="assistant-chat-detail insight-waiting"' in response.text
+    details = response.text.split('id="assistant-session-details"', 1)[1]
+    assert "Hello World Session" in details
+    assert "Confirm the database choice" not in details
     assert "The agent needs the database decision before it can continue." in response.text
     assert "feature/deckhand" in response.text
     assert 'class="chip pr-link pr-merged"' in response.text

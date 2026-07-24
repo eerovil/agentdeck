@@ -29,18 +29,19 @@
   {% if assistant.view.insights %}
   <div class="assistant-insights">
     {% for insight in assistant.view.insights %}
+    {% set attention_title = assistant_session_titles.get(insight.session_key, insight.headline) %}
     <div class="assistant-insight insight-{{ insight.kind }}">
       <a class="assistant-insight-link" href="/sessions/{{ insight.session_key }}"
          data-agentdeck-action="open_deckhand_chat">
         <span class="assistant-kind">{{ insight.kind }}</span>
         <span class="assistant-copy">
-          <strong>{{ insight.headline }}</strong>
+          <strong>{{ attention_title }}</strong>
         </span>
         <span class="assistant-arrow">›</span>
       </a>
       <form hx-post="/assistant/handle" hx-target="#assistant-panel" hx-swap="outerHTML">
         <input type="hidden" name="session_key" value="{{ insight.session_key }}">
-        <button type="submit" title="Mark done" aria-label="Mark {{ insight.headline }} done">✓</button>
+        <button type="submit" title="Mark done" aria-label="Mark {{ attention_title }} done">✓</button>
       </form>
     </div>
     {% endfor %}
@@ -52,14 +53,15 @@
   {% if assistant.handled_items %}
   <div class="assistant-handled" aria-label="Most recently completed Deckhand item">
     {% for item in assistant.handled_items %}
+    {% set handled_title = assistant_session_titles.get(item.session_key, item.headline) %}
     <div class="assistant-handled-item">
       <span class="assistant-handled-label">Done</span>
       <a class="assistant-handled-link" href="/sessions/{{ item.session_key }}"
          data-agentdeck-action="open_deckhand_chat"
-         title="{{ item.headline }}">{{ item.headline }}</a>
+         title="{{ handled_title }}">{{ handled_title }}</a>
       <form hx-post="/assistant/unhandle" hx-target="#assistant-panel" hx-swap="outerHTML">
         <input type="hidden" name="session_key" value="{{ item.session_key }}">
-        <button type="submit" aria-label="Undo marking {{ item.headline }} done">Undo</button>
+        <button type="submit" aria-label="Undo marking {{ handled_title }} done">Undo</button>
       </form>
     </div>
     {% endfor %}
